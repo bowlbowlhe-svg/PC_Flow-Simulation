@@ -7,11 +7,11 @@ function pass = test_ui()
     isOctave = exist('OCTAVE_VERSION', 'builtin') ~= 0;
     if isOctave
         p0 = path();
-        restoreEarly = onCleanup(@() path(p0)); %#ok<NASGU>   % ui_mock_setup 之前出错也恢复路径
+        w0 = warning('query', 'Octave:shadowed-function');
+        restoreEarly = onCleanup(@() restoreEnv(p0, w0)); %#ok<NASGU>   % 任何退出路径都恢复路径与警告状态
         warning('off', 'Octave:shadowed-function');
         addpath(fullfile(fileparts(mfilename('fullpath')), 'ui_mock'));
-        restore = ui_mock_setup(p0); %#ok<NASGU>          % 测试结束时恢复路径与警告状态
-        warning('on', 'Octave:shadowed-function');
+        restore = ui_mock_setup(p0); %#ok<NASGU>
     end
     outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
     if ~isOctave && ~exist(outDir, 'dir'), mkdir(outDir); end
@@ -312,6 +312,11 @@ function ui_tab(tg, tab)
     tg.SelectedTab = tab;
     f = tg.SelectionChangedFcn;
     if ~isempty(f), f(tg, struct('NewValue', tab)); end
+end
+
+function restoreEnv(p0, w0)
+    path(p0);
+    warning(w0.state, 'Octave:shadowed-function');
 end
 
 function writeJson(f, L)

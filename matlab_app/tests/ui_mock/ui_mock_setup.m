@@ -3,7 +3,8 @@ function restore = ui_mock_setup(oldPath)
 %   1) 桩目录置于路径最前（uifigure/timer/drawnow/parula 与 MockUI）；
 %   2) 生成去掉属性类型注解的 App 副本（Octave 不支持 "Name matlab.ui.Figure" 语法），
 %      并用它替换 app/ 目录；
-%   返回 onCleanup 对象，释放时把路径恢复为 oldPath（缺省为调用时的路径）。
+%   返回 onCleanup 对象，释放时把路径恢复为 oldPath（缺省为调用时的路径）并删除临时副本。
+%   遮蔽警告（Octave:shadowed-function）由调用方（test_ui）负责关闭与恢复。
     here = fileparts(mfilename('fullpath'));
     root = fileparts(fileparts(here));
     appDir = fullfile(root, 'app');
@@ -30,17 +31,14 @@ function restore = ui_mock_setup(oldPath)
     fclose(fid);
 
     if nargin < 1, oldPath = path(); end
-    w = warning('query', 'Octave:shadowed-function');
-    warning('off', 'Octave:shadowed-function');
     rmpath(appDir);
     addpath(outDir);
     addpath(here);
-    restore = onCleanup(@() restorePath(oldPath, outDir, w));
+    restore = onCleanup(@() restorePath(oldPath, outDir));
 end
 
-function restorePath(p, outDir, w)
+function restorePath(p, outDir)
     path(p);
-    warning(w.state, 'Octave:shadowed-function');
     if exist(fullfile(outDir, 'PCAirflowSimulatorApp.m'), 'file')
         delete(fullfile(outDir, 'PCAirflowSimulatorApp.m'));
     end

@@ -906,8 +906,10 @@ classdef PCAirflowSimulatorApp < handle
             app.InternalTempLabel.Text = sprintf('内部: %.1f°C', scores.internalAmbient);
             app.NoiseLabel.Text        = sprintf('噪音: %ddB', scores.noiseDb);
             app.PerformanceLabel.Text  = sprintf('性能: %d%%', scores.performance);
-            app.CPUTempLabel.Text      = sprintf('CPU: %d°C', scores.cpuTemp);
-            app.GPUTempLabel.Text      = sprintf('GPU: %d°C', scores.gpuTemp);
+            if app.Solver.hasCpu, app.CPUTempLabel.Text = sprintf('CPU: %d°C', scores.cpuTemp);
+            else, app.CPUTempLabel.Text = 'CPU: —'; end
+            if app.Solver.hasGpu, app.GPUTempLabel.Text = sprintf('GPU: %d°C', scores.gpuTemp);
+            else, app.GPUTempLabel.Text = 'GPU: —'; end
             app.TotalScoreLabel.Text   = sprintf('总分: %d/100', scores.total);
             app.ScoreCoolingLabel.Text = sprintf('散热: %d', scores.cooling);
             app.ScorePerfLabel.Text    = sprintf('性能: %d', scores.performance);
@@ -1394,11 +1396,10 @@ classdef PCAirflowSimulatorApp < handle
         function setGrid(app)
             % 切换网格精度：按当前布局、功率与风扇设置重建求解器
             if app.SteadyRunning, return; end
-            oldScale = app.GridScale;
-            if strcmp(app.GridDrop.Value, '精确 280²'), app.GridScale = 1; else, app.GridScale = 0.5; end
-            if ~app.rebuildSolver(app.Solver.layout)
-                app.GridScale = oldScale;           % 重建失败：网格档与下拉框回到原值
-                if oldScale >= 1, app.GridDrop.Value = '精确 280²'; else, app.GridDrop.Value = '预览 140²'; end
+            if strcmp(app.GridDrop.Value, '精确 280²'), newScale = 1; else, newScale = 0.5; end
+            if ~app.rebuildSolver(app.Solver.layout, newScale)
+                % 重建失败：下拉框回到原网格档（GridScale 由 rebuildSolver 保持原值）
+                if app.GridScale >= 1, app.GridDrop.Value = '精确 280²'; else, app.GridDrop.Value = '预览 140²'; end
             end
         end
 
@@ -1411,41 +1412,45 @@ classdef PCAirflowSimulatorApp < handle
             end
         end
 
-        function ok = rebuildSolver(app, L)
-            % 按布局 L 重建求解器（保留功率与全局风扇设置），重绘静态图层。
-            % 构造失败时保留原求解器并报错，返回 false。
+        function ok = rebuildSolver(app, L, gridScale)
+            % 按布局 L（与网格档 gridScale，缺省为当前档）重建求解器，保留功率与全局风扇设置，
+            % 重绘全部图层。构建或重画任何一步出错都整体回滚到原求解器与原网格档并报错，
+            % 返回 false；回滚本身再出错时至少保证求解器、网格档与湍流子循环设置一致。
+            if nargin < 3, gridScale = app.GridScale; end
             if app.IsRunning, app.toggleRun(); end
-            old = app.Solver;
+            old = app.Solver; oldScale = app.GridScale;
+            oldTurb = old.turbUpdateEvery;
+            oldSteady = app.SteadyIter; oldMsg = app.StatusMsg;
             dlg = [];
             try
                 dlg = uiprogressdlg(app.UIFigure, 'Title', '请稍候', 'Message', '正在重建流场…', 'Indeterminate', 'on');
             catch
             end
+            closer = onCleanup(@() app.closeDialog(dlg)); %#ok<NASGU>   % 任何退出路径都关闭进度框
+            ok = false;
             try
-                s = CFDSolverFEM(old.powerW.cpu, old.powerW.gpu, old.powerW.psu, L, app.GridScale);
-                ok = true;
-            catch ME
-                ok = false;
-            end
-            if ok
-                % 换上新求解器并重画；任何一步出错都整体回滚到原求解器
+                s = CFDSolverFEM(old.powerW.cpu, old.powerW.gpu, old.powerW.psu, L, gridScale);
                 s.autoFanEnabled = old.autoFanEnabled;
                 s.fanSpeedRatio = old.fanSpeedRatio;
-                oldTurb = old.turbUpdateEvery;
-                oldSteady = app.SteadyIter; oldMsg = app.StatusMsg;
+                app.GridScale = gridScale;
+                app.installSolver(s);
+                ok = true;
+            catch ME
+                app.GridScale = oldScale;
                 try
-                    app.installSolver(s);
-                catch ME
-                    ok = false;
                     app.installSolver(old);
-                    old.turbUpdateEvery = oldTurb;
-                    app.SteadyIter = oldSteady; app.StatusMsg = oldMsg;
+                catch ME2
+                    app.Solver = old;           % 重画失败：至少保持求解器引用一致
+                    fprintf('回滚重画失败：%s\n', ME2.message);
                 end
-            end
-            if ~isempty(dlg), close(dlg); end
-            if ~ok
+                old.turbUpdateEvery = oldTurb;
+                app.SteadyIter = oldSteady; app.StatusMsg = oldMsg;
                 app.reportError('重建失败，已保留原布局', ME);
             end
+        end
+
+        function closeDialog(~, dlg)
+            if ~isempty(dlg) && isvalid(dlg), close(dlg); end
         end
 
         function installSolver(app, s)
@@ -1618,7 +1623,12 @@ classdef PCAirflowSimulatorApp < handle
             % 按待应用布局重建求解器；构建失败时保持原求解器，返回 false
             ok = false;
             if app.SteadyRunning, return; end
-            L = app.pendingLayout();
+            try
+                L = app.pendingLayout();
+            catch ME
+                app.reportError('布局无效', ME);
+                return;
+            end
             if ~app.rebuildSolver(L), return; end
             ok = true;
             app.PendingBase = L;
@@ -1716,11 +1726,17 @@ classdef PCAirflowSimulatorApp < handle
             if isempty(snap), return; end
             s0 = app.Solver;
             p0 = s0.powerW; auto0 = s0.autoFanEnabled; pct0 = s0.fanSpeedRatio;
-            app.setPendingFromLayout(snap.layout);
-            app.setPowers(snap.powers);
-            app.setGlobalFan(snap.autoFan, snap.fanSpeedRatio);
-            app.LayoutLabel = snap.label;
-            if ~app.applyLayout(false)          % 失败：恢复原布局、功率与风扇设置
+            ok = false;
+            try
+                app.setPendingFromLayout(snap.layout);
+                app.setPowers(snap.powers);
+                app.setGlobalFan(snap.autoFan, snap.fanSpeedRatio);
+                app.LayoutLabel = snap.label;
+                ok = app.applyLayout(false);
+            catch ME
+                app.reportError('载入方案失败', ME);
+            end
+            if ~ok                              % 失败：恢复原布局、功率与风扇设置
                 app.setPendingFromLayout(s0.layout);
                 app.setPowers([p0.cpu p0.gpu p0.psu]);
                 app.setGlobalFan(auto0, pct0);

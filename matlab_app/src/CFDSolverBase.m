@@ -217,6 +217,7 @@ classdef CFDSolverBase < handle
             obj.acoustics = acoustics_default();
             if isfield(obj.layout, 'acoustics')
                 obj.acoustics = struct_merge(obj.acoustics, obj.layout.acoustics);
+                acoustics_validate(obj.acoustics);
             end
             obj.initGeometry();
             obj.initFields();
@@ -662,8 +663,11 @@ classdef CFDSolverBase < handle
                         'model', L.gpu.fans.model, 'sensor', 'gpu'));
                     n = obj.toCell(cat.(fan.model).size);
                     c = obj.caseOffsetX + obj.toCell(L.gpu.fans.xs(i));
-                    c0 = max(c - floor(n/2), prevC1 + 1);             % 相邻风扇盘不重叠
-                    c1 = min(c0 + n - 1, hs.x + hs.w - 1);            % 不伸出散热片
+                    c0 = max([c - floor(n/2), prevC1 + 1, hs.x]);     % 不重叠、不伸出散热片左端
+                    c1 = min(c0 + n - 1, hs.x + hs.w - 1);            % 不伸出散热片右端
+                    if c1 < c0
+                        error('CFDSolverBase:gpuFans', '显卡风扇 %d 在散热片上放不下（散热片宽 %d 格）', i, hs.w);
+                    end
                     fan.cols = [c0, c1];
                     prevC1 = fan.cols(2);
                     fan.rows = [hs.y + hs.h, hs.y + hs.h + t - 1];      % 散热片下方
@@ -1485,7 +1489,7 @@ classdef CFDSolverBase < handle
             cpuHead = max(0, (tnC.throttling_temp-cpuT)/(tnC.throttling_temp-obj.T_amb));
             gpuHead = max(0, (tnG.throttling_temp-gpuT)/(tnG.throttling_temp-obj.T_amb));
             margin = 100*(0.5*cpuHead + 0.5*gpuHead);
-            noise = max(0, 100 - (noiseDb-20)*3);
+            noise = max(0, min(100, 100 - (noiseDb-20)*3));
             value = max(0, 100 - totalPrice/15);
             totalScore = round(cooling*0.25 + performance*0.20 + balance*0.10 + margin*0.15 + noise*0.20 + value*0.10);
             scores = struct('total',totalScore,'cooling',round(cooling),'performance',round(performance),...
@@ -1592,6 +1596,9 @@ classdef CFDSolverBase < handle
             for k = 1:numel(allF)
                 [perFan(k), parts(k)] = allF{k}.getNoise(obj); %#ok<AGROW>
             end
+            if any(~isfinite(perFan))
+                error('CFDSolverBase:noise', '风扇噪音出现非有限值，检查布局 acoustics 参数');
+            end
             dbTotal = 10*log10(max(sum(10.^(perFan/10)), 1));
         end
 
@@ -1599,12 +1606,16 @@ classdef CFDSolverBase < handle
             scores = obj.calculateScores();
             recs = {};
             tnC = obj.netOrIdle('cpu'); tnG = obj.netOrIdle('gpu');
-            if scores.cpuTemp > tnC.throttling_temp - 5
+            if ~obj.hasCpu
+                % 布局中无 CPU：不给 CPU 建议
+            elseif scores.cpuTemp > tnC.throttling_temp - 5
                 recs{end+1} = struct('title','CPU温度过高','desc',sprintf('当前%d°C，接近降频阈值，建议提高 CPU 风扇/机箱排风',scores.cpuTemp),'level','warning');
             elseif scores.cpuTemp < 60
                 recs{end+1} = struct('title','CPU散热余量充足','desc',sprintf('当前%d°C，可适当降低风扇转速以减少噪音',scores.cpuTemp),'level','good');
             end
-            if scores.gpuTemp > tnG.throttling_temp - 5
+            if ~obj.hasGpu
+                % 布局中无显卡：不给 GPU 建议
+            elseif scores.gpuTemp > tnG.throttling_temp - 5
                 recs{end+1} = struct('title','GPU温度过高','desc',sprintf('当前%d°C，建议改善显卡下方进风或增加机箱排风',scores.gpuTemp),'level','warning');
             elseif scores.gpuTemp < 65
                 recs{end+1} = struct('title','GPU散热良好','desc',sprintf('当前%d°C，散热配置合理',scores.gpuTemp),'level','good');
@@ -1620,7 +1631,7 @@ classdef CFDSolverBase < handle
             elseif scores.noiseDb < 25
                 recs{end+1} = struct('title','运行安静','desc',sprintf('当前约%ddB，噪音控制优秀',scores.noiseDb),'level','good');
             end
-            if scores.balance < 70
+            if scores.balance < 70 && obj.hasCpu && obj.hasGpu
                 recs{end+1} = struct('title','CPU/GPU温度不均衡','desc','温差较大，建议优化风道使热量均匀排出','level','warning');
             end
             % 主要噪音来源（能量占比超过 40% 的风扇）
