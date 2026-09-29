@@ -1,7 +1,6 @@
 classdef PCAirflowSimulatorApp < handle
-    %PCAIRFLOWSIMULATORAPP PC风道仿真器 MATLAB App v3.3.1
-    % 基于Navier-Stokes + LVEL 湍流模型 + 共轭传热的可视化仿真程序
-    % 视图优化版：预渲染静态几何、等温线、流线图、area填充
+    %PCAIRFLOWSIMULATORAPP PC 风道仿真器 MATLAB App（版本见 pcflow_version）。
+    %   2D 不可压 Navier–Stokes + k-ω 湍流 + 共轭传热的交互式可视化。
     
     properties (Access = public)
         UIFigure      matlab.ui.Figure
@@ -86,7 +85,7 @@ classdef PCAirflowSimulatorApp < handle
     
     methods (Access = private)
         function createComponents(app)
-            app.UIFigure = uifigure('Name','PC风道仿真器 v3.3.1','Position',[100 50 1200 850],...
+            app.UIFigure = uifigure('Name',['PC风道仿真器 v' pcflow_version()],'Position',[100 50 1200 850],...
                 'Color',[0.02 0.02 0.05],'WindowStyle','normal');
             
             % ========== 左侧可视化面板 ==========
@@ -121,7 +120,7 @@ classdef PCAirflowSimulatorApp < handle
             
             % --- 标题 ---
             uilabel(ctrlPanel,'Position',[10 yPos 400 25],...
-                'Text','PC风道仿真器 v3.3.1','FontSize',16,'FontWeight','bold',...
+                'Text',['PC风道仿真器 v' pcflow_version()],'FontSize',16,'FontWeight','bold',...
                 'FontColor',[0.27 0.53 1],'HorizontalAlignment','center');
             yPos = yPos - 30;
             
@@ -267,7 +266,8 @@ classdef PCAirflowSimulatorApp < handle
             lb = @(x,y,w,h,t,col,sz) text(ax,x+w/2,y+h/2,t,'Color',col,'FontSize',sz,'FontWeight','bold','HorizontalAlignment','center','VerticalAlignment','middle','Interpreter','none');
             
             % 机箱外框（机箱壁位置，非计算域边界）
-            plotRect(s.caseOffsetX+1, s.caseOffsetY+1, 200, 200, [0.60 0.60 0.72], 2.5);
+            co = s.CASE2D.outer;
+            plotRect(co.x, co.y, co.w, co.h, [0.60 0.60 0.72], 2.5);
             
             % 主板区
             mb = s.CASE2D.motherboard_tray;
@@ -429,7 +429,7 @@ classdef PCAirflowSimulatorApp < handle
                 if app.StepPending, return; end
                 app.StepPending = true;
                 % 自适应 StepsPerFrame：根据当前最大速度动态调整
-                [uCgA, vCgA] = app.Solver.getCellVelocity();  % v3.0: 统一读取口
+                [uCgA, vCgA] = app.Solver.getCellVelocity();
                 maxVel = max(sqrt(uCgA.^2 + vCgA.^2));
                 if maxVel < 0.3
                     app.StepsPerFrame = 4;   % 低速时加速收敛
@@ -465,10 +465,8 @@ classdef PCAirflowSimulatorApp < handle
                 
                 switch app.VisMode
                     case 'velocity'
-                        [uCgV, vCgV] = app.Solver.getCellVelocity();  % v3.0: 统一读取口
-                        % v3.3.1：×VEL_SCALE 转 m/s（审计 P1——旧版直接显示网格
-                        % 单位却标注 m/s，显示值比真实速度高 1.8 倍且满屏削顶；
-                        % 与 generate_snapshots 渲染路径同口径，CLim 同步 [0 2]）
+                        [uCgV, vCgV] = app.Solver.getCellVelocity();
+                        % 网格速度 × VEL_SCALE → m/s
                         velMag = reshape(sqrt(uCgV.^2 + vCgV.^2), W, H) * app.Solver.VEL_SCALE;
                         obs2d  = reshape(app.Solver.obstacle, W, H) > 0;
                         velMag(obs2d) = NaN;
@@ -481,10 +479,7 @@ classdef PCAirflowSimulatorApp < handle
                         showStream = true;
                     case 'temperature'
                         field = reshape(app.Solver.T_fluid, W, H);
-                        % v3.0.7：障碍格改显示 T_solid（元件结温/壁温），不再显示
-                        % 平流采样残留的 ~25°C 冷值（旧版 CPU/GPU/PSU 体内一片深黑，
-                        % 易被误读为"元件很冷"）；CLim 上限 80→100，减少高端截断
-                        % （旧版 ≥80°C 全白，85 与钳位 200 无法区分）。
+                        % 障碍格显示元件温度 T_solid
                         obsT = reshape(app.Solver.obstacle, W, H) > 0;
                         TsolT = reshape(app.Solver.T_solid, W, H);
                         field(obsT) = TsolT(obsT);
@@ -533,7 +528,7 @@ classdef PCAirflowSimulatorApp < handle
                         delete(app.hStream);
                     end
                     app.hStream = [];
-                    [uCgS, vCgS] = app.Solver.getCellVelocity();  % v3.0: 统一读取口
+                    [uCgS, vCgS] = app.Solver.getCellVelocity();
                     umat = reshape(uCgS, W, H);
                     vmat = reshape(vCgS, W, H);
                     obs2d = reshape(app.Solver.obstacle, W, H) > 0;
@@ -661,31 +656,22 @@ classdef PCAirflowSimulatorApp < handle
         % ---------- 回调函数 ----------
         function CPUPowerSliderValueChanged(app, ~)
             val = round(app.CPUPowerSlider.Value);
-            app.Solver.heatSources.cpu.power = val;
-            app.Solver.thermalNetworks.cpu.power = val;
-            app.Solver.thermalNetworks.cpu.actual_power = val;
-            app.Solver.thermalNetworks.cpu.throttling_ratio = 0;
+            app.Solver.setComponentPower('cpu', val);
             app.CPUPowerLbl.Text = sprintf('%dW', val);
         end
-        
+
         function GPUPowerSliderValueChanged(app, ~)
             val = round(app.GPUPowerSlider.Value);
-            app.Solver.heatSources.gpu.power = val;
-            app.Solver.thermalNetworks.gpu.power = val;
-            app.Solver.thermalNetworks.gpu.actual_power = val;
-            app.Solver.thermalNetworks.gpu.throttling_ratio = 0;
+            app.Solver.setComponentPower('gpu', val);
             app.GPUPowerLbl.Text = sprintf('%dW', val);
         end
-        
+
         function PSUPowerSliderValueChanged(app, ~)
             val = round(app.PSUPowerSlider.Value);
-            app.Solver.heatSources.psu.power = val;
-            app.Solver.thermalNetworks.psu.power = val*(1-0.90);
-            app.Solver.thermalNetworks.psu.actual_power = app.Solver.thermalNetworks.psu.power;
-            app.Solver.thermalNetworks.psu.throttling_ratio = 0;
+            app.Solver.setComponentPower('psu', val);
             app.PSUPowerLbl.Text = sprintf('%dW', val);
         end
-        
+
         function FanSpeedSliderValueChanged(app, ~)
             val = round(app.FanSpeedSlider.Value);
             app.Solver.fanSpeedRatio = val;
@@ -795,35 +781,12 @@ classdef PCAirflowSimulatorApp < handle
                     stop(app.SimTimer);
                 end
                 app.IsRunning = false;
-                % v3.3.1（审计 P3）：图窗高负载死亡后残余回调路径，
-                % 与 toggleRun 的 isvalid 防护对齐
                 if isvalid(app.RunButton)
                     app.RunButton.Text = '▶ 开始仿真';
                     app.RunButton.BackgroundColor = [0 0.4 0.6];
                 end
             end
-            app.Solver.initFields();
-            app.Solver.initObstacles();
-            app.Solver.initOpenBoundaries();  % 重建开口边界（风扇墙面格子）
-            app.Solver.iteration = 0;
-            % v3.3.1（审计 P2）：风扇 P-Q 折减系数同步复位——旧 lastFlowFactor
-            % （运行中已衰减）叠加冷启动零流场，代数轨 T_rear=Q/(CFM·ρCp)
-            % 在 CFM 估计暖机期发散，后排气曲线出现 ~119°C 启动尖峰
-            for k = 1:numel(app.Solver.fans)
-                app.Solver.fans{k}.lastFlowFactor = 1;
-            end
-            app.Solver.thermalNetworks.cpu.T_junction = 25;
-            app.Solver.thermalNetworks.cpu.T_theory_f = 25;  % v3.0.7 节流滤波态同步复位
-            app.Solver.thermalNetworks.cpu.throttling_ratio = 0;
-            app.Solver.thermalNetworks.cpu.actual_power = app.Solver.thermalNetworks.cpu.power;
-            app.Solver.thermalNetworks.gpu.T_junction = 25;
-            app.Solver.thermalNetworks.gpu.T_theory_f = 25;
-            app.Solver.thermalNetworks.gpu.throttling_ratio = 0;
-            app.Solver.thermalNetworks.gpu.actual_power = app.Solver.thermalNetworks.gpu.power;
-            app.Solver.thermalNetworks.psu.T_junction = 25;
-            app.Solver.thermalNetworks.psu.T_theory_f = 25;
-            app.Solver.thermalNetworks.psu.throttling_ratio = 0;
-            app.Solver.thermalNetworks.psu.actual_power = app.Solver.thermalNetworks.psu.power;
+            app.Solver.reset();   % 场、几何、风扇状态、热网络全部回到初始态
             % 清空温度曲线历史
             app.timeHistory = [];
             app.cpuTempHistory = [];
@@ -832,10 +795,6 @@ classdef PCAirflowSimulatorApp < handle
             for k = 1:3
                 set(app.hSideLine(k), 'XData', nan, 'YData', nan);
             end
-            % 清空 CFD 诊断与温度场缓存（避免 reset 后右侧面板显示上一轮残值）
-            app.Solver.lastDiag  = [];
-            app.Solver.lastTemps = [];
-            app.Solver.deadZoneRatio = 0;
             app.updateVisualizations();
             app.updateUI();
         end

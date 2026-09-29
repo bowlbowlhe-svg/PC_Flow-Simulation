@@ -1,16 +1,12 @@
-function test_turbulence(nSteps)
-%TEST_TURBULENCE v2.10 k-ω 两方程湍流模型专项测试
-%   四项判据：
-%   1) 正性/有界：k、ω 全程无 NaN/负值；k ≥ nuTFloor，ω 在 [1e-6, 1e8] 保险区间内
-%   2) 湍流强度量级：射流/剪切区 ν_t/ν 达 O(10^2)（LVEL 被 30× cap 锁死，
-%      这是两方程模型的核心升级证据）；同时要求中位数不超 2000× 保险帽
-%   3) 与 LVEL 对照：同场景同步数，报告 Tint_cfd、Tj、ν_t 中位数差异；
-%      v3.0 起判据 = k-ω 剪切区 ν_t（p95）超过 LVEL 的 30× 混合长帽
-%     （干净 MAC 场下体域中位数回近分子级是真实响应，非模型失效）
-%   4) 回退一致性：turbulenceModel='lvel' 时 ν_eff 中位数 = 30×ν（v2.9 口径）
+function pass = test_turbulence(nSteps)
+%TEST_TURBULENCE k-ω 湍流模型测试（默认场景）。
+%   1) 正性/有界：k、ω 无 NaN/负值，k ≥ nuTFloor，ω ∈ [1e-6, 1e8]
+%   2) 量级：剪切区 ν_t/ν 的 p95 ≥ 100，全场中位数不超 2000× 保险帽
+%   3) 与 LVEL 对照：k-ω 剪切区 ν_t（p95）超过 LVEL 的 30× 上限
+%   4) 回退一致性：turbulenceModel='lvel' 时 ν_eff 中位数 = 30×ν
 %
-%   用法： test_turbulence        % 默认 400 步
-%         test_turbulence(200)
+%   用法： pass = test_turbulence        % 默认 400 步
+%          pass = test_turbulence(200)
     if nargin < 1, nSteps = 400; end
     fprintf('=== k-ω 湍流模型测试（默认场景 125/250/450W，%d 步）===\n', nSteps);
 
@@ -62,11 +58,6 @@ function test_turbulence(nSteps)
         s.thermalNetworks.cpu.T_junction, s.thermalNetworks.gpu.T_junction, s.thermalNetworks.psu.T_junction, ...
         sL.thermalNetworks.cpu.T_junction, sL.thermalNetworks.gpu.T_junction, sL.thermalNetworks.psu.T_junction);
     fprintf('    ν_eff 中位数/ν：k-ω=%.0f vs LVEL=%.0f\n', med + 1, medL);
-    % v3.0 判据重建：交错网格消除并置错配的网格级应变噪声后，k-ω 生产
-    % 集中于物理剪切区（射流核/近壁），体域中位数回到近分子级是干净场
-    % 的真实响应——v2.10 的中位数 ~250× 实为错配噪声喂给生产项的虚高。
-    % 两方程模型的核心升级证据改为：剪切区 ν_t（p95）超过 LVEL 的 30× 混合
-    % 长帽——LVEL 对全场一刀切 cap，k-ω 能在该 cap 之上局部产生湍流。
     if p95 > medL
         fprintf('    k-ω 剪切区 ν_t（p95=%.0f）超过 LVEL 混合长帽（%.0f×）：PASS\n', p95, medL);
     else
@@ -74,17 +65,18 @@ function test_turbulence(nSteps)
         nFail = nFail + 1;
     end
 
-    % 判据 4：LVEL 回退路径 = v2.9 口径（ν_eff 中位数恒 30×ν）
+    % 判据 4：LVEL 回退路径 ν_eff 中位数恒为 30×ν
     if abs(medL - 30) < 0.5
-        fprintf('[4] LVEL 回退一致性：ν_eff 中位数 = %.1f×ν（v2.9 口径 30×）：PASS\n', medL);
+        fprintf('[4] LVEL 回退一致性：ν_eff 中位数 = %.1f×ν：PASS\n', medL);
     else
         fprintf('[4] LVEL 回退一致性：ν_eff 中位数 = %.1f×ν（应 30×）：FAIL\n', medL);
         nFail = nFail + 1;
     end
 
-    if nFail == 0
-        fprintf('\n=== 湍流模型测试全部通过（%d 步）===\n', nSteps);
+    pass = nFail == 0;
+    if pass
+        fprintf('=== 湍流模型测试全部通过（%d 步）===\n', nSteps);
     else
-        fprintf('\n=== 湍流模型测试 %d 项失败 ===\n', nFail);
+        fprintf('=== 湍流模型测试 %d 项失败 ===\n', nFail);
     end
 end

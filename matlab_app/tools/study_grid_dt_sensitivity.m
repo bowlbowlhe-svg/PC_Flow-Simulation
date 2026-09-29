@@ -1,5 +1,5 @@
 function results = study_grid_dt_sensitivity(steps)
-%STUDY_GRID_DT_SENSITIVITY 网格/时间步敏感性研究（v2.6）
+%STUDY_GRID_DT_SENSITIVITY 网格/时间步敏感性研究
 %   量化数值离散对结果的影响：网格 140²/280²/560² × DT 0.005/0.0025。
 %   DT 减半时步数加倍，保证到达同一物理时间。
 %   默认场景 125/250/450W，判定口径：
@@ -76,7 +76,7 @@ function results = study_grid_dt_sensitivity(steps)
     % 结果写文件备查
     outFile = fullfile(fileparts(mfilename('fullpath')), 'study_grid_dt_results.txt');
     fid = fopen(outFile, 'w');
-    fprintf(fid, '网格/时间步敏感性研究（v3.2.0 口径：MAC 架构 + 开口面格栅采样 + 进气格栅 mean(|v|) + P-Q 开口面净流量 + 多孔介质穿流 + GPU 薄卡几何 + 风扇定律 Δp∝n²，%s）\n', datestr(now));
+    fprintf(fid, '网格/时间步敏感性研究（v%s，%s）\n', pcflow_version(), datestr(now));
     fprintf(fid, 'scale dt steps Tcpu Tgpu Tpsu Tint_alg Tint_cfd clos%% dead%% nuMed/nu elapsed\n');
     for k = 1:n
         r = results(k);

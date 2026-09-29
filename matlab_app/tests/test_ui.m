@@ -1,9 +1,8 @@
-function test_ui()
-%TEST_UI  UI 烟雾测试：构造 App，触发场景/视图/timer，捕获截图
-%   产出：snapshots/ui_*.png + 控制台报告
-%   任何回调抛错都会被捕获并打印（不让 batch 静默成功）
+function pass = test_ui()
+%TEST_UI 界面烟雾测试（仅 MATLAB）：构造 App，触发场景/视图/推进/重置并截图。
+%   产出 snapshots/ui_*.png；任何回调异常都会被捕获并计为失败。
 
-    outDir = fullfile(fileparts(mfilename('fullpath')), 'snapshots');
+    outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
     if ~exist(outDir, 'dir')
         mkdir(outDir);
     end
@@ -35,7 +34,7 @@ function test_ui()
         fprintf('  ok. UIFigure valid=%d\n', isvalid(app.UIFigure));
     catch ME
         logErr('construct', ME);
-        printReport(errors);
+        pass = printReport(errors);
         return;
     end
     drawnow;
@@ -141,12 +140,13 @@ function test_ui()
         logErr('delete app', ME);
     end
 
-    printReport(errors);
+    pass = printReport(errors);
 end
 
-function printReport(errors)
+function pass = printReport(errors)
     fprintf('\n=== UI test report ===\n');
-    if isempty(errors)
+    pass = isempty(errors);
+    if pass
         fprintf('PASSED: 0 errors\n');
     else
         fprintf('FAILED: %d errors\n', numel(errors));

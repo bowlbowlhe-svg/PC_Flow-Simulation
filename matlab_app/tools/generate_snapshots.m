@@ -1,5 +1,5 @@
 function generate_snapshots(steadyStateSteps)
-%GENERATE_SNAPSHOTS Headless 仿真三场景生成 snapshot
+%GENERATE_SNAPSHOTS 无界面跑三场景并输出快照（仅 MATLAB：用到 exportgraphics/streamslice）
 %   每场景推进 steadyStateSteps 步至稳态，输出 4 张场景图 + 文本摘要：
 %     <scen>_velocity.png  <scen>_temperature.png
 %     <scen>_vorticity.png <scen>_solid.png
@@ -18,7 +18,7 @@ function generate_snapshots(steadyStateSteps)
         struct('name','heavy',  'cpu',180,'gpu',320,'psu',850)...
     };
 
-    outDir = fullfile(fileparts(mfilename('fullpath')), 'snapshots');
+    outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
     if ~exist(outDir, 'dir'), mkdir(outDir); end
 
     fprintf('=== Snapshot generation (steadyState=%d steps) ===\n', steadyStateSteps);
@@ -43,7 +43,7 @@ end
 function renderSnapshot(solver, result, s, outDir)
     W = solver.GRID.W; H = solver.GRID.H;
     velScale = solver.VEL_SCALE;
-    [uCg, vCg] = solver.getCellVelocity();  % v3.0: 统一读取口
+    [uCg, vCg] = solver.getCellVelocity();
 
     % 字段布局：reshape(linear, W, H) 给出 M(y, x) — y 在第 1 维（行），x 在第 2 维（列）
     % 因 obstacle 用 (x-1)*W + y 线性索引存储。imagesc 默认 row→Y / col→X 已对齐。
@@ -70,8 +70,7 @@ function renderSnapshot(solver, result, s, outDir)
     umat(nanMask) = NaN; vmat(nanMask) = NaN;
 
     velMagMs(nanMask) = NaN;
-    % v3.0.7：温度场障碍格改显示 T_solid（元件结温/壁温，与 App 同口径），
-    % 不再透明成假冷块；外缓冲区仍透明
+    % 温度场障碍格显示元件温度 T_solid；机箱外区域透明
     Tfluid(obs2d) = Tsolid(obs2d);
     Tfluid(outside2d) = NaN;
     Tsolid(outside2d) = NaN;      % 散热器格不在 outside，因此只挡外缓冲即可
@@ -151,11 +150,12 @@ function writeSummary(solver, result, s, outDir)
     temps  = result.temps;
     scores = solver.calculateScores();
 
-    [uCg2, vCg2] = solver.getCellVelocity();  % v3.0: 统一读取口
+    [uCg2, vCg2] = solver.getCellVelocity();
     vel    = sqrt(uCg2.^2 + vCg2.^2);
     maxV   = max(vel);
     fname = sprintf('%s/%s_summary.txt', outDir, s.name);
     fid   = fopen(fname, 'w');
+    fprintf(fid, 'version=%s\n', pcflow_version());
     fprintf(fid, 'scenario=%s\n', s.name);
     fprintf(fid, 'CPU_power=%dW GPU_power=%dW PSU_power=%dW\n', s.cpu, s.gpu, s.psu);
     fprintf(fid, 'Tj_cpu=%.1f Tj_gpu=%.1f Tj_psu=%.1f (deg C)\n',...

@@ -1,5 +1,5 @@
 function calibrate_anchor(steps)
-%CALIBRATE_ANCHOR 实测锚点标定（v2.6）
+%CALIBRATE_ANCHOR 实测锚点标定：二分 flowEfficiency 使默认场景 GPU 结温命中锚点
 %   对默认场景（125/250/450W）做 flowEfficiency 二分搜索，使 GPU Tj 命中
 %   文献锚点 85°C（README 引用 RTX 4080 250W 级箱内实测 Tj ≈ 75–85°C，取上限，
 %   因仿真散热面积取保守端）。
