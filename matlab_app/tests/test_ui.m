@@ -51,6 +51,8 @@ function pass = test_ui()
     errs = checkState(app, errs, 'frames', it0 + 30);
     errs = act(errs, 'tab fans', @() ui_tab(app.TabGroup, app.TabFans));
     errs = expect(errs, size(app.FanTable.Data, 1) == numel(app.Solver.allFans()), 'fan table', '风扇表行数应等于风扇数');
+    errs = expect(errs, size(app.FanTable.Data, 2) == 7 && ~isempty(app.NoiseDetailLabel.Text), 'fan table', ...
+        '风扇表应有 7 列（含噪音占比）并显示最响风扇的噪音分项');
     shot(app, '02_running', isOctave, outDir);
 
     %% 4. 风扇布局编辑

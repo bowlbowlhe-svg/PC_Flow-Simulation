@@ -1,7 +1,7 @@
 function allPass = run_all_tests(level)
 %RUN_ALL_TESTS 统一测试入口。
 %   run_all_tests('quick')  快速回归（约 1 分钟）：平流方向、reset 一致性、扩散算子解析解、
-%                           布局配置工具链（安装位、预设、JSON 往返）
+%                           布局配置工具链（安装位、预设、JSON 往返）、噪音模型
 %   run_all_tests('full')   完整回归（默认）：quick + 方腔自然对流 + 风扇风道工作点
 %                           + 预览档跑到稳态 + 守恒（1200 步）+ 湍流
 %   run_all_tests('ui')     界面测试（MATLAB：真实界面 + 截图；Octave：桩对象）
@@ -69,5 +69,6 @@ function tests = quickTests()
         {'平流方向性',     @() test_advection()}, ...
         {'reset 一致性',   @() test_reset(20, 0.5)}, ...
         {'扩散算子解析解', @() test_diffusion()}, ...
-        {'布局配置工具链', @() test_layout()}};
+        {'布局配置工具链', @() test_layout()}, ...
+        {'噪音模型',       @() test_noise()}};
 end

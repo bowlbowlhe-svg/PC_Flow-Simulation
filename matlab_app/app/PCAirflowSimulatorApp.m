@@ -64,6 +64,7 @@ classdef PCAirflowSimulatorApp < handle
         GamingBtn          matlab.ui.control.Button
         HeavyBtn           matlab.ui.control.Button
         FanTable           matlab.ui.control.Table
+        NoiseDetailLabel   matlab.ui.control.Label
 
         % ----- 风扇布局页 -----
         SlotTable          matlab.ui.control.Table
@@ -303,12 +304,17 @@ classdef PCAirflowSimulatorApp < handle
             app.FanSpeedLbl = uilabel(pFan, 'Position', [305 15 50 18], 'Text', '40%', 'FontColor', fg, 'FontSize', 11);
 
             pList = app.sectionPanel(tab, [5 5 388 430], '各风扇工作状态');
-            app.FanTable = uitable(pList, 'Position', [8 40 372 355], ...
-                'ColumnName', {'风扇', '转速', '实测CFM', '自由CFM', '静压Pa', '噪音dB'}, ...
-                'ColumnWidth', {108, 48, 56, 56, 52, 50}, 'RowName', {}, 'FontSize', 10, ...
-                'Data', cell(0, 6));
-            uilabel(pList, 'Position', [8 5 372 30], 'FontColor', [0.6 0.6 0.7], 'FontSize', 9, ...
-                'Text', sprintf('实测 = 穿过风扇的流量；自由 = 当前转速下的自由风量（无阻力）。\n静压 = 风扇工作点压升；噪音为单扇声压级，总噪音见"状态"页。'));
+            app.FanTable = uitable(pList, 'Position', [8 95 372 300], ...
+                'ColumnName', {'风扇', '转速', '实测CFM', '自由CFM', '静压Pa', '噪音dB', '占比%'}, ...
+                'ColumnWidth', {96, 44, 50, 50, 44, 44, 40}, 'RowName', {}, 'FontSize', 10, ...
+                'Data', cell(0, 7));
+            app.NoiseDetailLabel = uilabel(pList, 'Position', [8 50 372 40], 'Text', '', ...
+                'FontColor', [1 0.8 0], 'FontSize', 10, 'VerticalAlignment', 'top');
+            uilabel(pList, 'Position', [8 5 372 42], 'FontColor', [0.6 0.6 0.7], 'FontSize', 9, ...
+                'VerticalAlignment', 'top', 'Text', sprintf([ ...
+                '实测 = 穿过风扇的流量；自由 = 当前转速下的自由风量（无阻力）；静压 = 工作点压升。\n' ...
+                '噪音 = 听音位置（机箱前侧 1 m）单扇声压级 = 转速 + 工作点（背压过高/近失速）\n' ...
+                '+ 格栅/滤网 + 位置修正；占比 = 声能占总噪音的百分比。']));
         end
 
         function createLayoutTab(app, tab)
@@ -825,6 +831,7 @@ classdef PCAirflowSimulatorApp < handle
                 switch r.level
                     case 'good',    prefix = '[OK] ';
                     case 'warning', prefix = '[!] ';
+                    case 'info',    prefix = '[i] ';
                     otherwise,      prefix = '[-] ';
                 end
                 recLines{k} = sprintf('%s%s: %s', prefix, r.title, r.desc);
@@ -848,13 +855,23 @@ classdef PCAirflowSimulatorApp < handle
 
         function refreshFanTable(app)
             list = app.Solver.fanStatusList();
-            D = cell(numel(list), 6);
+            D = cell(numel(list), 7);
             for k = 1:numel(list)
                 f = list(k);
                 D(k, :) = {f.name, sprintf('%.0f', f.rpm), sprintf('%.1f', f.cfm), ...
-                    sprintf('%.1f', f.freeCfm), sprintf('%.1f', f.dp), sprintf('%.1f', f.noiseDb)};
+                    sprintf('%.1f', f.freeCfm), sprintf('%.1f', f.dp), sprintf('%.1f', f.noiseDb), ...
+                    sprintf('%.0f', f.sharePct)};
             end
             app.FanTable.Data = D;
+            if isempty(list)
+                app.NoiseDetailLabel.Text = '';
+                return;
+            end
+            [db, ~] = app.Solver.totalNoise();
+            [~, i] = max([list.sharePct]);
+            p = list(i).noise;
+            app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；最响：%s %.1f dB（占 %.0f%%）\n= 转速 %.1f %+.1f 工作点 %+.1f 格栅 %+.1f 位置', ...
+                db, list(i).name, p.total, list(i).sharePct, p.base, p.op, p.grille, p.pos);
         end
 
         % ================= 功率与全局风扇 =================

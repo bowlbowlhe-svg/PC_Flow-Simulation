@@ -102,6 +102,7 @@ classdef CFDSolverBase < handle
         autoFanEnabled = true
         fanSpeedRatio = 40    % 全局手动转速 [%]
         fanDiskCells = 6      % 执行盘厚 [格]（由 layout.fanDiskMm 换算）
+        acoustics             % 噪音模型参数（layout.acoustics 覆盖 acoustics_default）
 
         % ===== 模型开关与参数 =====
         spongeDamping = 0.8   % 远场海绵环速度保留比例（每步）
@@ -213,6 +214,10 @@ classdef CFDSolverBase < handle
 
         function buildModel(obj)
             % 构建几何、场、风扇与开口（构造与 reset 共用）
+            obj.acoustics = acoustics_default();
+            if isfield(obj.layout, 'acoustics')
+                obj.acoustics = struct_merge(obj.acoustics, obj.layout.acoustics);
+            end
             obj.initGeometry();
             obj.initFields();
             obj.initObstacles();
@@ -631,6 +636,7 @@ classdef CFDSolverBase < handle
                     if isfield(cf, 'manualPct'), cfg.manualPct = cf.manualPct; end
                     fan = Fan(cfg);
                     obj.placeWallFan(fan, cf.alongMm, t);
+                    fan.positionDb = obj.acoustics.positionDb.(cf.mount);
                     obj.fans{end+1} = fan;
                 end
             end
@@ -644,6 +650,7 @@ classdef CFDSolverBase < handle
                 fan.cols = [fin.x + fin.w, fin.x + fin.w + t - 1];   % 鳍片前侧
                 fan.normal = [-1 0];                                 % 从前向后吹
                 fan.thickM = t * obj.GRID.cell_size_mm / 1000;
+                fan.positionDb = obj.acoustics.positionDb.cpu;
                 obj.builtInFans{end+1} = fan;
             end
             if obj.hasGpu && isfield(L.gpu, 'fans')
@@ -660,6 +667,7 @@ classdef CFDSolverBase < handle
                     fan.rows = [hs.y + hs.h, hs.y + hs.h + t - 1];      % 散热片下方
                     fan.normal = [0 -1];                                 % 向上吹入鳍片
                     fan.thickM = t * obj.GRID.cell_size_mm / 1000;
+                    fan.positionDb = obj.acoustics.positionDb.gpu;
                     obj.builtInFans{end+1} = fan;
                 end
             end
@@ -674,6 +682,7 @@ classdef CFDSolverBase < handle
                 fan.rows = [in.y + in.h - t, in.y + in.h - 1];           % 电源内部底部
                 fan.normal = [0 -1];                                     % 自底部向上吸入
                 fan.thickM = t * obj.GRID.cell_size_mm / 1000;
+                fan.positionDb = obj.acoustics.positionDb.psu;
                 obj.builtInFans{end+1} = fan;
             end
         end
@@ -728,6 +737,7 @@ classdef CFDSolverBase < handle
                     otherwise,             span = f.cols;
                 end
                 if strcmp(f.type, 'intake'), z = L.grille.intakeZeta; else, z = L.grille.exhaustZeta; end
+                f.grilleZeta = z;
                 ops(end+1) = struct('mount', f.mount, 'idx', wallCells(f.mount, span(1), span(2)), ...
                     'kind', 'fan', 'fan', k, 'zeta', z); %#ok<AGROW>
             end
@@ -1506,7 +1516,10 @@ classdef CFDSolverBase < handle
         function list = fanStatusList(obj)
             % 全部风扇的实时状态（界面风扇表用）：名称、转速、实测/自由风量、静压、噪音
             allF = obj.allFans();
-            list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, 'noiseDb', {});
+            list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, ...
+                          'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {});
+            [~, perFan, parts] = obj.totalNoise();
+            share = 100 * 10.^(perFan/10) / max(sum(10.^(perFan/10)), eps);
             nGpu = 0;
             mountCN = struct('front', '前', 'rear', '后', 'top', '顶', 'bottom', '底', 'internal', '');
             for k = 1:numel(allF)
@@ -1521,16 +1534,19 @@ classdef CFDSolverBase < handle
                 end
                 list(end+1) = struct('name', name, 'role', f.role, 'rpm', f.getRPM(obj), ...
                     'cfm', abs(f.lastQ) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
-                    'dp', f.lastDp, 'noiseDb', f.getNoise(obj)); %#ok<AGROW>
+                    'dp', f.lastDp, 'qRatio', f.noiseQRatio, 'noiseDb', perFan(k), ...
+                    'noise', parts(k), 'sharePct', share(k)); %#ok<AGROW>
             end
         end
 
-        function [dbTotal, perFan] = totalNoise(obj)
-            % 多风扇能量叠加：L = 10·log10(Σ 10^(Li/10))
+        function [dbTotal, perFan, parts] = totalNoise(obj)
+            % 听音位置总声压级：各风扇（含工作点/格栅/位置修正）能量叠加
+            %   L = 10·log10(Σ 10^(Li/10))。parts 为各扇分项（fan_noise_terms）。
             allF = obj.allFans();
             perFan = zeros(1, numel(allF));
+            parts = struct('base', {}, 'op', {}, 'grille', {}, 'pos', {}, 'total', {});
             for k = 1:numel(allF)
-                perFan(k) = allF{k}.getNoise(obj);
+                [perFan(k), parts(k)] = allF{k}.getNoise(obj); %#ok<AGROW>
             end
             dbTotal = 10*log10(max(sum(10.^(perFan/10)), 1));
         end
@@ -1562,6 +1578,17 @@ classdef CFDSolverBase < handle
             end
             if scores.balance < 70
                 recs{end+1} = struct('title','CPU/GPU温度不均衡','desc','温差较大，建议优化风道使热量均匀排出','level','warning');
+            end
+            % 主要噪音来源（能量占比超过 40% 的风扇）
+            fl = obj.fanStatusList();
+            if ~isempty(fl)
+                [mx, i] = max([fl.sharePct]);
+                if mx > 40
+                    p = fl(i).noise;
+                    recs{end+1} = struct('title','主要噪音来源','desc',sprintf( ...
+                        '%s 占总噪音能量 %.0f%%（%.1f dB：转速 %.1f、工作点 %+.1f、格栅 %+.1f、位置 %+.1f）', ...
+                        fl(i).name, mx, p.total, p.base, p.op, p.grille, p.pos),'level','info');
+                end
             end
             if isempty(recs)
                 recs{end+1} = struct('title','散热配置均衡','desc','当前风道设计合理，无明显瓶颈','level','good');

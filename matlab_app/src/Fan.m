@@ -42,6 +42,10 @@ classdef Fan < handle
         lastDp = 0         % 当前静压升 [Pa]
         lastQRatio = 0
         lastFlowFactor = 1 % 实测/自由流量比（低通），代数轨交叉校验用
+        noiseQRatio = 1    % 实测/自由流量比（低通 τ = 0.5 s），噪音工作点修正用
+        % ---- 噪音修正（由求解器按布局 acoustics 设置）----
+        grilleZeta = 0     % 机箱风扇开口的格栅/滤网阻力 ζ（内置风扇为 0）
+        positionDb = 0     % 听音位置修正 [dB]（按安装壁或内置位置）
     end
 
     methods
@@ -91,10 +95,17 @@ classdef Fan < handle
             cfm = obj.cfm_max * (obj.getRPM(solver) / obj.rpm_max);
         end
 
-        function noise = getNoise(obj, solver)
-            % 怠速/满速两端点间按转速比三次方插值 [dB(A)]
+        function noise = baseNoise(obj, solver)
+            % 转速主项：datasheet 怠速/满速两端点间按转速比三次方插值 [dB(A)]
             f = (obj.getRPM(solver) - obj.rpm_min) / max(obj.rpm_max - obj.rpm_min, eps);
             noise = obj.noise_idle + (obj.noise_max - obj.noise_idle) * f^3;
+        end
+
+        function [noise, parts] = getNoise(obj, solver)
+            % 听音位置的单扇声压级 [dB(A)] = 转速主项 + 工作点 + 格栅 + 位置（见 fan_noise_terms）
+            parts = fan_noise_terms(obj.baseNoise(solver), obj.noiseQRatio, obj.grilleZeta, ...
+                                    obj.positionDb, solver.acoustics);
+            noise = parts.total;
         end
 
         function dp = updateOperatingPoint(obj, solver)
@@ -121,6 +132,8 @@ classdef Fan < handle
             obj.lastQRatio = qRatio;
             aFF = min(1, solver.DT / 0.15);
             obj.lastFlowFactor = obj.lastFlowFactor + aFF * (min(1, max(0.2, qRatio)) - obj.lastFlowFactor);
+            aN = min(1, solver.DT / 0.5);
+            obj.noiseQRatio = obj.noiseQRatio + aN * (qRatio - obj.noiseQRatio);
         end
 
         function b = getBounds(obj)

@@ -37,6 +37,9 @@ function L = layout_default(name)
     L.fanDiskMm = 12;
     L.grille = struct('intakeZeta', 2.0, 'exhaustZeta', 0.8);
 
+    % ---- 噪音模型经验参数（见 acoustics_default、fan_noise_terms）----
+    L.acoustics = acoustics_default();
+
     % ---- CPU：底座（固体）+ 塔式鳍片（多孔介质，穿流方向 x）+ 塔扇 ----
     % 热阻：带顶盖的小面积芯片结-壳热阻较大（公开评测里 120mm 单塔风冷
     % 满载总热阻约 0.25–0.4 K/W）。塔扇装在鳍片前侧，从前向后吹。
