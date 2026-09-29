@@ -1,0 +1,6 @@
+scenario=gaming steps=400 elapsed=358.8s
+Tj_cpu=63.1313 Tj_gpu=89.1010 Tj_psu=76.7114
+throttle cpu=0.0000 gpu=0.0000 psu=0.2511
+Tint_alg=40.6768 Tint_cfd=27.6091 top=60.9937 rear=47.3739 totalCFM=65.1800
+Re=55777.1 deadZone=0.0001 noiseDb=40 score=59
+flux top=52.332 rear=36.353 front=-90.734 CFM

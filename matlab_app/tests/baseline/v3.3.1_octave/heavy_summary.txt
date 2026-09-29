@@ -1,0 +1,6 @@
+scenario=heavy steps=400 elapsed=296.4s
+Tj_cpu=83.7785 Tj_gpu=95.6323 Tj_psu=98.1942
+throttle cpu=0.0458 gpu=0.3500 psu=0.3500
+Tint_alg=45.2297 Tint_cfd=28.1316 top=72.2038 rear=53.2529 totalCFM=65.2168
+Re=55567.6 deadZone=0.0000 noiseDb=40 score=33
+flux top=53.045 rear=36.864 front=-91.868 CFM
