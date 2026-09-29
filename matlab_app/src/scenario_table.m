@@ -18,6 +18,7 @@ function [rowNames, data] = scenario_table(snaps)
         '机箱风扇数',    @(s) sprintf('%d', s.summary.nCaseFans); ...
         '布局',          @(s) shortLabel(s.label); ...
         '挡板前部开孔',  @(s) yesNo(hasGap(s.layout)); ...
+        '显卡厚度',      @(s) slotsText(s.layout); ...
         '功率 C/G/P W',  @(s) sprintf('%g/%g/%g', s.powers(1), s.powers(2), s.powers(3)); ...
         '网格 · 步数',   @(s) sprintf('%s · %d', gridName(s.gridScale), s.summary.steps); ...
         '稳态',          @(s) yesNo(s.steady)};
@@ -52,6 +53,11 @@ end
 
 function g = gridName(scale)
     if scale >= 1, g = '精确'; else, g = '预览'; end
+end
+
+function t = slotsText(L)
+    sl = layout_gpu_slots(L);
+    if isnan(sl), t = '—'; else, t = sprintf('%g 槽', sl); end
 end
 
 function tf = hasGap(L)

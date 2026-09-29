@@ -31,6 +31,7 @@ function pass = test_ui()
     try
         app = PCAirflowSimulatorApp();
         app.SteadyOpts = struct('minSteps', 40, 'maxSteps', 80, 'chunk', 20, 'window', 40);
+        app.QuietAlerts = true;      % 失败路径测试会故意载入错误配置：只记录错误，不弹对话框
     catch ME
         errs = logErr(errs, 'construct', ME);
         pass = printReport(errs);
@@ -156,8 +157,11 @@ function pass = test_ui()
     errs = act(errs, 'load preset', @() ui_press(app.LoadPresetBtn));
     errs = expect(errs, sum(~strcmp({app.SlotStates.type}, 'none')) == 4, 'preset', '前进顶出应有 4 个安装位');
     errs = act(errs, 'shroud gap off', @() ui_check(app.ShroudGapCheck, false));
+    errs = act(errs, 'gpu 3 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{2}));
     errs = act(errs, 'apply preset', @() ui_press(app.ApplyLayoutBtn));
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply preset', '应用后应有 4 台机箱风扇');
+    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 3 && app.Solver.layout.gpu.heatsink.h == 37, ...
+        'gpu slots', '显卡应改为 3 槽（散热片 37 mm）');
     errs = expect(errs, isempty(app.Solver.layout.shroud.gaps), 'apply preset', '挡板开孔应已关闭');
     errs = expect(errs, strcmp(app.AppliedLabel, ft.label), 'apply preset', '布局名应为预设名');
     it0 = app.Solver.iteration;
@@ -185,7 +189,9 @@ function pass = test_ui()
     errs = act(errs, 'choose balanced', @() ui_choose(app.PresetDrop, P(1).label));
     errs = act(errs, 'load balanced', @() ui_press(app.LoadPresetBtn));
     errs = act(errs, 'shroud gap on', @() ui_check(app.ShroudGapCheck, true));
+    errs = act(errs, 'gpu 4 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{end}));
     errs = act(errs, 'apply+steady', @() ui_press(app.ApplySteadyBtn));
+    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 4, 'gpu slots', '显卡应恢复 4 槽');
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply+steady', '默认布局应有 4 台机箱风扇');
     errs = expect(errs, ~isempty(app.Solver.layout.shroud.gaps), 'apply+steady', '挡板开孔应已恢复');
     errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
@@ -208,6 +214,7 @@ function pass = test_ui()
     errs = expect(errs, numel(app.Solver.fans) == 4 && ~app.LayoutDirty, 'load json', '载入后应回到 4 台风扇');
     errs = expect(errs, strcmp(app.SlotStates(5).type, 'none'), 'load json', 'T2 应为空');
     % 失败路径：字段取值错误的 JSON → 报错、布局不变
+    fprintf('    （下面两条报错是故意触发的失败路径测试，属预期）\n');
     nF = numel(app.Solver.fans);
     Lbad = layout_default(); Lbad.caseFans(1).type = 'Intake';
     writeJson(f, Lbad);

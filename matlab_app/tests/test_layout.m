@@ -64,6 +64,20 @@ function pass = test_layout()
     Rc = layout_fan_report(layout_slots('set', L0, st));
     errs = check(errs, any(contains_(Rc.warnings, '角部')), 'F3 与 B2 应报角部相碰');
 
+    % 4b) 显卡厚度：默认 4 槽与 layout_set_gpu_slots 一致；各槽数的散热片高度；放不下时报错
+    errs = check(errs, isequal(layout_set_gpu_slots(L0, 4), L0) && layout_gpu_slots(L0) == 4, ...
+        '默认布局应为 4 槽显卡');
+    hs = arrayfun(@(sl) getfield(getfield(getfield(layout_set_gpu_slots(L0, sl), 'gpu'), 'heatsink'), 'h'), [2.5 3 3.5 4]);
+    errs = check(errs, isequal(hs, [27 37 47 57]), sprintf('2.5/3/3.5/4 槽散热片高度应为 27/37/47/57 mm（%s）', mat2str(hs)));
+    Lt = L0; Lt.shroud.yMm = 290;
+    try
+        layout_set_gpu_slots(Lt, 4);
+        errs{end+1} = '显卡风扇与挡板间隙不足时应报错';
+    catch
+    end
+    Lold = L0; Lold.gpu = rmfield(Lold.gpu, 'slots');
+    errs = check(errs, layout_gpu_slots(Lold) == 4, '无 slots 字段的旧布局应按厚度折算槽数');
+
     % 5) JSON 字段取值检查
     Lb = L0; Lb.caseFans(1).type = 'Intake';
     layout_json('save', Lb, f);

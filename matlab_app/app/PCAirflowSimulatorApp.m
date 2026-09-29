@@ -15,6 +15,8 @@ classdef PCAirflowSimulatorApp < handle
         MODEL_ITEMS = {'P12', 'P14', 'NF_A12', 'NF_A14', 'RX120', 'RX140', 'Stock120'}
         SPEED_ITEMS = {'自动', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%'}
         SCENARIO_NAMES = {'A', 'B', 'C'}
+        GPU_SLOT_ITEMS = {'2.5 槽（51 mm）', '3 槽（61 mm）', '3.5 槽（71 mm）', '4 槽（81 mm）'}
+        GPU_SLOT_VALUES = [2.5 3 3.5 4]
     end
 
     properties (Access = public)
@@ -72,6 +74,7 @@ classdef PCAirflowSimulatorApp < handle
         PresetDrop         matlab.ui.control.DropDown
         LoadPresetBtn      matlab.ui.control.Button
         ShroudGapCheck     matlab.ui.control.CheckBox
+        GpuSlotsDrop       matlab.ui.control.DropDown
         LayoutInfoLabel    matlab.ui.control.Label
         LayoutWarnArea     matlab.ui.control.TextArea
         ApplyLayoutBtn     matlab.ui.control.Button
@@ -121,6 +124,7 @@ classdef PCAirflowSimulatorApp < handle
         StepPending    logical = false     % 防止 timer 堆积
         SteadyIter     double = -1         % 最近一次判定稳态时的累计步数（-1 = 未稳态）
         SteadyOpts = struct()              % 附加的 runToSteady 选项（测试用于限制步数）
+        QuietAlerts logical = false        % true：出错只记录 LastError 并打印，不弹对话框（测试用）
         StatusMsg      char = ''           % 最近一次跑稳态的结果（显示在温度曲线标题）
 
         % ----- 风扇布局编辑 -----
@@ -173,8 +177,16 @@ classdef PCAirflowSimulatorApp < handle
         % ================= 界面构建 =================
         function createComponents(app)
             bg = [0.05 0.05 0.08];
-            app.UIFigure = uifigure('Name', ['PC风道仿真器 v' pcflow_version()], 'Position', [100 50 1200 850], ...
-                'Color', [0.02 0.02 0.05], 'WindowStyle', 'normal');
+            % 窗口 1200×850 居中放在屏幕内；屏幕放不下时可滚动查看（控件是绝对坐标，不随窗口缩放）
+            scr = [1 1 1920 1080];
+            try
+                scr = get(groot, 'ScreenSize');
+            catch
+            end
+            figW = 1200; figH = 850;
+            figPos = [max(1, floor((scr(3) - figW)/2)), max(1, scr(4) - figH - 70), figW, figH];
+            app.UIFigure = uifigure('Name', ['PC风道仿真器 v' pcflow_version()], 'Position', figPos, ...
+                'Color', [0.02 0.02 0.05], 'WindowStyle', 'normal', 'Scrollable', 'on');
 
             % ========== 左侧可视化面板 ==========
             mainPanel = uipanel(app.UIFigure, 'Position', [10 10 750 830], ...
@@ -377,8 +389,12 @@ classdef PCAirflowSimulatorApp < handle
                 'Value', P(1).label, 'FontSize', 10);
             app.LoadPresetBtn = app.plainButton(tab, [298 338 90 22], '载入预设', @(src,event)app.loadPreset());
 
-            app.ShroudGapCheck = uicheckbox(tab, 'Position', [10 308 380 22], 'Value', true, ...
-                'Text', '电源仓挡板前部开孔（前下/底部风扇与主舱互通）', 'FontColor', fg, 'FontSize', 10, ...
+            app.ShroudGapCheck = uicheckbox(tab, 'Position', [10 308 180 22], 'Value', true, ...
+                'Text', '电源仓挡板前部开孔', 'FontColor', fg, 'FontSize', 10, ...
+                'ValueChangedFcn', @(src,event)app.layoutEdited(false));
+            uilabel(tab, 'Position', [196 308 55 22], 'Text', '显卡厚度', 'FontColor', fg, 'FontSize', 10);
+            app.GpuSlotsDrop = uidropdown(tab, 'Position', [252 308 136 22], 'Items', app.GPU_SLOT_ITEMS, ...
+                'Value', app.GPU_SLOT_ITEMS{end}, 'FontSize', 10, ...
                 'ValueChangedFcn', @(src,event)app.layoutEdited(false));
 
             app.LayoutInfoLabel = uilabel(tab, 'Position', [10 258 380 46], 'Text', '', ...
@@ -498,14 +514,24 @@ classdef PCAirflowSimulatorApp < handle
                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'PickableParts', 'none');
             end
 
-            % GPU 散热片与 PCB
+            % 显卡：整卡外形（PCB + 散热片 + 风扇）画成一个半透明整体，内部细线分出 PCB 与散热片
             if s.hasGpu
                 gh = s.GPU_HEATSINK.heatsink;
-                ghW = min(W, gh.x+gh.w-1) - gh.x;
-                plotRect(gh.x, gh.y, ghW, gh.h, [0.85 0.28 0.05], 1.5);
                 gp = s.GPU_HEATSINK.pcb;
-                plotRect(gp.x, gp.y, gp.w, gp.h, [1.0 0.38 0.00], 2.0);
-                lb(gp.x, gp.y, gp.w, gp.h, 'GPU', [1.0 0.75 0.40], 9);
+                yBot = gh.y + gh.h - 1;
+                for k = 1:numel(s.builtInFans)
+                    if strcmp(s.builtInFans{k}.role, 'gpu'), yBot = max(yBot, s.builtInFans{k}.rows(2)); end
+                end
+                x0 = min(gh.x, gp.x) - 0.5; x1 = min(W, max(gh.x + gh.w, gp.x + gp.w)) - 0.5;
+                y0 = gp.y - 0.5; y1 = yBot + 0.5;
+                patch(ax, 'XData', [x0 x1 x1 x0], 'YData', [y0 y0 y1 y1], 'FaceColor', [1.0 0.45 0.10], ...
+                    'FaceAlpha', 0.16, 'EdgeColor', [1.0 0.50 0.10], 'LineWidth', 2.2, 'PickableParts', 'none');
+                plot(ax, [gp.x-0.5, gp.x+gp.w-0.5], [gp.y+gp.h-0.5, gp.y+gp.h-0.5], '-', ...
+                    'Color', [1.0 0.60 0.25], 'LineWidth', 1.2, 'PickableParts', 'none');
+                plot(ax, [x0 x1], [gh.y+gh.h-0.5, gh.y+gh.h-0.5], ':', ...
+                    'Color', [1.0 0.60 0.25], 'LineWidth', 1.0, 'PickableParts', 'none');
+                sl = layout_gpu_slots(s.layout);
+                lb(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0, sprintf('GPU（%g 槽）', sl), [1.0 0.80 0.50], 9);
             end
 
             % PSU
@@ -1587,6 +1613,14 @@ classdef PCAirflowSimulatorApp < handle
             % 以布局 L 作为待编辑布局（安装位状态、电源仓挡板开孔）
             app.PendingBase = L;
             app.SlotStates = layout_slots('get', L);
+            sl = layout_gpu_slots(L);
+            if isnan(sl)
+                app.GpuSlotsDrop.Enable = 'off';
+            else
+                [~, i] = min(abs(app.GPU_SLOT_VALUES - sl));
+                app.GpuSlotsDrop.Value = app.GPU_SLOT_ITEMS{i};
+                app.GpuSlotsDrop.Enable = 'on';
+            end
             if isfield(L, 'shroud') && isfield(L.shroud, 'gaps')
                 if ~isempty(L.shroud.gaps), app.DefaultGaps = L.shroud.gaps; end
                 app.ShroudGapCheck.Value = ~isempty(L.shroud.gaps);
@@ -1601,6 +1635,12 @@ classdef PCAirflowSimulatorApp < handle
                     L.shroud.gaps = app.DefaultGaps;
                 else
                     L.shroud.gaps = struct('x0Mm', {}, 'x1Mm', {});
+                end
+            end
+            if isfield(L, 'gpu') && ~isempty(L.gpu)
+                sl = app.GPU_SLOT_VALUES(strcmp(app.GPU_SLOT_ITEMS, app.GpuSlotsDrop.Value));
+                if ~isempty(sl) && sl ~= layout_gpu_slots(L)
+                    L = layout_set_gpu_slots(L, sl);
                 end
             end
             p = app.Solver.powerW;
@@ -1628,7 +1668,12 @@ classdef PCAirflowSimulatorApp < handle
             % 安装位表格、主视图标记、标称风量与冲突提示
             app.SlotTable.Data = app.slotTableData();
             app.updateSlotMarkers();
-            R = layout_fan_report(app.pendingLayout());
+            try
+                R = layout_fan_report(app.pendingLayout());
+            catch ME
+                R = layout_fan_report(app.PendingBase);
+                R.warnings = [{['布局无效：' ME.message]}, R.warnings];
+            end
             if app.LayoutDirty
                 st = sprintf('待应用：%s', app.LayoutLabel);
                 app.ApplyLayoutBtn.BackgroundColor = [0.75 0.45 0.05];
@@ -1773,6 +1818,7 @@ classdef PCAirflowSimulatorApp < handle
         function reportError(app, msg, ME)
             app.LastError = sprintf('%s：%s', msg, ME.message);
             fprintf('%s\n', app.LastError);
+            if app.QuietAlerts, return; end
             try
                 uialert(app.UIFigure, ME.message, msg);
             catch

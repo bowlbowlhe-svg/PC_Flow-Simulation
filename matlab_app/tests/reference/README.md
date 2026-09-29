@@ -2,8 +2,9 @@
 
 网页版（或其它移植）对照用的参考数据，由 `tools/make_reference_dataset` 生成；
 算法说明见 [`../../../docs/ALGORITHM.md`](../../../docs/ALGORITHM.md)。每个文件记录生成环境
-（`generator.platform/version`）与仿真器版本（`generator.simulator`）。v4.0.0 随附的数据由
-v3.9.2 代码在 GNU Octave 8.4 下生成（与 v4.0.0 的计算代码相同，只差版本号）。
+（`generator.platform/version`）与仿真器版本（`generator.simulator`）。数据在 GNU Octave 8.4 下生成。
+`fixed_default.json` 由 v4.1.0 生成（4 槽显卡）；`fixed_duct`、`bench` 与显卡无关；`steady_*.json` 仍为
+v3.9.2 代码、3.5 槽显卡的结果（计算代码与 v4.0.0 相同），将在下一版重新生成。
 
 | 文件 | 内容 | 建议对照容差 |
 |---|---|---|

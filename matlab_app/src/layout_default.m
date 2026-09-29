@@ -54,16 +54,19 @@ function L = layout_default(name)
     L.cpu.fan = struct('model', 'Tower120', 'side', 'front');
 
     % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条（固体）+ 鳍片（多孔，穿流 x）+ 卡下 3 风扇 ----
-    % 显卡下沿到电源仓挡板留 30 mm 给风扇进风。鳍片阻力取偏低值：真实显卡的热风
+    % 4 槽时显卡风扇下沿到电源仓挡板留 21 mm 进风。鳍片阻力取偏低值：真实显卡的热风
     % 还会从侧板方向（Z 向）排出，2D 侧视只能走卡的两端，降低阻力以作补偿。
     % 热阻：大面积 GPU 核心 + 均热板，公开评测里三风扇卡 250–320 W 核心温度
     % 约 65–75°C（总热阻约 0.12–0.16 K/W）。风扇向上吹入鳍片。
+    % 厚度按扩展槽数：整卡 = slots × 20.32 mm = PCB（含背板）12 + 散热片 + 风扇盘 12，
+    % 默认 4 槽（约 81 mm，高端显卡常见）；改厚度用 layout_set_gpu_slots（从 PCIe 槽向下长）。
     L.gpu = struct();
+    L.gpu.slots = 4;
     L.gpu.pcb = rect(160, 212, 216, 12);
-    L.gpu.heatsink = rect(150, 224, 236, 48);
+    L.gpu.heatsink = rect(150, 224, 236, 57);
     L.gpu.porous = struct('zetaThru', 4, 'zetaCross', 10, 'thru', 'x');
     L.gpu.thermal = struct('R_junction_to_case', 0.08, 'R_tim', 0.02, 'R_base', 0.02, ...
-        'fin_thickness_mm', 0.35, 'A_fin_total_m2', 0.50);
+        'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(57));   % 鳍片面积随厚度缩放
     L.gpu.tjmax = 95;
     L.gpu.throttleTemp = 87;
     L.gpu.fans = struct('model', 'GPU80', 'xs', [190 268 346]);
