@@ -2,8 +2,10 @@ function pass = test_conservation(steadyStateSteps)
 %TEST_CONSERVATION 能量/质量守恒回归测试（默认场景 125/250/450W）。
 %   热身 N 步 → 计量窗口 1（N 步）→ 计量窗口 2（N 步）。
 %   判据 A（全域逐步计账）：|closure| ≤ 5%。
-%   判据 B（收敛趋势）：窗口 2 储能速率 ≤ 30% 注入功率，且不高于窗口 1 的 1.15 倍；
-%          窗口 2 已低于注入功率 5%（已近稳态，两窗口都接近 0 时比值只反映波动）则不比较趋势。
+%   判据 B（已达稳态）：窗口 2 储能速率 |·| ≤ 2% 注入功率，且两窗口末的结温差 ≤ 0.5°C、
+%          机箱风量相对差 ≤ 3%。v4.2 前冻结算子按中位数重装，280² 下 850 步前后有一次假的状态
+%          跳变（窗口 2 储能 +2.7%、CPU +1.7°C），旧判据放宽后把它掩盖了；现在按系数场重装，
+%          600 步内即稳定。
 %   判据 B2（机箱内区算子级平衡）：|balanceOpPct| ≤ 5%，捕获改温算子漏计账。
 %   判据 C（双轨合理性带宽）：Tint_alg − 15 ≤ Tint_cfd ≤ Tint_alg + 45 [°C]，
 %          捕获符号错误/失控类回归。
@@ -22,12 +24,14 @@ function pass = test_conservation(steadyStateSteps)
     s.resetEnergyAccounting();
     s.stepMultiple(steadyStateSteps);   % 计量窗口 1
     c1 = s.computeConservationCheck();
+    snap1 = stateSnap(s);
     s.resetEnergyAccounting();
     s.stepMultiple(steadyStateSteps);   % 计量窗口 2
     fprintf('推进完成（%.1fs）\n', toc(t0));
 
     c = s.computeConservationCheck();
     t = s.lastTemps;
+    snap2 = stateSnap(s);
 
     fprintf('\n--- 判据 A：全域逐步计账 ---\n');
     fprintf('高斯注入 Q_gaussian       = %+7.1f W\n', c.Q_gaussian);
@@ -39,10 +43,14 @@ function pass = test_conservation(steadyStateSteps)
     fprintf('账本残差 = %+7.1f W（%+.1f%%），窗口储能速率 = %+7.1f W\n', c.ledgerW, c.ledgerPct, c.storageRateW);
     fprintf('闭合残差 = %+7.1f W（%+.1f%%，应≈0）\n', c.closureW, c.closurePct);
 
-    fprintf('\n--- 判据 B：收敛趋势 ---\n');
+    fprintf('\n--- 判据 B：已达稳态 ---\n');
     fprintf('窗口1 储能速率 = %+.1f W（%+.1f%%），窗口2 = %+.1f W（%+.1f%%）\n', ...
         c1.storageRateW, 100*c1.storageRateW/max(c1.Q_injected,eps), ...
         c.storageRateW, 100*c.storageRateW/max(c.Q_injected,eps));
+    dTj = max(abs(snap2.tj - snap1.tj));
+    dQ = abs(snap2.cfm - snap1.cfm) / max(snap1.cfm, 1);
+    fprintf('两窗口末：结温 %s → %s °C（最大差 %.2f），风量 %.1f → %.1f CFM（%+.1f%%）\n', ...
+        sprintf('%.2f ', snap1.tj), sprintf('%.2f ', snap2.tj), dTj, snap1.cfm, snap2.cfm, 100*dQ);
 
     fprintf('\n--- 判据 C：双轨温度 ---\n');
     fprintf('代数热平衡内温 = %.1f°C，CFD 内部均温 = %.1f°C，偏差 %+.1f°C\n', ...
@@ -71,16 +79,23 @@ function pass = test_conservation(steadyStateSteps)
     pass = true;
     okA = abs(c.closurePct) <= 5;
     fprintf('A 全域闭合 %+.1f%%（≤5%%）：%s\n', c.closurePct, passStr(okA));
-    rate1 = c1.storageRateW; rate2 = c.storageRateW;
-    rate2Pct = 100*rate2/max(c.Q_injected,eps);
-    okB = rate2Pct <= 30 && (rate2 <= rate1*1.15 || abs(rate2Pct) <= 5);
-    fprintf('B 收敛趋势 窗口2 %+.1f%%，%.0f→%.0f W：%s\n', rate2Pct, rate1, rate2, passStr(okB));
+    rate2Pct = 100*c.storageRateW/max(c.Q_injected,eps);
+    okB = abs(rate2Pct) <= 2 && dTj <= 0.5 && dQ <= 0.03;
+    fprintf('B 已达稳态 窗口2 储能 %+.1f%%（±2%%）、结温漂移 %.2f°C（≤0.5）、风量漂移 %.1f%%（≤3%%）：%s\n', ...
+        rate2Pct, dTj, 100*dQ, passStr(okB));
     okB2 = abs(c.balanceOpPct) <= 5;
     fprintf('B2 内区算子平衡 %+.2f%%（±5%%）：%s\n', c.balanceOpPct, passStr(okB2));
     okC = t.internalDiscrepancy >= -15 && t.internalDiscrepancy <= 45;
     fprintf('C 双轨偏差 %+.1f°C（[−15, +45]）：%s\n', t.internalDiscrepancy, passStr(okC));
     pass = okA && okB && okB2 && okC;
     fprintf('=== 守恒测试 %s ===\n', passStr(pass));
+end
+
+function st = stateSnap(s)
+    nm = fieldnames(s.thermalNetworks);
+    st.tj = cellfun(@(n) s.thermalNetworks.(n).T_junction, nm)';
+    t = s.computeAirflowTemperatures();
+    st.cfm = t.totalCFM;
 end
 
 function s = passStr(ok)

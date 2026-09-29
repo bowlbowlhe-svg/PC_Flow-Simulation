@@ -1,1 +1,1 @@
-{"version":"4.1.0","steps":850,"converged":true,"tj":[67.07,65.35,53.16],"interior":33.41,"cfm":48.77}
+{"version":"4.2.0","source":"tests/reference/steady_default.json","steps":3000,"avgFrom":1000,"tj":[66.7,61.12,53.02],"tjStd":[0,0.02,0.01],"interior":32.53,"cfm":50.18,"cfmStd":0.13}

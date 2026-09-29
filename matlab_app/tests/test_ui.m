@@ -338,7 +338,7 @@ end
 function writeJson(f, L)
     % 不经 layout_json 校验直接写文件（构造错误输入）
     fid = fopen(f, 'w');
-    fwrite(fid, jsonencode(L));
+    fwrite(fid, unicode2native(jsonencode(L), 'UTF-8'));
     fclose(fid);
 end
 

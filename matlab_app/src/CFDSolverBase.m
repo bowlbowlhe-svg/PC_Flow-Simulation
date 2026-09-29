@@ -329,7 +329,7 @@ classdef CFDSolverBase < handle
             obj.vF = zeros((W+1)*H,1);
             obj.iteration = 0;
             obj.resetAccumulators();
-            % k-ω 初值：k₀ = 1.5·(I·V_ref)²，ω₀ = k₀/(β*·ν)（即 ν_t0 = ν）
+            % k-ω 初值：k₀ = 1.5·(I·V_ref)²，ω₀ = k₀/(β*·ν)（即 ν_t0 = k₀/ω₀ = β*·ν ≈ 0.09ν）
             betaStar = 0.09;
             k0 = 1.5 * (obj.turbIntensity * obj.turbRefVel)^2;
             w0 = k0 / (betaStar * obj.AIR.nu);
@@ -517,61 +517,19 @@ classdef CFDSolverBase < handle
             spongeMask = false(W, H); spongeMask(obj.spongeRingIdx) = true;
             obj.liveOutsideMask = find(~insideRect(:) & fluidMask(:) & ~spongeMask(:));
             cell_m = obj.GRID.cell_size_mm / 1000;
+            % 壁面距离与最近流体格：精确欧氏距离，最近格平局取线性索引最小（edt_nearest）
             obsMask = reshape(obj.obstacle > 0, W, H);
             if any(obsMask(:))
-                try
-                    d_cells = bwdist(obsMask);   % Image Processing Toolbox
-                catch
-                    d_cells = obj.bwdistFallback(obsMask);
-                end
+                d_cells = edt_nearest(obsMask);
             else
                 d_cells = ones(W, H) * max(W, H);
             end
-            obj.wallDistanceM = double(d_cells(:)) * cell_m;
+            obj.wallDistanceM = d_cells(:) * cell_m;
             if any(fluidMask(:))
-                try
-                    [~, nfIdx] = bwdist(fluidMask);
-                catch
-                    nfIdx = obj.nearestFluidFallback(fluidMask);
-                end
+                [~, nfIdx] = edt_nearest(fluidMask);
                 obj.nearestFluidIdx = nfIdx(:);
             else
                 obj.nearestFluidIdx = [];
-            end
-        end
-
-        function nIdx = nearestFluidFallback(~, fluidMask)
-            % 无 bwdist 时的最近流体格（4 邻域传播，非严格欧氏最近）
-            [W, H] = size(fluidMask);
-            cur = zeros(W, H);
-            cur(fluidMask) = find(fluidMask);
-            for it = 1:(W+H)
-                if all(cur(:) > 0), break; end
-                up    = [cur(2:W,:); zeros(1,H)];
-                down  = [zeros(1,H); cur(1:W-1,:)];
-                left  = [zeros(W,1) cur(:,1:H-1)];
-                right = [cur(:,2:H) zeros(W,1)];
-                cand = max(max(up, down), max(left, right));
-                fill = cur == 0 & cand > 0;
-                cur(fill) = cand(fill);
-            end
-            nIdx = cur;
-        end
-
-        function d = bwdistFallback(~, obsMask)
-            % 无 bwdist 时的壁面距离（逐格枚举，慢）
-            [Hgrid, Wgrid] = size(obsMask);
-            d = zeros(Hgrid, Wgrid);
-            [oj, oi] = find(obsMask);
-            if isempty(oj), d = ones(size(obsMask)) * max(Hgrid, Wgrid); return; end
-            for j = 1:Hgrid
-                for i = 1:Wgrid
-                    if obsMask(j, i)
-                        d(j, i) = 0;
-                    else
-                        d(j, i) = sqrt(min((oj - j).^2 + (oi - i).^2));
-                    end
-                end
             end
         end
 

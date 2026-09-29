@@ -1,8 +1,8 @@
-# 算法规格（v4.1）
+# 算法规格（v4.2）
 
 本文是 MATLAB 定稿版的算法说明，也是网页版移植的"标准答案"依据：方程、离散、每步顺序、
-单位换算、参数与判据都以这里和代码为准（代码行为优先；两者不一致时以代码为准并修正本文）。
-配套的数值参考数据见 `matlab_app/tests/reference/`（`tools/make_reference_dataset` 生成）。
+单位换算、整数几何、参数与判据都以这里和代码为准（代码行为优先；两者不一致时以代码为准并修正本文）。
+目标是不看代码也能逐位复现。配套的数值参考数据见 `matlab_app/tests/reference/`（`tools/make_reference_dataset` 生成）。
 
 > 模型定位：2D 侧视定性工具，用于比较风道布局、风扇配置与元件温度的趋势，不是产品级散热仿真。
 
@@ -10,138 +10,255 @@
 
 | 量 | 定义 |
 |---|---|
-| 计算域 | 边长 `domain.sizeMm`（默认 560 mm）的正方形，均匀网格 W×H（W = H） |
+| 计算域 | 边长 `domain.sizeMm`（默认 560 mm）的正方形，`W = H = round(sizeMm/Δx)`（默认 280，预览 140） |
 | 格距 | `Δx = domain.baseCellMm / gridScale`（默认 2 mm；预览 gridScale = 0.5 → 4 mm） |
-| 格索引 | 格心 (y, x)，y 为行（向下）、x 为列（向右，后面板 → 前面板）；线性索引 `idx = (x−1)·W + y` |
-| MAC 面 | u 面 W×(H+1)（格 x−1 与 x 之间），v 面 (W+1)×H（格 y−1 与 y 之间） |
-| 机箱 | 边长 `chassis.sizeMm`（400 mm），原点 `chassis.originMm`（80 mm），壁占机箱边缘 1 格；Z 向有效深度 `chassis.depthM`（0.15 m） |
-| mm → 格 | `格 = round(mm / Δx)`；矩形 (x, y, w, h) 以机箱原点为基准再加偏移 `round(originMm/Δx)` |
+| 格索引 | 格心 (y, x)，y 为行（向下）、x 为列（向右，后面板 → 前面板）；线性索引 `idx = (x−1)·W + y`（列优先） |
+| MAC 面 | u 面阵 W×(H+1)：面 (y, xf) 位于格 (y, xf−1) 与 (y, xf) 之间，索引 `(xf−1)·W + y`；v 面阵 (W+1)×H：面 (yf, x) 位于格 (yf−1, x) 与 (yf, x) 之间，索引 `(x−1)·(W+1) + yf`。xf = 1、H+1 与 yf = 1、W+1 为域边界面 |
+| 取整 | 文中 `round` 一律为**四舍五入、0.5 远离零**（MATLAB `round`）：`round(48.5) = 49`、`round(2.5) = 3`、`round(−48.5) = −49`。不能用银行家舍入（Python `round`、`numpy.round`）；JS 用 `Math.sign(x)·Math.round(Math.abs(x))`。默认布局在 4 mm 网格上有大量 .5（194/4 = 48.5、114/4 = 28.5、334/4 = 83.5、10/4 = 2.5 …），2 mm 网格上也有（散热片高 57/2 = 28.5） |
+| mm → 格 | `toCell(mm) = round(mm/Δx)`。布局矩形 (x, y, w, h)（mm，相对机箱原点）→ 格矩形 `x_c = ox + toCell(x)`、`y_c = oy + toCell(y)`、`w_c = max(1, toCell(w))`、`h_c = max(1, toCell(h))`，占格 `[x_c, x_c+w_c−1] × [y_c, y_c+h_c−1]`（取格集合时裁剪到域内）；`ox = oy = round(chassis.originMm/Δx)`（默认 40，预览 20） |
+| 机箱 | `cs = toCell(chassis.sizeMm)`；外框占格 x、y ∈ `[ox+1, ox+cs]`，记 `cL = cT = ox+1`、`cR = cB = ox+cs`；壁 = 外框最外 1 圈格；Z 向有效深度 `chassis.depthM`（0.15 m） |
 | 时间步 | `DT = 0.005 s`（固定） |
 
 **网格速度单位**：求解器内部速度 u 为网格单位，物理速度 `u_phys = u · VEL_SCALE`，
-`VEL_SCALE = (W − 2)·Δx`（默认 0.556 m）。一步内的位移（格）为 `u · DT · (W − 2)`。
+`VEL_SCALE = (W − 2)·Δx`（默认 0.556 m，预览 0.552 m）。一步内的位移（格）为 `u · DT · (W − 2)`。
 
-**扩散算子系数**：5 点 Laplacian 乘 `diffScale = 1/Δx²`，物性 ν、α 用 m²/s。
+**扩散算子系数**：5 点 Laplacian 乘 `diffScale = 1/Δx²`（Δx 以 m 计），物性 ν、α 用 m²/s。
 
 **压力**：投影的速度修正为 `Δu = −(p_i − p_{i−1})`（网格单位、每格）。物理静压
-`P [Pa] = ρ · VEL_SCALE · Δx · p / DT`，远场海绵环 p = 0（参考"机箱外"）。
+`P [Pa] = ρ · VEL_SCALE · Δx · (p1 + p2) / DT`，p1 为本步第一次投影的压力（`pProj1`）、p2 为阻力耦合投影的压力
+（`p`），均为网格单位；推导：物理上 `Δu = −(DT/ρ)·ΔP/Δx`。ρ 取 `AIR.rho`（可被 `layout.air` 覆盖）。
+障碍格显示 NaN；远场海绵环 p = 0（参考"机箱外"）。稳态时 p1 接近 0。
 
-**2D 体积流量**：穿过一段 n 格长的截面的流量 `Q = Σ u_phys · Δx · depthM`（m³/s），
-1 CFM = 4.719×10⁻⁴ m³/s。
+**2D 体积流量**：穿过一段 n 格长的截面的流量 `Q = Σ u_phys · Δx · depthM`（m³/s）。CFM 换算有两个常量，按用途区分：
+- `CFM_PER_M3S = 2118.88`（`Fan`）：风扇当前转速的自由风量换算为 m³/s（§3.6）、风扇状态表上报的实测 cfm；
+- `CFM_TO_M3S = 4.719e−4`（求解器）：开口风量与机箱总风量、远场通量、代数热平衡、基准风道 cfm。
+
+**物性常量**：风扇体积力、注热、开口焓流、代数内温一律用常量 `AIR_DENSITY = 1.184`、`AIR_CP = 1005`
+（不受 `layout.air` 影响）；ν、Pr、β_T、g，以及压力显示与 Re 的 ρ、μ 取 `AIR` 结构（`layout.air` 可覆盖）。
 
 ## 2. 几何构建（`buildModel`，构造与 reset 共用）
 
 顺序：噪音参数 → 几何（`initGeometry`）→ 场初值 → 障碍 → 热源 → 风扇 → 开口 → 障碍集合
-→ 共轭传热区域 → 面掩码 → 多孔阻力系数 → 开口派生量。
+→ 共轭传热区域 → 面掩码 → 多孔阻力系数 → 开口派生量；之后求解器装配矩阵（压力算子、温度扩散的标量路径矩阵，§3.10）。
 
-1. **障碍类型**：壁、CPU 底座、GPU PCB、电源外壳、电源仓挡板、内存、VRM、实心块（芯片组仅显示，不是障碍）。
-   元件按"未被占用才设置"（setIfFree）叠放。
-2. **电源贴壁对齐**：电源矩形与后壁/底壁内侧的间隙 ≤ 6 mm 时对齐到壁内侧（各档网格一致）。
-3. **电源仓挡板**：全宽水平隔板（y = `shroud.yMm`，厚 `shroud.hMm`），`gaps` 列出的 x 区间不设障碍。
-4. **多孔区**：CPU 鳍片、GPU 鳍片、电源内部、`porousBlocks`；各向异性阻力 ζ（穿流/横流）。
-5. **风扇执行盘**：
-   - 机箱风扇贴壁内侧，宽 = 风扇直径（格），厚 `t = max(1, round(fanDiskMm/Δx))`（默认 12 mm）。
-     沿壁中心 `alongMm`，起点夹在 `[2, 机箱格数 − n]`（`wallFanSpan`）。
-     法向：进气吹向箱内，排气吹向箱外。
-   - CPU 塔扇：鳍片前侧，高度居中，法向 (−1, 0)。
-   - 显卡风扇：散热片下方，法向 (0, −1)（向上）；相邻盘不重叠，且不伸出散热片。
-   - 显卡厚度按槽数（`layout_set_gpu_slots`，1 槽 = 20.32 mm）：整卡厚 = PCB 12 + 散热片 h + 风扇盘 12，
-     `h = round(槽数·20.32 − 12 − 12)`，2.5/3/3.5/4 槽 → 27/37/47/57 mm；散热片从 PCB 下沿向下长。
-     鳍片总面积按散热片高度线性缩放 `A_fin = 0.5·h/47` m²（3.5 槽为 0.5 m²，4 槽 0.606 m²）。
-     风扇盘下沿到电源仓挡板不足 10 mm 时拒绝（默认 4 槽留 21 mm）。未存槽数的旧布局按整卡厚
-     四舍五入到 0.5 槽推断。
-   - 电源风扇：电源内部底部，法向 (0, −1)。
-6. **开口**：机箱风扇位、被动通风口 `vents`、电源底部进风/后部出风。开口处清除壁障碍，并记录格栅阻力 ζ。
-7. **共轭传热区域**：散热体（CPU/GPU 鳍片、电源内部流体格）与进风采样带（厚 10 mm：CPU 塔扇前侧、
-   显卡风扇下方、电源进风口）。
+1. **障碍类型与顺序**：壁（外框最外 1 圈，无条件写入）→ CPU 底座 → GPU PCB → 电源外壳 → 电源仓挡板 → 内存 → VRM
+   → `solidBlocks`。除壁外都按 setIfFree（只写入当前为 0 的格）。芯片组、主板区仅显示，不是障碍。
+   `chassis.enabled = false` 时没有壁，但下文的"外框矩形"照常按 ox、cs 计算。
+2. **电源贴壁对齐**：`b = rectToGrid(psu.body)`，`snap = 6/Δx`（不取整）。
+   - 若 `b.x − (cL+1) ≤ snap`：`b.w ← b.w + (b.x − (cL+1))`，`b.x ← cL+1`（右缘不动；粗网格取整压到壁上时差为负，同样对齐）；
+   - 若 `(cB−1) − (b.y + b.h − 1) ≤ snap`：`b.h ← (cB−1) − b.y + 1`（上缘不动）。
+   - 内部 `in = (b.x+1, b.y+1, b.w−2, b.h−2)`；外壳 = b 的格 − in 的格，类型电源外壳。
+3. **电源仓挡板**：矩形 `x = cL`、`w = cs`、`y = oy + toCell(shroud.yMm)`、`h = toCell(shroud.hMm)`（不取 max(1,·)）；
+   对每个 `gaps(g)`：`x0 = ox + toCell(x0Mm)`、`x1 = ox + toCell(x1Mm)`，剔除列 x ∈ [x0, x1] 的格。
+4. **多孔区**（不是障碍，属流体格）：按 CPU 鳍片（`cpu.fins`）、GPU 散热片（`gpu.heatsink`）、电源内部 in、
+   `porousBlocks(k).rect` 的顺序登记，各带 `zetaThru`/`zetaCross`/`thru`（'x' 或 'y'）。阻力系数见 §3.7。
+5. **风扇执行盘**：盘厚 `t = max(1, toCell(fanDiskMm))`（默认 12 mm → 6 格，预览 3 格），`thickM = t·Δx`；
+   `n = toCell(型号 size)`（`fan_catalog`）。
+   - **机箱风扇**（`wallFanSpan`）：`c = toCell(alongMm)`，`a0 = c − floor(n/2)`，`a0 ← max(2, min(cs − n, a0))`，
+     `a1 = a0 + n − 1`（保持 n 格，整体平移进壁内侧）。
+     前壁：列 `[cR−t, cR−1]`、行 `oy + [a0, a1]`；后壁：列 `[cL+1, cL+t]`、行 `oy + [a0, a1]`；
+     顶壁：行 `[cT+1, cT+t]`、列 `ox + [a0, a1]`；底壁：行 `[cB−t, cB−1]`、列 `ox + [a0, a1]`。
+     法向（送风方向，x 向右、y 向下）：进气 `s = −1`、排气 `s = +1`；前 `(s, 0)`、后 `(−s, 0)`、顶 `(0, −s)`、底 `(0, s)`
+     （进气吹向箱内、排气吹向箱外）。盘之间允许重叠（默认 280² 前壁两台共用第 179 行），重叠格上体积力叠加。
+   - **CPU 塔扇**：fin 为鳍片格矩形，`cy = round(fin.y + (fin.h−1)/2)`，`r0 = cy − floor(n/2)`，
+     行 `[r0, r0+n−1]`，列 `[fin.x+fin.w, fin.x+fin.w+t−1]`（鳍片前侧），法向 (−1, 0)。
+   - **显卡风扇**（按 `gpu.fans.xs` 顺序，hs 为散热片格矩形，`prevC1` 初值 −∞）：`c = ox + toCell(xs_i)`，
+     `c0 = max(c − floor(n/2), prevC1 + 1, hs.x)`，`c1 = min(c0 + n − 1, hs.x + hs.w − 1)`，`c1 < c0` 报错；
+     `prevC1 ← c1`；行 `[hs.y+hs.h, hs.y+hs.h+t−1]`（散热片下方），法向 (0, −1)（向上吹入鳍片）。
+   - **电源风扇**：`c = ox + toCell(psu.fan.xMm)`，`c0 = max(in.x, c − floor(n/2))`，`c1 = min(in.x+in.w−1, c0+n−1)`；
+     行 `[in.y+in.h−t, in.y+in.h−1]`（电源内部最底 t 行），法向 (0, −1)。
+   - **显卡厚度按槽数**（`layout_set_gpu_slots`，1 槽 = 20.32 mm）：整卡厚 = PCB `pcb.h`（12）+ 散热片 h + 风扇盘 `fanDiskMm`（12），
+     `h = round(槽数·20.32 − pcb.h − fanDiskMm)`，`heatsink.y = pcb.y + pcb.h`（从 PCB 下沿向下长）；
+     2/2.5/3/3.5/4/4.5 槽 → 17/27/37/47/57/67 mm。鳍片总面积 `A_fin = 0.5·h/47` m²（3.5 槽 0.5 m²，4 槽 0.606 m²）。
+     可选 2–4.5 槽；风扇盘下沿到电源仓挡板 `shroud.yMm − (heatsink.y + h + fanDiskMm) < 10` mm 时拒绝（默认 4 槽留 21 mm）。
+     未存 `gpu.slots` 的旧布局按 `round((pcb.h + heatsink.h + fanDiskMm)/20.32·2)/2` 推断。
+6. **开口**（顺序：机箱风扇 → 被动通风口 → 电源；开口 = 所在壁上一段连续壁格，全部清为流体）：
+   - 机箱风扇开口：前/后壁取该盘的行段，顶/底壁取列段；`ζ = grille.intakeZeta`（进气，2.0）或 `grille.exhaustZeta`（排气，0.8），
+     同时记为该风扇的 `grilleZeta`（噪音用）。
+   - 被动通风口 `vents(k)`：`n = toCell(lengthMm)`、`c = toCell(alongMm)`，`a0 = max(2, c − floor(n/2))`，
+     `a1 = min(cs − 1, a0 + n − 1)`（与风扇不同：不平移，越界的一端截短）；前/后壁行 `oy + [a0, a1]`，
+     顶/底壁列 `ox + [a0, a1]`；`ζ = vents(k).zeta`。
+   - 电源：进风列段 = 电源风扇的 `[c0, c1]`；无电源风扇时 `m = toCell(120)`，`c0' = in.x + floor((in.w − m)/2)`，
+     列段 `[max(in.x, c0'), min(in.x+in.w−1, c0'+m−1)]`。**外壳开孔**：外壳底边行 `b.y+b.h−1` 上该列段的格、
+     外壳左边列 `b.x` 上行 `in.y … in.y+in.h−1` 的格清为流体。若 `b.y + b.h = cB`（贴底壁）：底壁同一列段开口，
+     kind = `psu_intake`，`ζ = psu.intakeZeta`（2.0）；若 `b.x = cL + 1`（贴后壁）：后壁行 `in.y … in.y+in.h−1` 开口，
+     kind = `psu_exhaust`，`ζ = psu.exhaustZeta`（1.0）。
+   - 各壁的开口格列表 `openingIdx.{top,rear,front,bottom}` 按开口顺序拼接（重叠格重复出现）。
+7. **共轭传热区域**（开口之后取 `obstacle == 0` 的格；进风采样带厚 `nIn = max(2, toCell(10))`，默认 5 格、预览 3 格）：
+   - CPU：散热体 = 鳍片矩形内流体格；进风带：有塔扇时矩形 `(x = 塔扇 c1 + 1, y = 塔扇 r0, w = nIn, h = 塔扇行数)`，
+     否则 `(fin.x+fin.w, fin.y, nIn, fin.h)`。
+   - GPU：散热体 = 散热片矩形内流体格；进风带 `(hs.x, r0, hs.w, nIn)`，`r0` = 第一台显卡风扇的末行 + 1（无风扇时 `hs.y+hs.h`）。
+   - 电源：散热体 = 内部 in 的流体格；进风 = 外壳底边的开孔格。
+   - 进风带为空时退回用散热体本身。
+8. **掩码、边界与距离**：
+   - `insideMask` = 外框矩形 `[ox+1, ox+cs]²`（含壁所在的格）内的**全部流体格**：开口格、电源内部、多孔区都计入；
+     `outsideMask` = 其余流体格。
+   - 海绵环 `spongeRingIdx` = 域最外 `spongeWidth`（= 1）圈（y ∈ {1, W} 或 x ∈ {1, H}）中的流体格：速度阻尼、T = T_amb、p = 0、
+     k/ω 取来流值；`liveOutsideMask` = outside − 海绵环（机箱外真实空气）。
+   - 面激活：格间面两侧皆流体才激活；域边界面（xf = 1、H+1，yf = 1、W+1）**单侧邻格为流体即激活**（远场开放）。
+     未激活面速度恒为 0（无穿透、无滑移）。阻尼面 = 激活面中至少一侧邻格属于海绵环者（边界面看其唯一邻格）。
+   - 壁距 `wallDistanceM` = `edt_nearest(障碍掩码)` 的距离（格）× Δx（障碍格为 0；无障碍时取 max(W, H)·Δx）；
+     最近流体格 `nearestFluidIdx` = `edt_nearest(流体掩码)` 的索引（精确欧氏，平局取线性索引最小，§3.11）。
+   - 压力钉扎集合：全部障碍格；海绵环流体格；不与海绵环 4 连通的每个流体连通域取**该域线性索引最小的格**作参考点。
+     默认布局没有孤立域。
+9. **核对值**（默认布局，`CFDSolverFEM([],[],[],[],gridScale)` 构建后；矩形为格 (x, y, w, h)，行/列为闭区间）：
+
+| 项 | 预览 140²（Δx = 4 mm，t = 3，nIn = 3） | 280²（Δx = 2 mm，t = 6，nIn = 5） |
+|---|---|---|
+| ox、外框 | 20，[21, 120] | 40，[41, 240] |
+| CPU 底座 / 鳍片 | (69,49,12,12) / (60,42,30,26) | (137,97,24,24) / (119,83,60,52) |
+| GPU PCB / 散热片 | (60,73,54,3) / (58,76,59,14) | (120,146,108,6) / (115,152,118,29) |
+| 电源 body（对齐后）/ 内部 | (22,104,40,16) / (23,105,38,14) | (42,207,82,33) / (43,208,80,31) |
+| 挡板 y、h；缺口列 | 99、4；110–120 | 197、8；220–239 |
+| 前进气 ×2（行，列） | 60–89、90–119；117–119 | 120–179、179–238；234–239 |
+| 后排气（行，列）/ 顶排气（行，列） | 36–65，22–24 / 22–24，40–69 | 72–131，42–47 / 42–47，80–139 |
+| 塔扇（行，列） | 40–69，90–92 | 79–138，179–184 |
+| 显卡风扇列（行） | 58–77、78–97、98–116（90–92） | 115–154、155–194、195–232（181–186） |
+| 电源风扇（行，列）/ 出风口行 | 116–118，27–56 / 105–118 | 233–238，53–112 / 208–238 |
 
 ## 3. 每步顺序（`CFDSolverFEM.fluidStep`）
 
 ```
-1  S, V, y_w ← 应变率模、局部速度、壁距        （本步只算一次）
-2  ν_eff ← 湍流模型（k-ω / LVEL / laminar）
+1  S, V, y_w ← 应变率模、局部速度、壁距        （本步只算一次；laminar 不算）
+2  ν_eff ← 湍流模型（k-ω 用本步开始时的 k、ω / LVEL / laminar）
 3  u, v ← 隐式扩散（ν_eff）
-4  p1 ← 第一次投影（无阻力算子）
+4  p1 ← 第一次投影（无阻力算子）；限幅
 5  u, v ← 面场半拉格朗日平流（cubic）
 6  v += 浮力
-7  u_ref ← u（阻力系数用）
-8  u, v += 风扇体积力
-9  p ← 阻力耦合投影（β 由 u_ref 决定）
-10 远场海绵环相邻面 × spongeDamping（0.8）
-11 k, ω ← k-ω 一步（每 turbUpdateEvery 步一次，生产项用第 1 步的 S）
-12 T ← 隐式扩散（α = ν_eff/Pr）
-13 T ← 格心半拉格朗日平流（makima），出域取 T_amb；T ← max(T, T_amb)
-14 障碍格显示值：定温壁 = 壁温；发热元件 = T_solid；绝热障碍 = 邻近流体均值
+7  u_ref ← u（阻力 β 用）
+8  各风扇：由当前 u, v（施力前的中间流场）的盘中面流量求工作点 → u, v += 风扇体积力
+9  p2 ← 阻力耦合投影（冻结参考 β_ref）；限幅
+10 远场海绵环相邻激活面 × spongeDamping（0.8）
+11 若 k-ω 且 mod(iteration, N) == 0：k, ω ← k-ω 一步（生产项用第 1 步的 S，推进时长 N·DT）
+12 T ← 隐式扩散（α = ν_eff/Pr，ν_eff 为第 2 步的值）；T ← max(T, T_amb)
+13 T ← 格心半拉格朗日平流（makima，出域取 T_amb）；T ← max(T, T_amb)
+14 障碍格显示值，依次：定温壁 = 壁温 → 其余障碍 = 4 邻域流体均值（无流体邻居取 T_amb）
+   → 发热元件固体格（CPU 底座/GPU PCB/电源外壳）= T_solid
 15 远场海绵环 T = T_amb
-16 共轭传热：各元件热网络一步，热量注入散热体流体格
+16 共轭传热：CPU → GPU → 电源，热网络一步，热量注入散热体流体格
 17 T ← min(T, 200)，T ← max(T, T_amb)；海绵环再钉一次 T_amb
+18 iteration ← iteration + 1
 ```
+
+`iteration` 从 0 起，第 k 步执行时 `iteration = k − 1`。第 12、13、17 步的钳位作用于全部格（含障碍格）。
+`stepMultiple(n)` = n 次 `fluidStep` 后再算诊断量（§6），诊断量不回馈求解。
+
+**边界条件一览**
+
+| 量 | 域外（越出计算域） | 障碍 | 海绵环 |
+|---|---|---|---|
+| u、v 扩散 | 越界方向按 Dirichlet 0，权重取本面粘性 | 未激活面钉 0；与未激活邻面的链接按 Dirichlet 0，权重取本面粘性 | 无特殊（第 10 步阻尼） |
+| 压力 | 域边界面不进算子、不做梯度修正 | 钉 p = 0；贴障碍面不进算子（Neumann） | 钉 p = 0 |
+| T 扩散 | ghost = T_amb | 定温壁 Dirichlet；其余障碍绝热（Neumann） | 第 15、17 步重置 T_amb |
+| 标量平流（T、k、ω） | 回溯点出 [1.5, W−0.5] 取来流值 | 平流前障碍格值换成最近流体格值 | — |
+| k、ω 扩散 | ghost = 0 | Neumann | 步末 k = k_in、ω = ω_in |
 
 ### 3.1 湍流粘性
 
-- **k-ω**（默认，Wilcox 2006 + SST 式应力限制器）：`ν_t = a₁·k / max(a₁·ω, |S|)`，a₁ = 0.31，
-  `ν_t ≤ 2000ν`；`ν_eff = ν + ν_t`（障碍格为 ν）。
-- **LVEL**：`y⁺ = y·V/ν`，`D = 1 − exp(−y⁺/26)`，`l_m = 0.4·y·D`，`ν_t = min(l_m²|S|, 50ν)`，
-  `ν_eff ≤ 30ν`。
+- **应变率**（第 1 步，物理单位）：格心速度 = 两侧面平均 ×VEL_SCALE；`u_x = (u_{xf+1} − u_{xf})/Δx`、`v_y = (v_{yf+1} − v_{yf})/Δx`
+  （面差分，全部格）；`u_y`、`v_x` 为格心速度的中心差分 `(·_{+1} − ·_{−1})/(2Δx)`，只在 2 ≤ y ≤ W−1 且 2 ≤ x ≤ H−1 计算，其余为 0；
+  `|S| = sqrt(2(u_x² + v_y²) + (u_y + v_x)²)`。`V` = 格心速度模（m/s），`y` = `wallDistanceM`。
+- **k-ω**（默认，Wilcox 2006 + SST 式应力限制器）：`ν_t = min(a₁·k / max(a₁·ω, |S|), 2000ν)`，a₁ = 0.31，
+  k、ω 为本步开始时的值（上一次 k-ω 更新的结果）；`ν_eff = ν + ν_t`，障碍格 `ν_eff = ν`。
+- **LVEL**：`y⁺ = max(y·V/ν, 0)`，`D = 1 − exp(−y⁺/26)`，`l_m = 0.4·y·D`，`ν_t = min(l_m²|S|, 50ν)`，
+  `ν_eff = min(ν + ν_t, 30ν)`，障碍格 ν。
 - **laminar**：`ν_eff = ν`。
-- `|S| = sqrt(2(u_x² + v_y²) + (u_y + v_x)²)`：u_x、v_y 由面差分，u_y、v_x 由格心速度中心差分（边界格为 0）。
 
 ### 3.2 速度扩散
 
-u、v 面各自的点阵 5 点 Laplacian，面粘性 = 两邻格 ν_eff 平均；未激活面（贴障碍）钉 0（无滑移）。
-隐式欧拉：`(I/DT − diffScale·L_ν) u^{n+1} = u^n/DT`。矩阵只在 ν_eff 中位数变化超过 5% 时重装
-（期间沿用上次装配时的空间场）。
+ν 场先取 `ν_i = max(ν_eff,i, ν)`。面粘性 w：u 面 (y, xf) 在 2 ≤ xf ≤ H 时 `w = (ν(y, xf−1) + ν(y, xf))/2`，
+边界面 xf = 1 取 `ν(y, 1)`、xf = H+1 取 `ν(y, H)`；v 面对称（yf = 1 取 `ν(1, x)`，yf = W+1 取 `ν(W, x)`）。
+
+矩阵只含激活面。对激活面 f 在自身面阵（u：W×(H+1)，v：(W+1)×H）中的上、下、左、右 4 个点阵邻位：
+- 邻位在阵内且激活（g）：链接权重 `(w_f + w_g)/2`（非对角 +，f 的对角 −）；
+- 邻位在阵内但未激活，或越出面阵：f 的对角 −w_f（Dirichlet 0 ghost，精确位于壁面的无滑移）。
+
+`A = I/DT − diffScale·L_f`，先把未激活面置 0，再解 `A u^{n+1} = u^n/DT`（u、v 各一个矩阵）。
+矩阵按 §3.10 冻结，冻结期间沿用装配时的空间 ν 场。
 
 ### 3.3 投影与阻力耦合投影
 
-- **压力算子**：对称的面加权 D·G（5 点），钉扎行（障碍格、远场环、各孤立流体区一个参考点）行列清零、
-  对角 −1；对 −L 做 Cholesky 分解。
-- **第一次投影**：`D·G p1 = D·u*`，`u ← u* − G p1`。
+- **压力算子**：对每个激活的**格间** u 面（2 ≤ xf ≤ H，连接格 (y, xf−1)、(y, xf)）与格间 v 面（2 ≤ yf ≤ W），
+  `(L_p p)_i = Σ_面 w_f·(p_j − p_i)`（第一次投影 w = 1；阻力耦合 w = β_ref）。域边界面与未激活面不进算子。
+  钉扎集合（§2.8）的行列清零、对角 −1、右端 0；对称负定，对 −L_p 做 Cholesky。
+- **散度**：`div_i = a·u_右 − a·u_左 + a·v_下 − a·v_上`（a 为面激活掩码，含域边界面）。
+- **第一次投影**：解 `L_p p1 = div`（钉扎行右端 0），激活格间面 `u ← u − (p1_x − p1_{x−1})`、v 同理；
+  域边界面不修正（由海绵阻尼吸收）。然后未激活面置 0，逐面分量限幅 `|u| ≤ 6/VEL_SCALE`（6 m/s）。
 - **阻力耦合投影**（多孔区与格栅）：
-  `u^{n+1} = β(u* − G p)`，`β = 1/(1 + C·|u_ref|)`，`D(β G p) = D(β u*)`。
-  u_ref 为施加风扇力之前的速度（风扇盘端面与格栅面/多孔区端面重合时，u* 含风扇单步冲量，
-  用它算 β 会把阻力放大数倍）。算子按参考 β 装配以保证散度严格为零；多孔区面、格栅面分两组、
-  只统计流体活动面，任一组 β 相对偏差均值 > 3% 或偏差 > 10% 的面 > 2% 时重装（至少间隔 5 步）。
-- 两次投影后速度限幅 `|u| ≤ 6 m/s`（网格单位 6/VEL_SCALE）。
+  1. 当前 `β = 1/(1 + C·|u_ref|)`（逐面，C 见 §3.7，C = 0 的面 β = 1），u_ref 为施加风扇力之前的速度
+     （风扇盘端面与格栅面/多孔区端面重合时，u* 含风扇单步冲量，用它算 β 会把阻力放大数倍）；
+  2. 按 §3.10 判断是否重装：重装时 `β_ref ← β`（全部面）并按 β_ref 装配算子；
+  3. **速度更新同样用冻结的 β_ref**（不是当前 β）：`u_s = a·β_ref·u*`，解 `L_p(β_ref)·p2 = div(u_s)`，
+     激活格间面 `u = u_s − β_ref·(p2_x − p2_{x−1})`，域边界面 `u = u_s`；
+  4. 未激活面置 0，限幅 `|u| ≤ 6/VEL_SCALE`。
+  即 `u^{n+1} = β_ref(u* − G p2)`、`D(β_ref G p2) = D(β_ref u*)`，散度严格为零。
 
 ### 3.4 平流
 
-- **面场**：半拉格朗日，回溯速度——u 面取本地 u 与环绕 4 个 v 面平均，v 面对称；
-  回溯点钳入 `[1, H]`×`[1.5, W−0.5]`（u 面）等；**cubic** 插值。
-- **格心标量**（T、k、ω）：半拉格朗日，**makima** 插值；回溯点出域取来流值；障碍格值先替换为最近
-  流体格值。
-- 插值口径（移植必须一致）：`cubic` = MATLAB griddedInterpolant 在均匀网格上的三次卷积
-  （Keys，a = −0.5，边界二次外插）；`makima` = MATLAB 修正 Akima 斜率的三次 Hermite。
-  二维为逐维张量积。Octave 兼容层（`compat/octave/griddedInterpolant.m`）按相同思路实现，
-  与 MATLAB 不保证逐位一致。
+`dt0 = DT·(W − 2)`（网格速度 → 每步位移格数）。插值口径见 §3.11 的 `grid_interp2`。
+
+- **u 面**（节点 (y, xf) 坐标 Y = y、X = xf − 0.5）：回溯横向速度
+  `vAtU(y, xf) = ¼[v(y, xf−1) + v(y⁺, xf−1) + v(y, xf) + v(y⁺, xf)]`（2 ≤ xf ≤ H），边界列
+  `vAtU(y, 1) = ½[v(y, 1) + v(y⁺, 1)]`、`vAtU(y, H+1) = ½[v(y, H) + v(y⁺, H)]`，其中 `y⁺ = y + 1`（y < W）、
+  **y = W 时 y⁺ = W**（代码 `yUp = [2:W W]`，最后一行取 v 面第 W 行两次，而不是第 W+1 行）。
+  `X_q = clamp(X − dt0·u, 1, H)`，`Y_q = clamp(Y − dt0·vAtU, 1.5, W − 0.5)`，`u_new = grid_interp2(u, Y_q, X_q, 'cubic', o1 = 1, o2 = 0.5)`。
+- **v 面**（节点 (yf, x) 坐标 Y = yf − 0.5、X = x）：
+  `uAtV(yf, x) = ¼[u(yf−1, x) + u(yf−1, x+1) + u(yf, x) + u(yf, x+1)]`（2 ≤ yf ≤ W），
+  `uAtV(1, x) = ½[u(1, x) + u(1, x+1)]`、`uAtV(W+1, x) = ½[u(W, x) + u(W, x+1)]`。
+  `X_q = clamp(X − dt0·uAtV, 1.5, H − 0.5)`，`Y_q = clamp(Y − dt0·v, 1, W)`，`v_new = grid_interp2(v, Y_q, X_q, 'cubic', o1 = 0.5, o2 = 1)`。
+- 平流后未激活面置 0（不限幅）。
+- **格心标量**（`advectScalar(d, u_c, v_c, 来流值, dt)`，T、k、ω 共用；dt 缺省 DT，湍流传 N·DT）：u_c、v_c 为当前格心速度
+  （两侧面平均）；`X_q = x − dt·(W−2)·u_c`、`Y_q = y − dt·(W−2)·v_c`；**出域** = `X_q < 1.5 或 X_q > W−0.5 或 Y_q < 1.5 或 Y_q > W−0.5`；
+  再钳入 `[1.5, W−0.5]`；插值前把障碍格的值换成其最近流体格的值（`nearestFluidIdx`）；
+  `d_new = grid_interp2(d, Y_q, X_q, 'makima', 1, 1)`；出域格取来流值（T：T_amb；k：k_in；ω：ω_in）。结果覆盖全部格（含障碍格）。
 
 ### 3.5 浮力
 
-Boussinesq：`Δv = −DT·g·β_T·(T_face − T_amb)/VEL_SCALE`（y 向下为正，热空气上浮），
-面温为 y 向两邻格平均；作用于机箱内与机箱外真实空气（海绵环除外）的激活 v 面。
+Boussinesq：`Δv = −DT·g·β_T·(T_face − T_amb)/VEL_SCALE`（y 向下为正，热空气上浮）。
+作用面：格间 v 面（2 ≤ yf ≤ W）中激活、且上下两邻格至少一个属于 `insideMask ∪ liveOutsideMask`（机箱内与机箱外真实空气，
+海绵环除外）的面；`T_face = (T(yf−1) + T(yf))/2`。域边界 v 面不受浮力。
 
 ### 3.6 风扇（执行盘）
 
-盘内每格体积力 `a = Δp/(ρ·t_m)`（t_m 为盘厚 m），每步网格速度增量 `Δu = a·DT/VEL_SCALE`，
-沿法向分到格两侧面各 0.5（盘内相邻格共享面合计 1 份），穿盘积分静压升恰为 Δp；贴障碍面不受力。
+**工作点**（第 8 步，每台风扇各算一次，全部风扇读同一施力前流场）：
+- 盘中面流量 `Q = diskFlow`（m³/s，送风方向为正）：法向为 x 时 `t = c1 − c0 + 1`、中面 u 面 `xf = c0 + floor(t/2)`，
+  `Q = Σ_{行 r0…r1} sign(n_x)·u(r, xf)·VEL_SCALE·Δx·depthM`；法向为 y 时 `yf = r0 + floor(t/2)`，对列 c0…c1 求和 v 面。
+  （t 为偶数时恰为盘的几何中面；预览 t = 3 时为第 1、2 格之间的面。）
+  该流量取本步施加风扇力之前的中间流场（第 5–6 步之后），比推进结束时的穿盘流量约低 4%（风道基准）。
+- 转速 `rpm = rpm_min + (rpm_max − rpm_min)·f`（f 见下）；自由风量 `Q_free = cfm_max·(rpm/rpm_max)/2118.88`（m³/s）。
+- `q = clamp(Q/Q_free, 0, 2)`（Q_free ≤ 0 时 q = 0；倒流即 q = 0，取零流量静压）。
+- `f(q)`：q ≤ 1 时为 P-Q 曲线（节点 q = 0, 0.2, …, 1，值 `pq_curve`）的 `pchip_eval`（§3.11）；
+  q > 1 时 `f = pq₆ + (pq₆ − pq₅)/0.2·(q − 1)`（末段斜率线性外推为负压）。
+- `Δp = clamp(pmax·(rpm/rpm_max)²·f(q), −pmax, pmax)`。
+- 同时更新状态：`lastQ = Q`、`lastDp = Δp`、`lastQRatio = q`；
+  `flowFactor += min(1, DT/0.15)·(clamp(q, 0.2, 1) − flowFactor)`（初值 1，代数轨用）；
+  `noiseQRatio += min(1, DT/0.5)·(q − noiseQRatio)`（初值 1，噪音用）。
 
-- **工作点**：盘中面实测流量 Q（送风方向为正）——取本步施加风扇力之前的中间流场（第 5–6 步之后），
-  比推进结束时的穿盘流量约低 4%（风道基准）；界面显示与对照数据用推进结束时的流量（`diskFlow`）。
-  当前转速自由风量 `Q_free = cfm_max·(n/n_max)`；
-  `q = clamp(Q/Q_free, 0, 2)`；
-  `Δp = pmax·(n/n_max)²·f(q)`，f 为 P-Q 曲线（q = 0, 0.2, …, 1 的 pchip 插值），
-  q > 1 时按末段斜率线性外推为负压；`Δp ∈ [−pmax, pmax]`。
-- **转速**：`rpm = rpm_min + (rpm_max − rpm_min)·f`。
-  - 手动（`speedMode = 'manual'`）：`f = manualPct/100`；
-  - 自动且全局温控开：`f = clamp(interp1([25 55 70 80 85], [0.2 0.2 0.5 0.8 1.0], T_sensor), 0.2, 1)`，
-    传感器：机箱风扇 = CPU/GPU 结温最高者，塔扇 = CPU，显卡风扇 = GPU，电源风扇 = 电源；
-  - 自动且全局手动：`f = fanSpeedRatio/100`。
+**体积力**：`du = Δp/(AIR_DENSITY·thickM)·DT/VEL_SCALE`（网格速度增量）。盘内每个在域内且当前为流体的格：
+法向 (n_x, 0) 时其左面 (xf = x) 与右面 (xf = x+1) 各加 `0.5·du·n_x`；法向 (0, n_y) 时其上面 (yf = y) 与下面 (yf = y+1) 各加 `0.5·du·n_y`。
+所有风扇的增量累加后乘面激活掩码再加到速度上（盘内相邻格共享面合计 1 份，穿盘积分静压升恰为 Δp；贴障碍面不受力）。
+界面显示与对照数据的实测风量用推进结束时的 `diskFlow`（§6）。
+
+**转速比例 f**（查询时按当前结温计算，结温为上一步第 16 步的值；初始结温 = T_amb）：
+- 手动（`speedMode = 'manual'`）：`f = manualPct/100`；
+- 自动且全局温控开（`autoFanEnabled`）：`f = clamp(interp1([25 55 70 80 85], [0.2 0.2 0.5 0.8 1.0], T_sensor, 线性外推), 0.2, 1)`，
+  传感器：机箱风扇 = max(CPU 结温, GPU 结温)，塔扇 = CPU，显卡风扇 = GPU，电源风扇 = 电源；缺失元件按 T_amb；
+- 自动且全局手动：`f = fanSpeedRatio/100`（默认 40）。
+- 最后 `f ← clamp(f, 0, 1)`。
 
 ### 3.7 多孔区与格栅阻力系数
 
-每面每步阻力 `C·|u|u`（网格单位）：
-- 多孔区：总压降 ζ·½ρv² 分摊到区内各面，`C = ζ·VEL_SCALE·DT/(2L)`，L 为区厚（m）；区边界面半权。
-- 开口格栅：施加在穿壁的内侧面上，`C = ζ·VEL_SCALE·DT/(2Δx)`。进气 ζ = 2.0、排气 ζ = 0.8（`grille`）。
+每面阻力系数 C（网格单位，无阻力面 0），在阻力耦合投影中以 `β = 1/(1 + C·|u_ref|)` 施加（§3.3）；
+稳态下每面阻力 `C·|u|u` 对应 `ζ·½ρv²` 的压降分摊。
+- **多孔区**（按 §2.4 的登记顺序）：格矩形裁剪 `x0 = max(2, r.x)`、`x1 = min(H−1, r.x+r.w−1)`、`y0 = max(2, r.y)`、
+  `y1 = min(W−1, r.y+r.h−1)`，空则跳过；`nx = x1−x0+1`、`ny = y1−y0+1`。`thru = 'x'` 时 `ζ_u = zetaThru`、`ζ_v = zetaCross`，否则互换。
+  - u 面：`C_u = ζ_u·VEL_SCALE·DT/(2·nx·Δx)`，作用于行 y0…y1、面 xf = x0…x1+1，两端面（x0 与 x1+1）乘 0.5；
+  - v 面：`C_v = ζ_v·VEL_SCALE·DT/(2·ny·Δx)`，作用于列 x0…x1、面 yf = y0…y1+1，两端面乘 0.5；
+  - 多区重叠的面取最大值。
+- **开口格栅**（ζ > 0 的全部开口，按开口顺序，**直接覆盖**多孔值）：`C = ζ·VEL_SCALE·DT/(2Δx)`，施加在穿壁的内侧面：
+  后壁开口格 (y, cL) → u 面 xf = cL+1；前壁 (y, cR) → u 面 xf = cR；顶壁 (cT, x) → v 面 yf = cT+1；底壁 (cB, x) → v 面 yf = cB。
+  这些面记为格栅面（§3.10 分组用）。ζ：机箱风扇进气 2.0 / 排气 0.8（`grille`），电源进风 2.0（`psu.intakeZeta`，底部防尘网）/
+  出风 1.0（`psu.exhaustZeta`，后部蜂窝格栅），被动通风口 `vents(k).zeta`。
 
 ### 3.8 k-ω（`stepTurbulence`）
 
@@ -150,87 +267,236 @@ Boussinesq：`Δv = −DT·g·β_T·(T_face − T_amb)/VEL_SCALE`（y 向下为�
 ∂ω/∂t + u·∇ω = ∇·[(ν+σ_ω ν_t)∇ω] + α(ω/k)P_k − β₁ω²
 P_k = min(ν_t|S|², 20β*kω)
 ```
-β* = 0.09，β₁ = 0.0708，α = 5/9，σ_k = 0.6，σ_ω = 0.5。数值：半拉格朗日平流 → 隐式扩散
-（冻结 ν_t，ν_t 中位数变化 > 5% 时重装）→ 源项点积分（k 取产生-耗散平衡的解析解，ω 半隐式）。
-边界：障碍邻接格 `ω = 6ν/(β₁y²)`，机箱壁邻接格 k → 下限，远场环取来流值
-`k_in = 1.5(I·V_ref)²`（I = 0.05，V_ref = 2 m/s），`ω_in = k_in/(β*·10ν)`。
-初值 `k₀ = k_in`，`ω₀ = k₀/(β*ν)`。子循环：每 N 步更新一次时推进时长取 N·DT。
+β* = 0.09，β₁ = 0.0708，α = 5/9，σ_k = 0.6，σ_ω = 0.5。
+
+**更新相位**：`turbulenceModel = 'komega'` 且 `mod(iteration, N) == 0` 时执行（N = `turbUpdateEvery`，iteration 为本步递增前的值）：
+N = 1 每步；N = 2 在第 1、3、5… 步。推进时长 `Δt = N·DT`；不更新的步 k、ω 不变。
+
+一次更新（逐格，Δt 如上）：
+```
+0 ν_t = min(a₁k/max(a₁ω, |S|), 2000ν)：k、ω 为进入本次更新时的旧值，|S| 为本步第 1 步的应变率；障碍格 ν_t = 0
+1 平流：k_A = advectScalar(k, 当前格心速度, k_in, Δt)，ω_A 同（来流 ω_in）；k_A ← max(k_A, 1e−10)，ω_A ← max(ω_A, 1e−6)
+2 扩散：(I/Δt − diffScale·L_k)·k_D = k_A/Δt（障碍行右端 0），ω 同；k_D ← max(k_D, 1e−10)，ω_D ← max(ω_D, 1e−6)
+3 源项：P_k = min(ν_t·|S|², 20β*·k_D·max(ω_D, 1e−6))；ω_f = max(ω_D, 1e−6)
+       k_eq = P_k/(β*·ω_f)，k_new = k_eq + (k_D − k_eq)·exp(−β*·ω_f·Δt)      （产生-耗散平衡的解析解）
+       ω_new = (ω_D + Δt·α·(ω_D/k_D)·P_k) / (1 + Δt·β₁·ω_D)                （半隐式）
+4 钳位与边界（按此顺序，后写覆盖先写）：
+       k_new ← max(k_new, 1e−10)；ω_new ← min(max(ω_new, 1e−6), 1e8)
+       障碍格：k = 1e−10，ω = ω_in
+       障碍邻接流体格（4 邻域内有任一障碍格）：ω = 6ν/(β₁·y²)，y = max(wallDistanceM, 0.5Δx)（此步不再钳位）
+       机箱壁邻接流体格（4 邻域内有壁类型格）：k = 1e−10
+       海绵环：k = k_in，ω = ω_in
+```
+扩散算子：扩散系数 `w_k = ν + σ_k·ν_t`、`w_ω = ν + σ_ω·ν_t`（障碍格 ν_t = 0），相邻格链接权重 `(w_i + w_j)/2`；
+越出计算域的邻居按 ghost = 0（对角 −w_i，右端无项）；与障碍格的链接去掉（Neumann）；障碍行列清零、对角 1/Δt。
+矩阵按 §3.10 冻结。
+
+来流/远场值：`k_in = 1.5(I·V_ref)²`（I = 0.05，V_ref = 2 m/s → 0.015 m²/s²），`ω_in = k_in/(β*·10ν)`（1068.4 1/s）。
+初值 `k₀ = k_in`、`ω₀ = k₀/(β*ν)`（10684 1/s），即初始 `ν_t0 = k₀/ω₀ = β*ν = 0.09ν`（全场一致）。
 
 ### 3.9 温度
 
-- 隐式扩散：`(I/DT − diffScale·α·L_T) T^{n+1} = T^n/DT + 边界项`；定温壁为 Dirichlet（`wallTempC`，
-  NaN 或空 = 绝热），其余障碍绝热；远场环外 ghost 取 T_amb。钉扎行对角 1/DT。
-- 半拉格朗日平流（makima）后 `T ≥ T_amb`（冷源不存在）。
+**隐式扩散**（第 12 步）：α 场 `α_i = max(ν_eff,i/Pr, ν/Pr)`（障碍格 ν_eff = ν → α = ν/Pr）。矩阵冻结规则见 §3.10。
+- **α 场路径**（`fluidStep` 总是传入 α 场，第 1 步必装配）：面加权 Laplacian，相邻格 (i, j) 链接权重 `(α_i + α_j)/2`
+  （含与障碍格的链接），对角 = −Σ 链接 − m_i·α_i（m_i = 越界邻居数）；流体格对角再加回与绝热障碍的链接权重（Neumann）；
+  然后障碍行列清零，`A = I/DT − diffScale·L_w`（障碍行对角 = 1/DT）。冻结保存装配所用的 α 场 `α^装` 与清零前的
+  流体×障碍 耦合块 C（与定温壁的链接权重 `(α_i + α_j)/2`）。
+- **标量路径**（构造时先按 `α_s = ν/Pr` 装配一份；只在以标量 α 调用时使用，`fluidStep` 第 1 步即按 α 场重装）：
+  L_T = 标准 5 点 L（对角恒 −4，越界邻居即 Dirichlet ghost）将障碍行列清零、障碍对角置 1，再给每个流体格的对角加上
+  其绝热障碍邻居数；`A = I/DT − α_s·diffScale·L_T + α_s·diffScale·E_obs`（E_obs 为障碍对角选择阵），障碍行对角 = 1/DT。
+
+右端 b：
+- 流体格：`T^n/DT + diffScale·m_i·α^装_i·T_amb`（域外 ghost 取 T_amb；用**装配时**的 α 场，与冻结的矩阵一致；标量路径为 α_s）
+  + 定温壁项：α 场路径 `diffScale·Σ_{j∈定温壁邻居} C_ij·T_w,j`（C 为装配时的冻结值）；标量路径 `α_s·diffScale·Σ_{j∈定温壁邻居} T_w,j`。
+- 定温壁格：`T_w/DT`（解得 T = T_w）；绝热障碍格：`T^n/DT`（保持上一步的显示值）。
+
+定温壁 = `chassis.wallTempC.{top,bottom,rear,front}` 为数值的壁上的壁类型格（角格归顶/底壁；NaN 或 JSON 读回的空值 = 绝热）；
+其余障碍全部绝热。求解后 `T ← max(T, T_amb)`（全部格）。
+
+**平流**（第 13 步）：`advectScalar(T, 格心速度, T_amb, DT)`（§3.4），然后 `T ← max(T, T_amb)`（冷源不存在）。
+
+**障碍格显示值**（第 14 步）：依次 ① 定温壁格 = 壁温；② 全部绝热障碍（障碍 − 定温壁，含发热元件固体格与 NaN 壁）
+= 其域内 4 邻域中流体格的 T 均值，无流体邻居取 T_amb；③ 发热元件固体格（类型 CPU 底座、GPU PCB、电源外壳的障碍格）
+= `T_solid`（上一步第 16 步写入的结温；第 1 步为 T_amb）。这些值只作显示，不影响任何流体格：扩散中障碍行与流体解耦，
+平流前障碍值被最近流体格值替换，浮力、共轭传热、开口通量只读流体格。第 17 步的钳位同样作用于它们（显示值落在 [T_amb, 200]）。
+界面温度视图与悬停读数对障碍格改显示 `T_solid`（非发热障碍恒为 T_amb 初值）；T 场中的障碍显示值出现在数据集导出的 `T`。
+
+### 3.10 冻结算子与重装判据（现行策略）
+
+线性系统的矩阵在两次重装之间冻结。扩散算子的判据为系数场的相对 L1 变化
+`ρ(a, b) = Σ|a_i − b_i| / max(Σ|b_i|, realmin)`，对全部 N = W·H 个格求和（含障碍格），b 为上次装配时保存的场；
+阈值 `reassembleTol = 0.05`。诊断开关 `forceReassemble = true` 时下表全部冻结算子每步重装（默认 false）。
+
+| 算子 | 装配所用场 | 重装条件 | 冻结期间 |
+|---|---|---|---|
+| 速度扩散（u、v 两个矩阵） | ν 场 `max(ν_eff, ν)` | 尚未装配（第 1 步），或 `ρ(ν场, ν^装) > 0.05` | 沿用装配时的空间 ν 场 |
+| 温度扩散 | α 场 `max(ν_eff/Pr, ν/Pr)` | 尚未按 α 场装配（第 1 步），或 `ρ(α场, α^装) > 0.05` | 矩阵、定温壁耦合项与域外 ghost 项都用 α^装（§3.9） |
+| k、ω 扩散（两个矩阵） | 本次更新第 0 步的 ν_t（障碍格 0） | 尚未装配，或 `Δt = N·DT` 与装配时不同，或 `ρ(ν_t, ν_t^装) > 0.05` | 沿用装配时的 ν_t 场 |
+| 压力（第一次投影） | 权重 1 | 仅几何变化时（构造、reset、开口变化） | — |
+| 阻力耦合压力 | β_ref | 尚未装配（第 1 步）；或 `iteration − betaRefStep ≥ 5` 且任一组满足 `mean(r) > 0.03` 或 `mean(r > 0.10) > 0.02` | 算子与速度更新都用 β_ref |
+
+阻力耦合判据的分组：多孔面组 = `C > 0`、激活、非格栅面（u、v 面合并统计）；格栅面组 = `C > 0`、激活、格栅面；
+`r = |β − β_ref|/β_ref`，空组跳过。重装时 `β_ref ← β`（全部面）、`betaRefStep ← iteration`（本步递增前的值，第 1 步为 0）。
+（温度以标量 α 调用时的判据：已按 α 场装配过，或 `|α − α_last|/α_last > 0.05`，α_last 为上次装配时的中位数/标量值；`fluidStep` 不走这条路径。）
+
+示例（预览网格默认布局，前 40 步）：速度与温度在第 1、2、38 步重装（第 1 步 ν_t0 = 0.09ν 全场一致，第 2 步起 ν_t 大幅下降）；
+k-ω 起步阶段几乎隔步重装；阻力耦合算子第 1 步装配，第 6 步（iteration = 5）起才可能重装。
+v4.1 及以前按全域 **中位数** 相对变化 > 5% 判断：机箱外大片静止空气使中位数几乎不变，算子长期停留在早期的系数场上，
+280² 默认布局约第 850 步才重装并跳到另一状态（假"第一平台"），v4.2 改为上面的 L1 判据。
+
+验证（280² 默认布局，与 `forceReassemble = true` 即每步重装对照）：L1 判据在第 400/850 步的结温差 ≤ 0.1/0.2 °C、
+机箱风量差 ≤ 0.5%，且不出现假平台；中位数判据在第 400–850 步 GPU 高约 4 °C、风量低约 5%，跳变后仍差约 0.5 °C。
+L1 判据在起步瞬态几乎每步重装，平台后很少重装，280² 每步耗时约为每步重装的 1/4。
+
+### 3.11 自带数值例程（移植必须逐位一致）
+
+**`grid_interp2(V, q1, q2, method, o1, o2)`**（平流用；MATLAB 与 Octave 同一实现，参考数据由它生成）。
+V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 … n1−1)`，第 2 维 `o2 + (0 … n2−1)`；单位格距。
+1. 单元定位：`u = clamp(q − o + 1, 1, n)`，`i = min(floor(u), n − 1)`，`t = u − i`（每维各自）。
+2. Hermite 基：`H(a, b, d_a, d_b, t) = (2t³−3t²+1)a + (t³−2t²+t)d_a + (−2t³+3t²)b + (t³−t²)d_b`。
+3. 节点斜率：`cubic` = 中心差分 `s_k = (f_{k+1} − f_{k−1})/2`（Catmull-Rom，Keys a = −0.5）；
+   `makima`：记 `δ_k = f_{k+1} − f_k`，`w_lo = |δ_{k−1} − δ_{k−2}| + |δ_{k−1} + δ_{k−2}|/2`，`w_hi = |δ_{k+1} − δ_k| + |δ_{k+1} + δ_k|/2`，
+   `s_k = (w_hi·δ_{k−1} + w_lo·δ_k)/(w_lo + w_hi)`，分母为 0 时 `s_k = 0`。
+4. 两端延拓（二次外插，各 2 个节点）：`f_0 = 3f_1 − 3f_2 + f_3`，`f_{−1} = 3f_0 − 3f_1 + f_2`；末端对称
+   （`f_{n+1} = 3f_n − 3f_{n−1} + f_{n−2}`，`f_{n+2} = 3f_{n+1} − 3f_n + f_{n−1}`）。
+5. 计算顺序固定（makima 对数据非线性，顺序影响结果）：
+   - 先把 V 沿第 1 维两端各延拓 2 行，得 (n1+4)×n2 的 Vp；
+   - 对 Vp 的每一行沿第 2 维两端各延拓 2 列后求第 2 维节点斜率 S2（与 Vp 同尺寸）；
+   - 对第 1 维的 6 个节点行 `i1−2 … i1+3`（含延拓行）各做第 2 维 Hermite：`g_k = H(Vp(k, i2), Vp(k, i2+1), S2(k, i2), S2(k, i2+1), t2)`；
+   - 由这 6 个中间值求第 1 维节点 i1、i1+1 处的斜率（cubic：`(g_{i1+1} − g_{i1−1})/2`、`(g_{i1+2} − g_{i1})/2`；
+     makima：用上面的公式，δ 取相邻 g 之差），再做 `H(g_{i1}, g_{i1+1}, s_{i1}, s_{i1+1}, t1)`。
+   MATLAB 内置 `griddedInterpolant` 的二维 makima 计算顺序与此不同，**不能替换**；`interp2`/`griddedInterpolant` 的 cubic 也不保证逐位相同。
+
+**`pchip_eval(x, y, q)`**（风扇 P-Q 曲线；Fritsch–Carlson/Brodlie，与 MATLAB `pchip` 同式）：`h_k = x_{k+1} − x_k`，`δ_k = (y_{k+1} − y_k)/h_k`。
+- 内部节点 k：`δ_{k−1}·δ_k ≤ 0` 时 `d_k = 0`；否则 `d_k = (w1 + w2)/(w1/δ_{k−1} + w2/δ_k)`，`w1 = 2h_k + h_{k−1}`，`w2 = h_k + 2h_{k−1}`。
+- 端点（左端；右端用 `h_{n−1}, h_{n−2}, δ_{n−1}, δ_{n−2}` 对称）：`d = ((2h_1 + h_2)δ_1 − h_1δ_2)/(h_1 + h_2)`；
+  `sign(d) ≠ sign(δ_1)` 时 `d = 0`；否则若 `sign(δ_1) ≠ sign(δ_2)` 且 `|d| > 3|δ_1|` 则 `d = 3δ_1`（sign(0) = 0）。
+- 求值：q 钳入 `[x_1, x_n]`，i 为满足 `x_i ≤ q` 的最大 i（i ≤ n−1），`t = (q − x_i)/h_i`，
+  `v = H(y_i, y_{i+1}, h_i·d_i, h_i·d_{i+1}, t)`。
+
+**`edt_nearest(mask)`**（壁距与最近流体格）：每格到最近 true 格的精确欧氏格心距离（格）与该格线性索引；可分离两遍：
+1. 沿第 1 维（每列内）：到本列最近 true 格的距离 g 与行号 r，上下等距取上（y 小）；本列无 true 为 ∞；
+2. 沿第 2 维（每行内）：`D²(y, x) = min_{x'} [(x − x')² + g(y, x')²]`，等值取 x' 最小；最近格 = (r(y, x'), x')。
+合起来平局规则为"线性索引最小"（先 x 最小的列，再该列 y 最小）。mask 全 false 时 D = ∞、索引 0；true 格 D = 0、索引为自身。
+不能用 `bwdist` 替代（平局规则不同）。
 
 ## 4. 共轭传热与元件热网络
 
-每步每个元件（CPU、GPU、电源）：
-1. 进风温度 `T_in` = 进风采样带流体格均温；散热体平均风速 V（m/s）。
-2. 热网络（`DetailedThermalNetwork.solve`）：
-   - CPU/GPU：`h = 30 + 130·min(V, 6)` [W/m²K]；鳍片效率 `η_f = tanh(mL)/(mL)`，
-     `m = sqrt(2h/(k·t_fin))`，k = 200 W/mK，L = 25 mm；`η_o = 1 − 0.8(1 − η_f)`；
-     `R_conv = 1/(h·A·η_o)`；`R_total = R_jc + R_tim + R_base + R_conv`。
-   - 电源：`h = 15 + 80·min(V, 4)`，A = 0.08 m²，`R_total = R_internal + 1/(h·A)`。
+第 16 步先算一次格心风速 `speed = |格心速度|·VEL_SCALE`（m/s），然后按 **CPU → GPU → 电源** 的顺序（缺的元件跳过），对每个元件：
+1. 进风温度 `T_in = mean(T(进风集合))`（用当前 T，已含本步先处理元件的注热）；散热体平均风速 `V = mean(speed(散热体))`（集合见 §2.7）。
+2. 热网络一步（`DetailedThermalNetwork.solve(V, T_in, DT)`，`v = max(0, V)`）：
+   - CPU/GPU：`h = 30 + 130·min(v, 6)` [W/m²K]；`t_fin = max(fin_thickness_mm, 0.1)/1000`，`m = sqrt(2h/(200·t_fin))`，L = 0.025 m，
+     `η_f = tanh(mL)/(mL + 1e−10)`，`η_o = 1 − 0.8(1 − η_f)`；A = `A_fin_total_m2`（缺省 CPU 0.12、GPU 0.50）；
+     `R_conv = 1/max(h·A·η_o, eps)`；`R_total = R_jc + R_tim + R_base + R_conv`。
+   - 电源：`h = 15 + 80·min(v, 4)`，`R_total = R_internal + 1/max(h·0.08, eps)`。
    - V 不设下限：风扇提速 → h 增大 → 结温下降。
-   - 节流（CPU/GPU）：无节流理论稳态温度 `T_in + P·R_total` 经同 τ 低通后超过节流阈，
-     按超出量在 5°C 内线性降功率，最多 35%。电源不节流，超过 `warnTemp`（85°C）只置 overTemp。
-   - 结温一阶惯性：`Tj += min(1, DT/τ)·(T_in + P_actual·R_total − Tj)`，τ = 0.25 s（数值平滑）。
-3. 注热：`ΔT_i = P_actual · w_i/Σw · DT / (ρ·c_p·Δx²·depthM)`，
-   `w_i = 0.25 + 0.75·min(1, V_i/1.5)`（热优先进入运动流体）。
+   - `a = min(1, DT/τ)`，τ = 0.25 s（数值平滑）。`T_theory = T_in + P·R_total`，`T_theory_f += a·(T_theory − T_theory_f)`；
+     `excess = T_theory_f − T_throttle`，`overTemp = excess > 0`；可节流（CPU/GPU）且 excess > 0 时 `r = min(0.35, 0.35·excess/5)`，否则 0；
+     `P_actual = P·(1 − r)`；`Tj += a·(T_in + P_actual·R_total − Tj)`；
+     `T_sink_base = Tj − P_actual·(R_jc + R_tim)`（CPU/GPU）或 `Tj − 0.5·P_actual`（电源）。
+   - 初值 `Tj = T_theory_f = T_amb`。节流阈：CPU `cpu.throttleTemp`（95）、GPU `gpu.throttleTemp`（87）；电源取 `psu.warnTemp`（85），
+     不降功率，只置 overTemp。
+3. 注热：`w_i = 0.25 + 0.75·min(1, speed_i/1.5)`（热优先进入运动流体），
+   `ΔT_i = P_actual · (w_i/Σw) · DT / (AIR_DENSITY·AIR_CP·Δx²·depthM)`，加到散热体各流体格。
+4. 固体温度：CPU 底座矩形全部格 `T_solid = Tj`、CPU 鳍片流体格 `T_solid = T_sink_base`；GPU PCB 矩形 `Tj`、GPU 散热片流体格 `T_sink_base`；
+   电源 body 矩形全部格（含内部）`Tj`。
 
 **电源损耗**：`P_loss = P_load·(1/η − 1)`，η 为 `psu.effCurve` 在负载率 `P_load/ratedW` 处的线性插值，
-负载率夹在曲线两端之间（80 PLUS 金牌典型：0.1/0.2/0.5/1.0 → 0.82/0.87/0.90/0.87）。电源热网络的
-"节流阈"取 `warnTemp`（85°C），只用于置 overTemp，不降功率。
+负载率夹在曲线两端之间（80 PLUS 金牌典型：0.1/0.2/0.5/1.0 → 0.82/0.87/0.90/0.87）。
 
 ## 5. 噪音模型（听者在机箱前侧约 1 m）
 
-单扇 `L = L_base + ΔL_op + ΔL_grille + ΔL_pos`（dB(A)），总噪音能量叠加 `10·log10(Σ10^(L/10))`。
-- `L_base = L_idle + (L_max − L_idle)·f³`，`f = (rpm − rpm_min)/(rpm_max − rpm_min)`。
-- `ΔL_op = stallDb·((stallQ − q)/stallQ)²`（q < stallQ），q 为流量比的低通（τ = 0.5 s）；
-  stallQ = 0.4，stallDb = 6。
-- `ΔL_grille = 10·log10(1 + ζ/ζ_ref)`（机箱风扇开口 ζ），ζ_ref = 2。
+单扇 `L = L_base + ΔL_op + ΔL_grille + ΔL_pos`（dB(A)），查询时按当前转速计算：
+- `L_base = L_idle + (L_max − L_idle)·f³`，`f = (rpm − rpm_min)/max(rpm_max − rpm_min, eps)`。
+- `ΔL_op = stallDb·((stallQ − q)/stallQ)²`（q < stallQ，否则 0），`q = clamp(noiseQRatio, 0, 2)`；noiseQRatio 为流量比的低通
+  （初值 1，τ = 0.5 s，§3.6）；stallQ = 0.4，stallDb = 6。
+- `ΔL_grille = 10·log10(1 + max(ζ, 0)/ζ_ref)`，ζ 为机箱风扇开口的格栅 ζ（进 2.0 / 排 0.8），内置风扇 0；ζ_ref = 2。
 - `ΔL_pos`：前 0、顶 −1、底 −2、后 −3、CPU/GPU 风扇 −3、电源风扇 −4。
-参数在布局 `acoustics` 字段（缺省 `acoustics_default`）。
+
+总噪音 `L_tot = 10·log10(max(Σ 10^(L/10), 1))`（下限 0 dB）；任何单扇非有限值报错。
+参数在布局 `acoustics` 字段（缺省 `acoustics_default`，字段合并后校验）。
 
 ## 6. 诊断与输出
 
-- **CFD 温度**：机箱内均温 = 机箱内流体格均温；顶排/后排 = 对应机箱风扇开口的出风焓流加权温度；
-  机箱风量 = 机箱开口（不含电源风道）的总出风量。
-- **代数热平衡内温**（交叉校验）：`internalAmbientAlg`，只用于守恒测试判据 C。
-- **死区**：机箱内风速 < 0.1 m/s 的流体格占比（> 30% 告警）。
-- **评分**：散热 25%（CPU ≤ 60°C / GPU ≤ 70°C 满分，节流阈零分）、性能 20%（交付功率/额定）、
-  均衡 10%（100 − 2|ΔT|）、余量 15%（距节流阈）、噪音 20%（100 − 3(dB − 20)）、
-  性价比 10%（100 − 机箱风扇总价/15）。
-- **压力视图**：见 §1；开口标注 = 各开口净风量（> 0 流出）。
-- **正负压标签**：机箱风扇标称自由风量 进 > 排×1.1 为正压，< ×0.9 为负压。
+- **机箱内均温** `internalAmbient = mean(T(insideMask))`（insideMask 含开口格、电源内部、多孔区，§2.8）。
+- **开口通量**（每个开口单独算，外向为正）：读穿壁外侧的面——顶壁格 (cT, x) 的 v 面 yf = cT（外向 = −v）、后壁 (y, cL) 的 u 面 xf = cL（−u）、
+  前壁 (y, cR) 的 u 面 xf = cR+1（+u）、底壁 (cB, x) 的 v 面 yf = cB+1（+v）；`vol = Σ v_n·VEL_SCALE·Δx·depthM`；
+  面温取迎风值（出流取开口格、入流取壁外侧相邻格）；`heat = AIR_DENSITY·AIR_CP·Σ (T_f − T_amb)·v_n·Δx·depthM`；
+  `cfm = vol/CFM_TO_M3S`。重叠开口的共用格在两个开口里各计一次；按壁汇总（守恒测试用）时对拼接的 `openingIdx` 求和，重复格同样重复计入。
+- **顶排/后排温度**：遍历非电源开口（kind ≠ psu_intake/psu_exhaust，**含被动通风口**），净 `vol > 0` 者按所在壁（top/rear）累加
+  [heat, vol]；`T = T_amb + Σheat/max(ρc_p·Σvol, eps)`，`Σvol ≤ 1e−6` 时取 T_amb。
+- **机箱风量** `totalCFM` = 非电源开口中净 `vol > 0` 者之和 / CFM_TO_M3S。开口标注 = 每个开口的净 cfm（> 0 流出）。
+- **风扇状态表**：rpm、实测 `cfm = |diskFlow|·2118.88`（推进结束时的流场，取绝对值）、自由风量 `cfm_max·rpm/rpm_max`、
+  静压 `lastDp`（施力前流场的工作点，流量约低 4%，所以工作点图上的点略偏离曲线）、流量比 noiseQRatio、单扇噪音与能量占比。
+- **代数热平衡内温**（交叉校验，只用于守恒测试判据 C）：`CFM_ex = Σ_排气机箱风扇 (自由风量·0.75·flowFactor)`；
+  `CFM_ex > 0.1` 时 `T_alg = T_amb + (P_cpu + P_gpu)/(CFM_ex·AIR_DENSITY·AIR_CP·CFM_TO_M3S)`（实际功率），否则 T_amb。
+- **死区**：机箱内（insideMask）格心风速 < 0.1 m/s 的格占比（> 30% 告警）。
+- **涡量**：`ω_z = v_x − u_y`（格心中心差分，1/s），边缘与障碍格为 0；界面显示 −ω_z。
+- **无量纲数**（显示用）：V = insideMask 平均风速，L = 机箱边长 [m]，`ΔT = max(5, max(Tj_cpu, Tj_gpu) − T_amb)`；
+  `Re = ρVL/μ`，`Gr = gβ_TΔT L³/ν²`，`Ra = Gr·Pr`，`Nu = (Nu_free³ + Nu_forced³)^(1/3)`，`Nu_free = 0.59·max(Ra, 1e−6)^0.25`，
+  `Nu_forced = 0.023·max(Re, 1)^0.8·Pr^0.4`；Re < 2300 层流、< 4000 过渡、否则湍流；`Ri = Gr/(Re² + 1)`：> 10 自然对流主导、> 0.1 混合、否则强制；
+  机箱内最大 T − T_amb > 30 K 时标注 Boussinesq 超限。
+- **评分**（缺失元件按 T_amb、节流阈 95、功率 0）：
+  散热 `0.5·clamp((T_thr,c − T_c)/(T_thr,c − 60)·100, 0, 100) + 0.5·clamp((T_thr,g − T_g)/(T_thr,g − 70)·100, 0, 100)`；
+  性能 `clamp((P_实/max(P_额, eps) − 0.65)/0.35·100, 0, 100)`（CPU+GPU 实际/名义功率，锁 35% 节流时为 0）；
+  均衡 `max(0, 100 − 2|T_c − T_g|)`；余量 `100·[0.5·max(0, (T_thr,c − T_c)/(T_thr,c − T_amb)) + 0.5·max(0, (T_thr,g − T_g)/(T_thr,g − T_amb))]`；
+  噪音 `clamp(100 − 3(dB − 20), 0, 100)`（dB 为 L_tot）；性价比 `max(0, 100 − 机箱风扇总价/15)`；
+  总分 `round(0.25·散热 + 0.20·性能 + 0.10·均衡 + 0.15·余量 + 0.20·噪音 + 0.10·性价比)`（分项未取整时加权）。
+- **压力视图**：见 §1；机箱内平均压 = P 在 insideMask 上有限值的均值（界面标题与数据集 `meanInteriorPressurePa` 同口径），
+  界面上 |均值| < 0.05 Pa 显示"≈ 机箱外"。
+- **正负压标签**：机箱风扇当前转速的自由风量合计，进 > 排×1.1 为正压，< 排×0.9 为负压，其余平衡；两者都 ≤ 0 为"无机箱风扇"。
 
-## 7. 稳态判据（`runToSteady`）
+## 7. 稳态判据：`runToSteady`（平台检测）与 `steady_long_run`（长时统计）
 
-每 chunk（50）步记录一行 [各结温, 机箱内均温, 机箱风量]；比较最近两个相邻窗口（各约 1 s = 200 步）
-的均值：结温与内温均值变化 < 0.3°C、风量相对变化 < 3% 即判稳态。最少 2 s、最多 15 s 物理时间；
-maxSteps 严格；出现 NaN/Inf 提前停止。结果取最近一个窗口的均值（`info.final`）。
+**`runToSteady(opts)`**：从求解器**当前状态**出发。缺省 `chunk = 50`、`window = round(1/DT) = 200`、`minSteps = round(2/DT) = 400`、
+`maxSteps = round(15/DT) = 3000`（严格）、`tolT = 0.3 °C`、`tolFlow = 0.03`；`nWin = max(1, round(window/chunk))`（缺省 4）。
+每块推进 `min(chunk, maxSteps − 已推进)` 步后记录一行 `[各结温（cpu, gpu, psu 中存在者）, internalAmbient, totalCFM]`；
+`final` = 最近 nWin 行的均值；行或 T 场出现 NaN/Inf 即停（diverged）。行数 ≥ 2·nWin 且步数 ≥ minSteps 时，
+`a` = 再往前 nWin 行的均值、`b = final`：`dT = max|b − a|`（除风量外各列），`dQ = |b_Q − a_Q|/max(b_Q, 1)`，
+`dT < tolT` 且 `dQ < tolFlow` 即判稳态并停止。结果取 `final`（最近一个窗口的均值）。
+
+它只是"到平台即停"，可能停在暂时的平台上：v4.1 的中位数重装判据下，280² 默认布局约第 850 步之前 GPU 结温停在约 65 °C，
+算子重装后跳到约 61 °C（§3.10）。v4.2 的 L1 判据下不再出现这种假平台，但判稳后流场仍可能缓慢漂移，判稳时刻也受
+实现细节影响，所以它不作为对照标准。
+
+**`steady_long_run(L, P, gridScale, opts)`**（标准答案的稳态算例，`make_reference_dataset` 的 `steady_*` 用它）：
+从静止新建求解器，`turbUpdateEvery = 1`，用 runToSteady 的推进框架但 `tolT = tolFlow = −1`（永不判稳）、`chunk = 50`、
+固定推进 3000 步（15 s）；每 50 步一行瞬时值，取步数 > 1000 的行（第 1050、1100 … 3000 步，共 40 行）的
+均值、标准差（N−1 归一）、最小值、最大值；另存全程轨迹 `[步数, 各列]`。比较移植结果用长时均值，std/极值作容差参考。
+
+**界面设置（与参考数据不同）**："跑到稳态"按钮调用 runToSteady，精确档（280²）用 `chunk = 25`（nWin = 8，窗口仍为 200 步）；
+预览档（140²）湍流隔步更新 `turbUpdateEvery = 2`（v4.2 默认布局长时均值与逐步更新相差 ≤ 0.3 °C、风量 0.6%），精确档为 1。
+参考数据：`fixed_*` 为 140²、N = 1；`steady_*` 为 280²、N = 1、chunk 50。
 
 ## 8. 能量计账（守恒测试）
 
-逐步累计各算子改变的焓（注入、平流、扩散、海绵环重置、钳位），判据：
+逐步累计各算子改变的焓（注入、平流、扩散、海绵环重置、钳位；只计流体格，机箱内区另计），判据：
 A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平衡 ≤ 5%；C CFD 内温与代数内温偏差
-在 [−15, +45]°C。
+在 [−15, +45]°C。计量窗口从 `resetEnergyAccounting`（清零并记录储能基准）起算。
 
 ## 9. 参数表（默认值）
 
 | 类别 | 参数 | 值 |
 |---|---|---|
-| 空气 | ρ、c_p、ν、Pr、β_T、g | 1.184 kg/m³、1005 J/kgK、1.56e−5 m²/s、0.71、3.4e−3 1/K、9.81 m/s² |
+| 空气（AIR，可覆盖） | ρ、μ、c_p、ν、Pr、β_T、g | 1.184 kg/m³、1.81e−5 Pa·s、1005 J/kgK、1.56e−5 m²/s、0.71、3.4e−3 1/K、9.81 m/s² |
+| 常量（不可覆盖） | AIR_DENSITY、AIR_CP、CFM_TO_M3S、CFM_PER_M3S | 1.184、1005、4.719e−4、2118.88 |
 | 环境 | T_amb | 25°C |
-| 数值 | DT、spongeDamping、速度限幅 | 0.005 s、0.8、6 m/s |
+| 数值 | DT、spongeWidth、spongeDamping、速度限幅、T 上限 | 0.005 s、1 格、0.8、6 m/s、200°C |
 | 湍流 | a₁、β*、β₁、α、σ_k、σ_ω、I、V_ref、ν_t 上限 | 0.31、0.09、0.0708、5/9、0.6、0.5、0.05、2 m/s、2000ν |
+| 湍流下限 | k、ω | k ≥ 1e−10；ω ∈ [1e−6, 1e8]；壁距下限 0.5Δx |
+| LVEL | κ、A⁺、ν_t 上限、ν_eff 上限 | 0.4、26、50ν、30ν |
 | 风扇 | 盘厚、格栅 ζ（进/排）、温控曲线 | 12 mm、2.0/0.8、25/55/70/80/85°C → 20/20/50/80/100% |
+| 风扇状态 | flowFactor τ、noiseQRatio τ、代数轨流量效率 | 0.15 s、0.5 s、0.75 |
+| 热网络 | τ、鳍片 k、鳍片 L、节流窗口/上限 | 0.25 s、200 W/mK、25 mm、5°C/35% |
 | CPU | 热阻 jc/TIM/base、鳍片厚、面积、节流阈 | 0.15/0.04/0.05 K/W、0.4 mm、0.15 m²、95°C |
 | GPU | 槽数、热阻 jc/TIM/base、鳍片厚、面积、节流阈 | 4 槽（散热片 57 mm）、0.08/0.02/0.02 K/W、0.35 mm、0.606 m²（= 0.5·57/47）、87°C |
-| 电源 | 额定、内部热阻、告警温度 | 850 W、0.25 K/W、85°C |
+| 电源 | 额定、内部热阻、告警温度、进/出风 ζ | 850 W、0.25 K/W、85°C、2.0/1.0 |
 | 多孔 ζ（穿流/横流） | CPU 鳍片、GPU 鳍片、电源内部 | 8/60、4/10、6/6 |
-| 稳态 | chunk、window、tolT、tolFlow、min/max | 50 步、1 s、0.3°C、3%、2 s/15 s |
+| 几何 | 电源贴壁吸附、进风采样带、无风扇电源进风口 | 6 mm、10 mm（≥ 2 格）、120 mm |
+| 稳态 | runToSteady chunk、window、tolT、tolFlow、min/max | 50 步、1 s、0.3°C、3%、2 s/15 s |
+| 稳态 | steady_long_run 步数、统计起点、采样间隔 | 3000、> 1000 步、50 步 |
 | 噪音 | stallQ、stallDb、ζ_ref | 0.4、6 dB、2 |
+| 粒子 | 数量、尾迹、寿命、机箱内比例、静止阈值/帧数 | 1500、8 帧、150 帧、0.92、0.03 m/s / 25 帧 |
 
 几何（mm，相对机箱原点）见 `layout_default.m`；风扇型号见 `fan_catalog.m`；安装位见 `fan_slots.m`。
 
@@ -238,24 +504,56 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 
 | 字段 | 内容 |
 |---|---|
-| `name`、`ambientC`、`turbulenceModel` | 名称、环境温度、湍流模型 |
+| `name`、`ambientC`、`turbulenceModel` | 名称、环境温度、湍流模型（'komega' / 'lvel' / 'laminar'） |
 | `domain` | `sizeMm`、`baseCellMm` |
-| `chassis` | `enabled`、`originMm`、`sizeMm`、`depthM`、`wallTempC.{rear,front,top,bottom}` |
+| `chassis` | `enabled`、`originMm`、`sizeMm`、`depthM`、`wallTempC.{rear,front,top,bottom}`（NaN = 绝热） |
 | `power` | `cpu`、`gpu`、`psu`（电源为输出负载） |
-| `fanDiskMm`、`grille`、`acoustics` | 执行盘厚、格栅 ζ、噪音参数 |
-| `cpu` / `gpu` / `psu` | 元件矩形、多孔区、热参数、内置风扇；可缺省。`gpu.slots` 为显卡槽数（可缺省，按厚度推断） |
+| `fanDiskMm`、`grille`、`acoustics` | 执行盘厚、机箱风扇格栅 ζ（`intakeZeta`/`exhaustZeta`）、噪音参数 |
+| `cpu` | `base`、`fins`（矩形）、`porous`、`thermal`、`tjmax`、`throttleTemp`、`fan.model` |
+| `gpu` | `slots`（可缺省，按厚度推断）、`pcb`、`heatsink`、`porous`、`thermal`、`tjmax`、`throttleTemp`、`fans.{model, xs}` |
+| `psu` | `body`、`ratedW`、`effCurve.{load, eff}`、`porous`、`fan.{model, xMm}`、`intakeZeta`、`exhaustZeta`、`R_internal`、`warnTemp` |
 | `ram`、`vrm`、`chipset`、`motherboardTray` | 其它元件（chipset、主板区仅显示） |
-| `shroud` | 电源仓挡板 `yMm`、`hMm`、`gaps` |
+| `shroud` | 电源仓挡板 `yMm`、`hMm`、`gaps.{x0Mm, x1Mm}` |
 | `caseFans` | `mount`、`alongMm`、`type`、`model`、`speedMode`、`manualPct` |
-| `vents` / `solidBlocks` / `porousBlocks` / `air` | 可选 |
+| `vents` | 可选：`mount`、`alongMm`、`lengthMm`、`zeta` |
+| `solidBlocks` / `porousBlocks` / `air` | 可选：实心块矩形；多孔块 `rect`、`zetaThru`、`zetaCross`、`thru`；覆盖 `AIR` 字段 |
+
+cpu/gpu/psu 可整体缺省（该元件不存在）。
 
 ## 11. 移植要点（网页版）
 
-- 必须一致：每步顺序（§3）、单位换算（§1）、阻力 β 用 u_ref、两次投影、插值口径（§3.4）、
-  风扇工作点与温控、热网络与注热权重、稳态判据。
-- 线性代数：压力（Cholesky）、扩散（对称正定/LDL）用直接法或收敛到 1e−10 的迭代法均可；
-  只影响舍入。
-- 验证：先对 `tests/reference/` 的固定步数算例（预览网格、从静止推进 200 步）逐场比较，
-  再对稳态算例比较结温、风量、噪音（容差见 `tests/reference/README.md`）。
-- 已知平台差异：Octave 兼容层的 cubic/makima 与 MATLAB 内置实现不保证逐位一致；
-  参考数据以生成环境为准（文件内记录生成环境与版本）。
+- **必须一致**：每步顺序（§3）、单位换算与两个 CFM 常量（§1）、取整规则（四舍五入 0.5 远离零、`floor(n/2)`）与 §2 的全部整数几何公式、
+  两次投影与阻力 β 用 u_ref 且算子与速度更新都用冻结的 β_ref、冻结算子的重装判据（§3.10，L1 变化对全部格求和）、
+  自带插值/距离变换/pchip（§3.11，逐位口径）、风扇工作点取施力前流场、温控、热网络与注热权重、共轭传热 CPU → GPU → 电源的顺序、
+  常量 AIR_DENSITY/AIR_CP 的使用范围、稳态统计口径（§7）。
+- **线性代数**：压力（Cholesky）、扩散（对称正定/LDL）用直接法或收敛到 1e−10 的迭代法均可；只影响舍入。
+- **验证顺序**：
+  1. 几何：对 `fixed_*.json` 的 `geometry`（障碍类型、面掩码、阻力系数、格栅面、nearestFluid、wallDistanceM、海绵环、inside、
+     定温壁、发热固体格、共轭传热集合、风扇盘、开口）逐项比对，并对照 §2.9 核对值；
+  2. 逐步：`snapshots` 含第 1/10/200 步的完整状态（T、uF、vF、p、pProj1、k、ω、nuStep、nuAssembled、Tsolid 与结温、风扇工作点、
+     开口风量、噪音等标量），可逐步定位差异——第 1 步不一致先查几何与单步算子，第 10 步查冻结/重装与风扇、热网络状态，第 200 步查累积；
+  3. 稳态：用 `steady_long_run` 的长时统计（均值，参考 std/极值）比较结温、风量、噪音，不要比单次 runToSteady 的平台值
+     （容差见 `tests/reference/README.md`）。
+- **平台差异**：`grid_interp2`、`edt_nearest`、`pchip_eval` 为自带实现，MATLAB 与 Octave 同一代码，不要换成
+  `griddedInterpolant`、`interp2`、`bwdist`、`interp1(…,'pchip')`；剩余差异来自线性求解器与浮点求和顺序。
+  参考数据以生成环境为准（文件内记录 `generator.platform/version/simulator`）。
+- 其它约定：MATLAB `sign(0) = 0`；`std` 为 N−1 归一；`mean` 为算术平均；粒子示踪（§12）用随机数，不需要逐位一致。
+
+## 12. 粒子示踪（可视化，不参与计算）
+
+`ParticleTracer`（界面"粒子"开关）。坐标为格坐标：X 为列（x 向右）、Y 为行（y 向下），格心在整数处。
+- 参数：粒子数 n = 1500（界面 `round(1500·max(1, gridScale))`，两档都是 1500）、尾迹 8 帧（保存最近 9 个位置）、寿命 150 帧、
+  重生在机箱内的比例 0.92、静止阈值 0.03 m/s、静止 25 帧重生。
+- 可重生格：流体且不在海绵环的格；机箱内池 = 其中属于 insideMask 的格。
+- 撒点 `spawn(k)`：`k₁ = round(0.92k)` 个从机箱内池、其余从全部可重生格等概率有放回抽格（池空则用全部可重生格），
+  位置 = 格心 + 各向独立的 U(−0.5, 0.5) 偏移。
+- `reset`：撒 n 个点，尾迹历史全部置为初始位置；年龄初值 `floor(rand·150)`（错开重生），静止计数与速度置 0。网格尺寸变化时自动 reset。
+- 每帧 `step(dtSec)`（界面每帧 dtSec = 0.02 s，与该帧推进的求解器步数无关；暂停时由 0.05 s 定时器驱动，约 2 分钟无操作自动停）：
+  1. `s = VEL_SCALE·dtSec/Δx`（网格速度 → 格/帧），`U = u_c·s`、`V = v_c·s`（当前格心速度场）；
+  2. 子步数 `nSub = min(4, max(1, ceil(max(|U|, |V|)/3)))`，U、V 除以 nSub；
+  3. 每子步中点法：`(u1, v1) = 取样(x, y)`，`(u2, v2) = 取样(x + u1/2, y + v1/2)`，`x += u2`、`y += v2`，累计位移 `Σ hypot(u2, v2)`；
+     取样 = 坐标先夹进 `X ∈ [1, H]`、`Y ∈ [1, W]` 再双线性插值（不夹取会让出口外的粒子冻结在域边）；
+  4. 速度 = 累计位移/s·VEL_SCALE（m/s）；尾迹历史右移一格、最新位置放第 1 列；年龄 +1；速度 < 0.03 m/s 时静止计数 +1，否则清零；
+  5. 重生判据（任一）：`round(x) < 2 或 > H−1 或 round(y) < 2 或 > W−1`（出界含贴域边）、`(round(x), round(y))` 为障碍格、
+     年龄 > 150、静止计数 > 25；重生粒子按 `spawn` 取新位置，整条尾迹置为该位置，年龄、静止计数、速度清零。
+- 绘制：每个粒子的 9 个历史位置连成折线（NaN 分隔），头部为最新位置。

@@ -121,7 +121,7 @@ classdef Fan < handle
             end
             pq = obj.pq_curve;
             if qRatio <= 1
-                f = interp1(obj.PQ_QGRID, pq, qRatio, 'pchip');
+                f = pchip_eval(obj.PQ_QGRID, pq, qRatio);
             else
                 f = pq(end) + (pq(end) - pq(end-1)) / (obj.PQ_QGRID(end) - obj.PQ_QGRID(end-1)) * (qRatio - 1);
             end

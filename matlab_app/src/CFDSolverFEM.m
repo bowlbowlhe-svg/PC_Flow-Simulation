@@ -9,8 +9,10 @@ classdef CFDSolverFEM < CFDSolverBase
     %     5. k-ω 湍流输运
     %     6. 温度隐式扩散 → 半拉格朗日平流（makima 保形）→ 边界 → 共轭传热注热
     %
-    %   扩散算子系数 diffScale = 1/格距²（ν、α 为物理量 m²/s）；稀疏分解按
-    %   ν_eff/α_eff 中位数相对变化 > 5% 时重装配。
+    %   扩散算子系数 diffScale = 1/格距²（ν、α 为物理量 m²/s）。速度/温度/k-ω 扩散的稀疏分解
+    %   在系数场（ν_eff、α_eff、ν_t）相对装配时的场的 L1 变化 Σ|a−b|/Σ|b| > reassembleTol（5%）
+    %   时重装。v4.2 前按全域中位数判断：机箱外大片静止空气使中位数几乎不变，算子会长期停留在
+    %   早期的系数场上，280² 下出现假的"第一平台"（默认布局约 850 步时才重装并跳到真实状态）。
 
     properties
         K_lap           % 5 点差分 Laplacian（外圈缺失邻居计入对角，即伪 Dirichlet）
@@ -34,20 +36,21 @@ classdef CFDSolverFEM < CFDSolverBase
         edgeMissing     % 每格越出计算域的邻居数（外圈 ghost，温度取环境值）
         colDir          % dirichletIdx 在 obsIdx 中的列号
         tempCoupling = []   % 空间 α 场时：流体×障碍耦合块（Dirichlet RHS 修正用）
-        lastNuEff = 0       % 上次速度扩散装配时的 ν_eff 中位数
-        lastAlphaEff = 0    % 上次温度扩散装配时的 α_eff 中位数
+        lastNuEff = 0       % 上次速度扩散装配时的 ν_eff 中位数（仅记录）
+        nuFieldStep = []    % 本步的 ν_eff 场（≥ 分子粘度；数据集导出用）
+        nuFieldAssembled = []  % 当前速度扩散算子装配时所用的 ν_eff 场
+        alphaFieldAssembled = []  % 当前温度扩散算子装配时所用的 α_eff 场
+        nuTAssembled = []      % 当前 k-ω 扩散算子装配时所用的 ν_t 场
+        reassembleTol = 0.05   % 冻结算子重装判据：系数场相对 L1 变化
+        forceReassemble = false  % 诊断：每步重装全部冻结算子
+        lastAlphaEff = 0    % 上次温度扩散装配时的 α_eff 中位数（标量 α 路径的判据与边界项）
         lastAlphaField = [] % 本步温度扩散使用的 α 场（守恒校核用）
         % k-ω 输运缓存
         decomp_turbK = []
         decomp_turbW = []
-        lastNuTKMed = 0
         lastTurbDt = 0      % k-ω 矩阵装配时的推进时长（子循环步数变化时重装）
         wallAdjFluidIdx = []  % 障碍邻接流体格（ω 壁面边界）
         wallAdjCaseIdx = []   % 机箱壁邻接流体格（k 壁面边界）
-        % 插值器
-        gridInterpT     % 格心标量（T/k/ω）makima 插值器
-        gridInterpUF    % u 面点阵 cubic 插值器
-        gridInterpVF    % v 面点阵 cubic 插值器
     end
 
     methods
@@ -60,7 +63,6 @@ classdef CFDSolverFEM < CFDSolverBase
             if nargin < 6, dtVal = []; end
             obj@CFDSolverBase(cpuPower, gpuPower, psuPower, layout, gridScale, dtVal);
             obj.assembleSparseMatrices();
-            obj.initGridInterpolants();
         end
 
         function reset(obj)
@@ -76,10 +78,10 @@ classdef CFDSolverFEM < CFDSolverBase
         function initFields(obj)
             initFields@CFDSolverBase(obj);
             obj.decomp_turbK = []; obj.decomp_turbW = [];
-            obj.lastNuTKMed = 0;
             obj.decomp_velU = []; obj.decomp_velV = [];
             obj.velU_actIdx = []; obj.velV_actIdx = [];
             obj.lastNuEff = 0;
+            obj.nuFieldAssembled = []; obj.alphaFieldAssembled = []; obj.nuTAssembled = [];
         end
 
         % ================================================================
@@ -202,18 +204,6 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.assemblePressureMatrix();
         end
 
-        function initGridInterpolants(obj)
-            W = obj.GRID.W; H = obj.GRID.H;
-            [Xnd, Ynd] = ndgrid(1:W, 1:H);
-            % 标量用 makima（保形，避免 cubic 过冲在钳位处变成数值能源）
-            obj.gridInterpT = griddedInterpolant(Xnd, Ynd, zeros(W,H), 'makima','nearest');
-            % u 面位于 (y, xf−0.5)，v 面位于 (yf−0.5, x)
-            [XndU, YndU] = ndgrid(1:W, 0.5:H+0.5);
-            obj.gridInterpUF = griddedInterpolant(XndU, YndU, zeros(W, H+1), 'cubic','nearest');
-            [XndV, YndV] = ndgrid(0.5:W+0.5, 1:H);
-            obj.gridInterpVF = griddedInterpolant(XndV, YndV, zeros(W+1, H), 'cubic','nearest');
-        end
-
         function [Lw, coupling] = buildWeightedLaplacian(obj, wField, preserveConstant, adiIdx)
             % 面加权 Laplacian（空间变化 ν/α 用）：off-diag = (w_i+w_j)/2，diag = −Σ面权重；
             % 外圈缺失邻居的面权重补回对角（与 K_lap 同为伪 Dirichlet）。
@@ -267,12 +257,15 @@ classdef CFDSolverFEM < CFDSolverBase
                 nuField = ones(obj.GRID.TOTAL, 1) * nuVal;
             end
 
-            if obj.lastNuEff <= 0 || abs(nuVal - obj.lastNuEff) / obj.lastNuEff > 0.05
+            obj.nuFieldStep = nuField;
+            if obj.forceReassemble || isempty(obj.nuFieldAssembled) || ...
+                    obj.relChange(nuField, obj.nuFieldAssembled) > obj.reassembleTol
                 dt = obj.DT;
                 gs = obj.diffScale;
                 [obj.decomp_velU, obj.velU_actIdx] = obj.assembleFaceDiffusion(nuField, true,  dt, gs);
                 [obj.decomp_velV, obj.velV_actIdx] = obj.assembleFaceDiffusion(nuField, false, dt, gs);
                 obj.lastNuEff = nuVal;
+                obj.nuFieldAssembled = nuField;
             end
 
             obj.uF(~obj.uFaceActive) = 0;
@@ -410,7 +403,7 @@ classdef CFDSolverFEM < CFDSolverBase
             vActM = reshape(obj.vFaceActive, W+1, H);
             bU = 1 ./ (1 + reshape(obj.uDragCoef .* abs(uRef), W, H+1));
             bV = 1 ./ (1 + reshape(obj.vDragCoef .* abs(vRef), W+1, H));
-            rebuild = isempty(obj.decomp_presDrag);
+            rebuild = isempty(obj.decomp_presDrag) || obj.forceReassemble;
             if ~rebuild && obj.iteration - obj.betaRefStep >= 5
                 actU = obj.uDragCoef > 0 & obj.uFaceActive;
                 actV = obj.vDragCoef > 0 & obj.vFaceActive;
@@ -457,6 +450,12 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.vF = reshape(max(-velCap, min(velCap, vM)), [], 1);
         end
 
+        function r = relChange(~, a, b)
+            % 系数场相对 L1 变化 Σ|a − b| / Σ|b|（b 为装配时的场）
+            if isempty(b) || numel(a) ~= numel(b), r = inf; return; end
+            r = sum(abs(a(:) - b(:))) / max(sum(abs(b(:))), realmin);
+        end
+
         function advectFaces(obj)
             % 面场半拉格朗日平流（cubic）。回溯速度：u 面取本地 u + 环绕四个 v 面平均，
             % v 面对称。插值器第 1 维为 y，查询为 (y 回溯, x 回溯)。
@@ -476,9 +475,7 @@ classdef CFDSolverFEM < CFDSolverBase
             YqU = YuG - dt0 * vAtU;
             XqU = max(1.0, min(H, XqU));
             YqU = max(1.5, min(W-0.5, YqU));
-            obj.gridInterpUF.Values = uM;
-            warning('off', 'MATLAB:griddedInterpolant:MeshgridEval2DWarnId');
-            uNew = obj.gridInterpUF(YqU, XqU);
+            uNew = grid_interp2(uM, YqU, XqU, 'cubic', 1, 0.5);     % u 面位于 (y, xf − 0.5)
             uAtV = zeros(W+1, H);
             uAtV(2:W, :) = 0.25*(uM(1:W-1, 1:H) + uM(1:W-1, 2:H+1) + ...
                                  uM(2:W,   1:H) + uM(2:W,   2:H+1));
@@ -489,9 +486,7 @@ classdef CFDSolverFEM < CFDSolverBase
             YqV = YvG - dt0 * vM;
             XqV = max(1.5, min(H-0.5, XqV));
             YqV = max(1.0, min(W, YqV));
-            obj.gridInterpVF.Values = vM;
-            vNew = obj.gridInterpVF(YqV, XqV);
-            warning('on', 'MATLAB:griddedInterpolant:MeshgridEval2DWarnId');
+            vNew = grid_interp2(vM, YqV, XqV, 'cubic', 0.5, 1);     % v 面位于 (yf − 0.5, x)
 
             uNew(~reshape(obj.uFaceActive, W, H+1)) = 0;
             vNew(~reshape(obj.vFaceActive, W+1, H)) = 0;
@@ -525,17 +520,15 @@ classdef CFDSolverFEM < CFDSolverBase
                 obsM = reshape(obj.obstacle > 0, W, H);
                 d0mat(obsM) = d0mat(obj.nearestFluidIdx(obsM));
             end
-            obj.gridInterpT.Values = d0mat;
-            warning('off', 'MATLAB:griddedInterpolant:MeshgridEval2DWarnId');
-            dmat = obj.gridInterpT(Yq, Xq);
-            warning('on', 'MATLAB:griddedInterpolant:MeshgridEval2DWarnId');
+            dmat = grid_interp2(d0mat, Yq, Xq, 'makima', 1, 1);
             dmat(outDomain) = inflowValue;
             d = dmat(:);
         end
 
         function diffuseTemperature(obj, alphaEff)
-            % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，α_eff 中位数
-            % 相对变化 > 5% 时重装配。定温壁 Dirichlet，其余障碍绝热。
+            % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，α_eff 场相对装配时的
+            % L1 变化 > reassembleTol 时重装；边界 RHS 用装配时的 α 场（与矩阵一致）。
+            % 定温壁 Dirichlet，其余障碍绝热。
             if nargin < 2 || isempty(alphaEff)
                 alphaEff = obj.AIR.nu / obj.AIR.Pr;
             end
@@ -546,26 +539,36 @@ classdef CFDSolverFEM < CFDSolverBase
                 alphaField = [];
                 alphaVal = max(alphaEff, obj.AIR.nu / obj.AIR.Pr);
             end
-            if ~isempty(alphaField)
-                obj.lastAlphaField = alphaField;
+            if isempty(alphaField)
+                stale = obj.lastAlphaEff <= 0 || abs(alphaVal - obj.lastAlphaEff) / obj.lastAlphaEff > 0.05 || ...
+                        ~isempty(obj.alphaFieldAssembled);
             else
-                obj.lastAlphaField = alphaVal * ones(size(obj.T_fluid));
+                stale = isempty(obj.alphaFieldAssembled) || ...
+                        obj.relChange(alphaField, obj.alphaFieldAssembled) > obj.reassembleTol;
             end
-
-            if obj.lastAlphaEff <= 0 || abs(alphaVal - obj.lastAlphaEff) / obj.lastAlphaEff > 0.05
+            if obj.forceReassemble || stale
                 dt = obj.DT;
                 gs = obj.diffScale;
                 if ~isempty(alphaField)
                     [Lw, coupling] = obj.buildWeightedLaplacian(alphaField, false, obj.adiabaticObsIdx);
                     A_temp = obj.M_mass/dt - gs*Lw;       % 钉扎行对角 = 1/dt
                     obj.tempCoupling = coupling;
+                    obj.alphaFieldAssembled = alphaField;
                 else
                     A_temp = obj.M_mass/dt - alphaVal * gs * obj.L_temp + alphaVal * gs * obj.E_obs;
                     obj.tempCoupling = [];
+                    obj.alphaFieldAssembled = [];
                 end
                 obj.decomp_temp = decomposition(A_temp, 'ldl');
                 obj.temp_diag_oi = 1/dt;
                 obj.lastAlphaEff = alphaVal;
+            end
+
+            % 守恒校核用：本步实际使用的 α 场（冻结矩阵装配时的场）
+            if ~isempty(obj.alphaFieldAssembled)
+                obj.lastAlphaField = obj.alphaFieldAssembled;
+            else
+                obj.lastAlphaField = obj.lastAlphaEff * ones(size(obj.T_fluid));
             end
 
             gs    = obj.diffScale;
@@ -580,8 +583,8 @@ classdef CFDSolverFEM < CFDSolverBase
             % 非齐次 Dirichlet 修正：恢复清零障碍列后流体丢失的壁面耦合项；
             % 计算域外圈 ghost 取环境温度（远场）
             fluidMask = obj.obstacle == 0;
-            if ~isempty(alphaField)
-                edgeW = alphaField;
+            if ~isempty(obj.alphaFieldAssembled)
+                edgeW = obj.alphaFieldAssembled;   % 与冻结的矩阵同一 α 场
             else
                 edgeW = obj.lastAlphaEff * ones(obj.GRID.TOTAL, 1);
             end
@@ -642,16 +645,15 @@ classdef CFDSolverFEM < CFDSolverBase
             kA = max(kA, obj.nuTFloor);
             wA = max(wA, 1e-6);
 
-            % 2) 隐式扩散（ν_t 中位数变化 > 5% 时重装配）
-            nuTmed = median(nuT);
-            if isempty(obj.decomp_turbK) || obj.lastNuTKMed <= 0 || obj.lastTurbDt ~= dt || ...
-                    abs(nuTmed - obj.lastNuTKMed) / obj.lastNuTKMed > 0.05
+            % 2) 隐式扩散（ν_t 场相对装配时的 L1 变化 > reassembleTol 或推进时长变化时重装）
+            if obj.forceReassemble || isempty(obj.decomp_turbK) || obj.lastTurbDt ~= dt || ...
+                    obj.relChange(nuT, obj.nuTAssembled) > obj.reassembleTol
                 LwK = obj.buildWeightedLaplacian(nu + sigK * nuT, true);
                 LwW = obj.buildWeightedLaplacian(nu + sigW * nuT, true);
                 % 障碍行列已由 buildWeightedLaplacian 清零，钉扎行对角 = 1/dt（RHS 为 0）
                 obj.decomp_turbK = decomposition(obj.M_mass/dt - gs*LwK, 'ldl');
                 obj.decomp_turbW = decomposition(obj.M_mass/dt - gs*LwW, 'ldl');
-                obj.lastNuTKMed = nuTmed;
+                obj.nuTAssembled = nuT;
                 obj.lastTurbDt = dt;
             end
             rhsK = obj.M_mass/dt * kA;  rhsK(obj.obsIdx) = 0;
@@ -748,10 +750,10 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.accClamp = obj.accClamp + dCl;
             obj.accClampAdvect = obj.accClampAdvect + dCl;
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
-            % 障碍格温度仅作显示：定温壁取壁温、发热元件显示 T_solid、
-            % 绝热障碍取邻近流体格均值（避免温度视图出现假冷块）
+            % 障碍格温度仅作显示（不参与流体格的计算）：定温壁取壁温；发热元件固体格
+            % （CPU 底座、GPU PCB、电源外壳）取 T_solid；其余绝热障碍取 4 邻域流体格均值
+            % （无流体邻居取环境温度），避免温度视图出现假冷块
             obj.T_fluid(obj.dirichletIdx) = obj.dirichletT;
-            obj.T_fluid(obj.heatObsIdx) = obj.T_solid(obj.heatObsIdx);
             if ~isempty(obj.adiabaticObsIdx)
                 W = obj.GRID.W; H = obj.GRID.H;
                 Tm = reshape(obj.T_fluid, W, H);
@@ -766,6 +768,7 @@ classdef CFDSolverFEM < CFDSolverBase
                 Tm(adiM & ~hasN) = obj.T_amb;
                 obj.T_fluid = Tm(:);
             end
+            obj.T_fluid(obj.heatObsIdx) = obj.T_solid(obj.heatObsIdx);
             % 远场海绵环取环境温度（无限大外部空气池）
             Tpre = obj.T_fluid;
             obj.T_fluid(obj.spongeRingIdx) = obj.T_amb;
