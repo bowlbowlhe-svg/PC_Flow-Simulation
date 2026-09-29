@@ -5,12 +5,12 @@ classdef CFDSolverFEM < CFDSolverBase
     %     1. 速度隐式扩散（u/v 面各自 5 点 Laplacian，ν_eff 空间场）
     %     2. 投影（D·G 压力泊松，散度与梯度严格互为转置）
     %     3. 速度半拉格朗日平流（面心 cubic）
-    %     4. 浮力 → 风扇动量源 → 多孔区阻力 → 再投影 → 海绵环阻尼
+    %     4. 浮力 → 风扇动量源 → 阻力耦合投影（多孔区、格栅）→ 海绵环阻尼
     %     5. k-ω 湍流输运
     %     6. 温度隐式扩散 → 半拉格朗日平流（makima 保形）→ 边界 → 共轭传热注热
     %
-    %   扩散算子强度按 gs = (W-2)·(H-2) 缩放；稀疏分解按 ν_eff/α_eff 中位数
-    %   相对变化 > 5% 时重装配。
+    %   扩散算子系数 diffScale = 1/格距²（ν、α 为物理量 m²/s）；稀疏分解按
+    %   ν_eff/α_eff 中位数相对变化 > 5% 时重装配。
 
     properties
         K_lap           % 5 点差分 Laplacian（外圈缺失邻居计入对角，即伪 Dirichlet）
@@ -19,14 +19,19 @@ classdef CFDSolverFEM < CFDSolverBase
         decomp_velV = []   % v 面隐式扩散 LHS 分解
         velU_actIdx = []   % u 面激活子矩阵行映射
         velV_actIdx = []   % v 面激活子矩阵行映射
-        decomp_pres        % 压力泊松 LHS 分解
+        decomp_pres        % 压力泊松 LHS 分解（无阻力，第一次投影）
+        decomp_presDrag = []  % 阻力耦合压力算子分解（第二次投影）
+        betaRefU = []      % 阻力耦合算子装配时的 u 面权重 β = 1/(1+C|u|)
+        betaRefV = []
+        betaRefStep = -inf % 上次重装阻力耦合算子的步数
         decomp_temp        % 温度扩散 LHS 分解
-        pres_ref           % 压力参考点（消奇异）
+        presRefIdx = []    % 压力参考点：不与远场连通的每个流体连通域各钉一格（消奇异）
         farFieldPresIdx = []  % 远场海绵环格（压力 p=0）
         temp_diag_oi    % 温度 LHS 在障碍格的对角值（障碍行 RHS 保值用）
-        L_temp          % 温度 Laplacian（标量 α 路径；机箱壁真 Dirichlet，内部件绝热）
+        L_temp          % 温度 Laplacian（标量 α 路径；定温壁真 Dirichlet，其余障碍绝热）
         E_obs           % 障碍格对角选择矩阵
-        colWall         % wallObsIdx 在 obsIdx 中的列号
+        edgeMissing     % 每格越出计算域的邻居数（外圈 ghost，温度取环境值）
+        colDir          % dirichletIdx 在 obsIdx 中的列号
         tempCoupling = []   % 空间 α 场时：流体×障碍耦合块（Dirichlet RHS 修正用）
         lastNuEff = 0       % 上次速度扩散装配时的 ν_eff 中位数
         lastAlphaEff = 0    % 上次温度扩散装配时的 α_eff 中位数
@@ -90,14 +95,16 @@ classdef CFDSolverFEM < CFDSolverBase
             e  = ones(H,1);
             Dy = spdiags([e -2*e e], [-1 0 1], H, H);
             L  = kron(speye(H), Dx) + kron(Dy, speye(W));
-            gs = (W-2) * (H-2);
+            gs = obj.diffScale;
 
             obj.M_mass = speye(N);
             obj.K_lap  = L;
+            yy = mod((1:N)'-1, W) + 1;  xx = ceil((1:N)'/W);
+            obj.edgeMissing = 4 - ((yy>1) + (yy<W) + (xx>1) + (xx<H));
 
             oi = obj.obsIdx;
             obj.E_obs = sparse(oi, oi, ones(length(oi),1), N, N);
-            [~, obj.colWall] = ismember(obj.wallObsIdx, oi);
+            [~, obj.colDir] = ismember(obj.dirichletIdx, oi);
             obj.tempCoupling = [];
 
             % 速度扩散矩阵在首次 diffuseVelocity 时按面场懒装配
@@ -106,7 +113,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.assemblePressureMatrix();
 
             % 温度扩散（隐式，LHS = M/dt − α·gs·L_temp）：障碍行列清零后置 1；
-            % 机箱壁为 Dirichlet（耦合项在 RHS 恢复），内部件绝热（其面权重回补流体对角）
+            % 定温壁为 Dirichlet（耦合项在 RHS 恢复），其余障碍绝热（面权重回补流体对角）
             Ltemp = L;
             Ltemp(oi,:) = 0;
             Ltemp(:,oi) = 0;
@@ -125,32 +132,62 @@ classdef CFDSolverFEM < CFDSolverBase
         end
 
         function assemblePressureMatrix(obj)
-            % 压力泊松 LHS = D·G：按格间面激活掩码直接装配 5 点 Laplacian，
-            % 贴障碍面自动丢项（天然 Neumann，无穿透）。远场海绵环 p=0（伪 Dirichlet），
-            % pres_ref 单点钉扎消奇异。
+            % 无阻力压力算子（第一次投影用）与阻力耦合算子的初始参考
+            W = obj.GRID.W; H = obj.GRID.H;
+            obj.farFieldPresIdx = setdiff(obj.spongeRingIdx, obj.obsIdx);
+            obj.presRefIdx = obj.isolatedFluidRefs();
+            obj.decomp_pres = obj.buildPressureOperator(ones(W, H+1), ones(W+1, H));
+            obj.betaRefU = [];
+            obj.betaRefV = [];
+            obj.betaRefStep = -inf;
+            obj.decomp_presDrag = [];
+        end
+
+        function refs = isolatedFluidRefs(obj)
+            % 不与远场海绵环连通的流体连通域（如封闭方腔）各取一格作压力参考
+            W = obj.GRID.W; H = obj.GRID.H;
+            fM = reshape(obj.obstacle == 0, W, H);
+            lab = inf(W, H);
+            lab(fM) = find(fM);
+            while true
+                nb = lab;
+                nb(2:W,:)   = min(nb(2:W,:),   lab(1:W-1,:));
+                nb(1:W-1,:) = min(nb(1:W-1,:), lab(2:W,:));
+                nb(:,2:H)   = min(nb(:,2:H),   lab(:,1:H-1));
+                nb(:,1:H-1) = min(nb(:,1:H-1), lab(:,2:H));
+                nb(~fM) = inf;
+                if isequal(nb, lab), break; end
+                lab = nb;
+            end
+            comps = unique(lab(fM));
+            ringComps = unique(lab(obj.farFieldPresIdx));
+            refs = setdiff(comps, ringComps);
+            refs = refs(:);
+        end
+
+        function dec = buildPressureOperator(obj, wU, wV)
+            % 压力泊松 LHS = D·diag(w)·G：按格间激活面装配，面权重 w（无阻力时为 1）。
+            % 贴障碍面不参与（天然 Neumann，无穿透）；远场海绵环 p=0；
+            % 不与远场连通的流体连通域各钉一个参考点消奇异。
             W = obj.GRID.W; H = obj.GRID.H; N = W * H;
-            fluidM = obj.obstacle == 0;
-            iif = find(fluidM);
-            xx = ceil(iif / W);
-            yy = iif - (xx-1)*W;
-            okR = false(size(iif)); m = xx < H; okR(m) = fluidM(iif(m) + W);
-            okL = false(size(iif)); m = xx > 1; okL(m) = fluidM(iif(m) - W);
-            okU = false(size(iif)); m = yy < W; okU(m) = fluidM(iif(m) + 1);
-            okD = false(size(iif)); m = yy > 1; okD(m) = fluidM(iif(m) - 1);
-            Io = [iif(okR); iif(okL); iif(okU); iif(okD)];
-            Jo = [iif(okR)+W; iif(okL)-W; iif(okU)+1; iif(okD)-1];
-            Lp = sparse(Io, Jo, 1, N, N);
-            diagCnt = -(double(okR) + double(okL) + double(okU) + double(okD));
-            Lp = Lp + sparse(iif, iif, diagCnt, N, N);
-            ffIdx = setdiff(obj.spongeRingIdx, obj.obsIdx);
-            obj.farFieldPresIdx = ffIdx;
-            pin = [obj.obsIdx; ffIdx];
+            uAct = reshape(obj.uFaceActive, W, H+1);
+            vAct = reshape(obj.vFaceActive, W+1, H);
+            [yu, xf] = find(uAct(:, 2:H)); xf = xf + 1;         % 格间 u 面
+            cu1 = (xf-2)*W + yu; cu2 = (xf-1)*W + yu;
+            wu = wU(sub2ind([W H+1], yu, xf));
+            [yf, xv] = find(vAct(2:W, :)); yf = yf + 1;         % 格间 v 面
+            cv1 = (xv-1)*W + yf - 1; cv2 = (xv-1)*W + yf;
+            wv = wV(sub2ind([W+1 H], yf, xv));
+            I = [cu1; cu2; cu1; cu2; cv1; cv2; cv1; cv2];
+            J = [cu2; cu1; cu1; cu2; cv2; cv1; cv1; cv2];
+            V = [wu; wu; -wu; -wu; wv; wv; -wv; -wv];
+            Lp = sparse(I, J, V, N, N);
+            % 钉扎格行列清零、对角置 −1，保持对称负定：分解 −Lp（Cholesky），
+            % 求解时 p = dec \ (−rhs)
+            pin = [obj.obsIdx; obj.farFieldPresIdx; obj.presRefIdx];
             Lp(pin, :) = 0; Lp(:, pin) = 0;
-            Lp = Lp + sparse(pin, pin, ones(numel(pin),1), N, N);
-            obj.pres_ref = find(obj.obstacle == 0, 1);
-            Lp(obj.pres_ref, :)            = 0;
-            Lp(obj.pres_ref, obj.pres_ref) = 1;
-            obj.decomp_pres = decomposition(Lp, 'auto');
+            Lp = Lp - sparse(pin, pin, ones(numel(pin),1), N, N);
+            dec = decomposition(-Lp, 'chol');
         end
 
         function onOpeningsChanged(obj)
@@ -228,7 +265,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
             if obj.lastNuEff <= 0 || abs(nuVal - obj.lastNuEff) / obj.lastNuEff > 0.05
                 dt = obj.DT;
-                gs = (obj.GRID.W-2) * (obj.GRID.H-2);
+                gs = obj.diffScale;
                 [obj.decomp_velU, obj.velU_actIdx] = obj.assembleFaceDiffusion(nuField, true,  dt, gs);
                 [obj.decomp_velV, obj.velV_actIdx] = obj.assembleFaceDiffusion(nuField, false, dt, gs);
                 obj.lastNuEff = nuVal;
@@ -326,9 +363,9 @@ classdef CFDSolverFEM < CFDSolverBase
             rhs_p = div(:);
             rhs_p(obj.obsIdx) = 0;
             rhs_p(obj.farFieldPresIdx) = 0;
-            rhs_p(obj.pres_ref) = 0;
+            rhs_p(obj.presRefIdx) = 0;
 
-            obj.p = obj.decomp_pres \ rhs_p;
+            obj.p = obj.decomp_pres \ (-rhs_p);
             obj.p(obj.obsIdx) = 0;
             obj.p(obj.farFieldPresIdx) = 0;
 
@@ -349,6 +386,58 @@ classdef CFDSolverFEM < CFDSolverBase
             clipped = any(uM(:) ~= u0(:)) || any(vM(:) ~= v0(:));
             obj.uF = uM(:);
             obj.vF = vM(:);
+        end
+
+        function projectWithDrag(obj)
+            % 阻力与压力耦合的投影（多孔区、开口格栅）：
+            %   u^{n+1} = β·(u* − G p)，β = 1/(1 + C|u*|)，D(β G p) = D(β u*)。
+            % 稳态下每面阻力恰为 C|u|u（即 ζ·½ρv²），不受阻力与压力分步误差影响。
+            % 算子按参考 β 装配（保证散度严格为零）；阻力面上 β 的相对偏差平均超过 3%
+            % 或超过 10% 的面多于 2% 时重装（两次重装至少间隔 5 步）。
+            W = obj.GRID.W; H = obj.GRID.H;
+            uM = reshape(obj.uF, W, H+1);
+            vM = reshape(obj.vF, W+1, H);
+            uActM = reshape(obj.uFaceActive, W, H+1);
+            vActM = reshape(obj.vFaceActive, W+1, H);
+            bU = 1 ./ (1 + reshape(obj.uDragCoef, W, H+1) .* abs(uM));
+            bV = 1 ./ (1 + reshape(obj.vDragCoef, W+1, H) .* abs(vM));
+            rebuild = isempty(obj.decomp_presDrag);
+            if ~rebuild && obj.iteration - obj.betaRefStep >= 5
+                dragU = obj.uDragCoef > 0; dragV = obj.vDragCoef > 0;
+                rel = [abs(bU(dragU) - obj.betaRefU(dragU)) ./ obj.betaRefU(dragU); ...
+                       abs(bV(dragV) - obj.betaRefV(dragV)) ./ obj.betaRefV(dragV)];
+                rebuild = ~isempty(rel) && (mean(rel) > 0.03 || mean(rel > 0.10) > 0.02);
+            end
+            if rebuild
+                obj.betaRefU = bU;
+                obj.betaRefV = bV;
+                obj.betaRefStep = obj.iteration;
+                obj.decomp_presDrag = obj.buildPressureOperator(bU, bV);
+            end
+            bU = obj.betaRefU; bV = obj.betaRefV;
+            us = uM .* bU .* uActM;
+            vs = vM .* bV .* vActM;
+            div = us(:,2:H+1) - us(:,1:H) + vs(2:W+1,:) - vs(1:W,:);
+            rhs_p = div(:);
+            rhs_p(obj.obsIdx) = 0;
+            rhs_p(obj.farFieldPresIdx) = 0;
+            rhs_p(obj.presRefIdx) = 0;
+            obj.p = obj.decomp_presDrag \ (-rhs_p);
+            obj.p(obj.obsIdx) = 0;
+            obj.p(obj.farFieldPresIdx) = 0;
+            pM = reshape(obj.p, W, H);
+            dpU = zeros(W, H+1);
+            dpU(:, 2:H) = pM(:, 2:H) - pM(:, 1:H-1);
+            dpV = zeros(W+1, H);
+            dpV(2:W, :) = pM(2:W, :) - pM(1:W-1, :);
+            % 格间面：β(u* − Gp)；域边界面无梯度修正，只施阻力
+            uM = us - bU .* dpU .* uActM;
+            vM = vs - bV .* dpV .* vActM;
+            uM(~uActM) = 0;
+            vM(~vActM) = 0;
+            velCap = 6.0 / obj.VEL_SCALE;
+            obj.uF = reshape(max(-velCap, min(velCap, uM)), [], 1);
+            obj.vF = reshape(max(-velCap, min(velCap, vM)), [], 1);
         end
 
         function advectFaces(obj)
@@ -427,7 +516,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
         function diffuseTemperature(obj, alphaEff)
             % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，α_eff 中位数
-            % 相对变化 > 5% 时重装配。机箱壁 25°C Dirichlet，内部件绝热。
+            % 相对变化 > 5% 时重装配。定温壁 Dirichlet，其余障碍绝热。
             if nargin < 2 || isempty(alphaEff)
                 alphaEff = obj.AIR.nu / obj.AIR.Pr;
             end
@@ -446,7 +535,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
             if obj.lastAlphaEff <= 0 || abs(alphaVal - obj.lastAlphaEff) / obj.lastAlphaEff > 0.05
                 dt = obj.DT;
-                gs = (obj.GRID.W-2) * (obj.GRID.H-2);
+                gs = obj.diffScale;
                 if ~isempty(alphaField)
                     [Lw, coupling] = obj.buildWeightedLaplacian(alphaField, false, obj.adiabaticObsIdx);
                     A_temp = obj.M_mass/dt - gs*Lw - alphaVal*gs*obj.E_obs;
@@ -460,25 +549,33 @@ classdef CFDSolverFEM < CFDSolverBase
                 obj.lastAlphaEff = alphaVal;
             end
 
-            gs    = (obj.GRID.W-2) * (obj.GRID.H-2);
+            gs    = obj.diffScale;
             rhs_T = obj.M_mass/obj.DT * obj.T_fluid;
 
-            % 机箱壁 Dirichlet 25°C；绝热障碍格被钉扎行覆盖，RHS 取 diag·T_old 保值
-            rhs_T(obj.wallObsIdx) = obj.temp_diag_oi * 25;
+            % 定温壁 Dirichlet；绝热障碍格被钉扎行覆盖，RHS 取 diag·T_old 保值
+            rhs_T(obj.dirichletIdx) = obj.temp_diag_oi * obj.dirichletT;
             if ~isempty(obj.adiabaticObsIdx)
                 rhs_T(obj.adiabaticObsIdx) = obj.temp_diag_oi .* obj.T_fluid(obj.adiabaticObsIdx);
             end
 
-            % 非齐次 Dirichlet 修正：恢复清零障碍列后流体丢失的壁面耦合项
+            % 非齐次 Dirichlet 修正：恢复清零障碍列后流体丢失的壁面耦合项；
+            % 计算域外圈 ghost 取环境温度（远场）
             fluidMask = obj.obstacle == 0;
+            if ~isempty(alphaField)
+                edgeW = alphaField;
+            else
+                edgeW = obj.lastAlphaEff * ones(obj.GRID.TOTAL, 1);
+            end
+            edge = gs * obj.edgeMissing .* edgeW * obj.T_amb;
+            rhs_T(fluidMask) = rhs_T(fluidMask) + edge(fluidMask);
             if ~isempty(obj.tempCoupling)
-                if ~isempty(obj.colWall)
-                    correction = gs * obj.tempCoupling(:, obj.colWall) * 25;
+                if ~isempty(obj.colDir)
+                    correction = gs * obj.tempCoupling(:, obj.colDir) * obj.dirichletT;
                     rhs_T(fluidMask) = rhs_T(fluidMask) + correction(fluidMask);
                 end
             else
-                if ~isempty(obj.wallObsIdx)
-                    correction = obj.lastAlphaEff * gs * obj.K_lap(:, obj.wallObsIdx) * 25;
+                if ~isempty(obj.dirichletIdx)
+                    correction = obj.lastAlphaEff * gs * obj.K_lap(:, obj.dirichletIdx) * obj.dirichletT;
                     rhs_T(fluidMask) = rhs_T(fluidMask) + correction(fluidMask);
                 end
             end
@@ -488,7 +585,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.accDiffuse = obj.accDiffuse + sum((obj.T_fluid - TpreSolve) .* fluidMask);
             obj.accDiffuseCase = obj.accDiffuseCase + sum(obj.T_fluid(obj.insideMask) - TpreSolve(obj.insideMask));
             Tpre = obj.T_fluid;
-            obj.T_fluid = max(obj.T_fluid, 25);
+            obj.T_fluid = max(obj.T_fluid, obj.T_amb);
             dCl = sum((obj.T_fluid - Tpre) .* fluidMask);
             obj.accClamp = obj.accClamp + dCl;
             obj.accClampSolve = obj.accClampSolve + dCl;
@@ -506,7 +603,7 @@ classdef CFDSolverFEM < CFDSolverBase
             betaS = 0.09; beta1 = 0.0708; alphaW = 5/9; sigK = 0.6; sigW = 0.5;
             nu = obj.AIR.nu; dt = obj.DT;
             N = obj.GRID.TOTAL;
-            gs = (obj.GRID.W-2) * (obj.GRID.H-2);
+            gs = obj.diffScale;
             [kIn, wIn] = obj.turbulenceInletValues();
 
             Svec = obj.computeStrainRateMag();
@@ -559,7 +656,7 @@ classdef CFDSolverFEM < CFDSolverBase
                 adj = full(sum(obj.K_lap(:, obj.obsIdx) ~= 0, 2));
                 fm = true(N,1); fm(obj.obsIdx) = false;
                 obj.wallAdjFluidIdx = find(adj > 0 & fm);
-                adjCase = full(sum(obj.K_lap(:, obj.wallObsIdx) ~= 0, 2));
+                adjCase = full(sum(obj.K_lap(:, obj.caseWallIdx) ~= 0, 2));
                 obj.wallAdjCaseIdx = find(adjCase > 0 & fm);
             end
             if ~isempty(obj.wallAdjFluidIdx)
@@ -595,8 +692,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.advectFaces();
             obj.applyBuoyancy();
             obj.applyFanForces();
-            obj.applyPorousDrag();
-            obj.project();
+            obj.projectWithDrag();   % 多孔区/格栅阻力与压力耦合投影
             % 远场海绵环速度阻尼（投影之后施加，不破坏刚建立的压力-速度一致性）
             obj.uF(obj.uFaceRing) = obj.uF(obj.uFaceRing) * obj.spongeDamping;
             obj.vF(obj.vFaceRing) = obj.vF(obj.vFaceRing) * obj.spongeDamping;
@@ -612,18 +708,18 @@ classdef CFDSolverFEM < CFDSolverBase
             fluidOnly = double(obj.obstacle == 0);
             Tpre = obj.T_fluid;
             [uAdv, vAdv] = obj.getCellVelocity();
-            obj.T_fluid = obj.advectScalar(obj.T_fluid, uAdv, vAdv, 25);
+            obj.T_fluid = obj.advectScalar(obj.T_fluid, uAdv, vAdv, obj.T_amb);
             obj.accAdvect = obj.accAdvect + sum((obj.T_fluid - Tpre) .* fluidOnly);
             obj.accAdvectCase = obj.accAdvectCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
             Tpre = obj.T_fluid;
-            obj.T_fluid = max(obj.T_fluid, 25);
+            obj.T_fluid = max(obj.T_fluid, obj.T_amb);
             dCl = sum((obj.T_fluid - Tpre) .* fluidOnly);
             obj.accClamp = obj.accClamp + dCl;
             obj.accClampAdvect = obj.accClampAdvect + dCl;
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
-            % 障碍格温度仅作显示：机箱壁 25°C、发热元件显示 T_solid、
-            % 绝热内部件取邻近流体格均值（避免温度视图出现假冷块）
-            obj.T_fluid(obj.wallObsIdx) = 25;
+            % 障碍格温度仅作显示：定温壁取壁温、发热元件显示 T_solid、
+            % 绝热障碍取邻近流体格均值（避免温度视图出现假冷块）
+            obj.T_fluid(obj.dirichletIdx) = obj.dirichletT;
             obj.T_fluid(obj.heatObsIdx) = obj.T_solid(obj.heatObsIdx);
             if ~isempty(obj.adiabaticObsIdx)
                 W = obj.GRID.W; H = obj.GRID.H;
@@ -636,12 +732,12 @@ classdef CFDSolverFEM < CFDSolverBase
                 adiM = false(W,H); adiM(obj.adiabaticObsIdx) = true;
                 hasN = adiM & nbrCnt > 0;
                 Tm(hasN) = nbrSum(hasN) ./ nbrCnt(hasN);
-                Tm(adiM & ~hasN) = 25;
+                Tm(adiM & ~hasN) = obj.T_amb;
                 obj.T_fluid = Tm(:);
             end
-            % 远场海绵环 25°C（无限大外部空气池）
+            % 远场海绵环取环境温度（无限大外部空气池）
             Tpre = obj.T_fluid;
-            obj.T_fluid(obj.spongeRingIdx) = 25;
+            obj.T_fluid(obj.spongeRingIdx) = obj.T_amb;
             obj.accResetOut = obj.accResetOut + sum(obj.T_fluid(obj.spongeRingIdx) - Tpre(obj.spongeRingIdx));
 
             obj.solveConjugateHeatTransfer();
@@ -651,15 +747,15 @@ classdef CFDSolverFEM < CFDSolverBase
             dClCap = sum((obj.T_fluid - Tpre) .* fluidOnly);
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
             Tpre = obj.T_fluid;
-            obj.T_fluid = max(obj.T_fluid, 25);
+            obj.T_fluid = max(obj.T_fluid, obj.T_amb);
             dClFloor = sum((obj.T_fluid - Tpre) .* fluidOnly);
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
             obj.accClamp = obj.accClamp + dClCap + dClFloor;
             obj.accClampCap = obj.accClampCap + dClCap;
             obj.accClampFloor = obj.accClampFloor + dClFloor;
-            % 注热核可能触及远场格，再钉一次海绵环
+            % 注热区可能触及远场格，再钉一次海绵环
             Tpre = obj.T_fluid;
-            obj.T_fluid(obj.spongeRingIdx) = 25;
+            obj.T_fluid(obj.spongeRingIdx) = obj.T_amb;
             obj.accResetOut = obj.accResetOut + sum(obj.T_fluid(obj.spongeRingIdx) - Tpre(obj.spongeRingIdx));
             obj.accSteps = obj.accSteps + 1;
 

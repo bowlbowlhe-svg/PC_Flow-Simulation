@@ -1,7 +1,8 @@
 function allPass = run_all_tests(level)
 %RUN_ALL_TESTS 统一测试入口。
-%   run_all_tests('quick')  快速回归（几分钟）：平流方向、reset 一致性
-%   run_all_tests('full')   完整回归（默认）：quick + 守恒（1200 步）+ 湍流
+%   run_all_tests('quick')  快速回归（几分钟）：平流方向、reset 一致性、扩散算子解析解
+%   run_all_tests('full')   完整回归（默认）：quick + 方腔自然对流 + 风扇风道工作点
+%                           + 守恒（1200 步）+ 湍流
 %   run_all_tests('ui')     界面烟雾测试（仅 MATLAB）
 %   返回是否全部通过，并打印汇总。
     if nargin < 1 || isempty(level), level = 'full'; end
@@ -14,8 +15,10 @@ function allPass = run_all_tests(level)
             tests = quickTests();
         case 'full'
             tests = [quickTests(), { ...
-                {'守恒（1200 步）', @() test_conservation(400)}, ...
-                {'湍流模型',        @() test_turbulence(400)}}];
+                {'方腔自然对流 Ra=1e5', @() test_cavity(1e5)}, ...
+                {'风扇风道工作点',      @() test_fan_duct(20)}, ...
+                {'守恒（1200 步）',     @() test_conservation(400)}, ...
+                {'湍流模型',            @() test_turbulence(400)}}];
         case 'ui'
             if isOctave
                 fprintf('界面测试需要 MATLAB（uifigure），Octave 下【跳过】（未执行，不代表通过）。\n');
@@ -66,5 +69,6 @@ end
 function tests = quickTests()
     tests = { ...
         {'平流方向性',     @() test_advection()}, ...
-        {'reset 一致性',   @() test_reset(20, 0.5)}};
+        {'reset 一致性',   @() test_reset(20, 0.5)}, ...
+        {'扩散算子解析解', @() test_diffusion()}};
 end

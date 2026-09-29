@@ -188,7 +188,7 @@ classdef PCAirflowSimulatorApp < handle
             app.GPUPowerSlider.ValueChangedFcn = @(src,event)app.GPUPowerSliderValueChanged(event);
             app.GPUPowerLbl = uilabel(pPower,'Position',[250 50 50 18],'Text','250W','FontColor',[0.8 0.8 0.8],'FontSize',11);
             
-            uilabel(pPower,'Position',[10 20 40 18],'Text','PSU','FontColor',[0.8 0.8 0.8],'FontSize',11);
+            uilabel(pPower,'Position',[10 20 50 18],'Text','电源负载','FontColor',[0.8 0.8 0.8],'FontSize',10);
             app.PSUPowerSlider = uislider(pPower,'Position',[60 28 180 3],'Limits',[50 1200],'Value',450);
             app.PSUPowerSlider.ValueChangedFcn = @(src,event)app.PSUPowerSliderValueChanged(event);
             app.PSUPowerLbl = uilabel(pPower,'Position',[250 20 50 18],'Text','450W','FontColor',[0.8 0.8 0.8],'FontSize',11);
@@ -234,7 +234,7 @@ classdef PCAirflowSimulatorApp < handle
                 'BackgroundColor',[0.1 0.1 0.2],'FontColor',[0.8 0.8 0.8],'ButtonPushedFcn',@(src,event)app.resetSim());
             
             uilabel(pView,'Position',[10 10 380 18],...
-                'Text','⚠ 2D 定性教学模型，结温预测精度 ±25% 仅供参考','FontColor',[0.85 0.55 0.2],'FontSize',9);
+                'Text','⚠ 2D 定性教学模型，结果仅供理解风道趋势','FontColor',[0.85 0.55 0.2],'FontSize',9);
             
             % 窗口关闭时自动停止timer
             app.UIFigure.CloseRequestFcn = @(src,event)app.closeApp();
@@ -301,10 +301,12 @@ classdef PCAirflowSimulatorApp < handle
             plotRect(cf.x,cf.y,cfW,cf.h,[0.00 0.60 1.0],2.0);
             text(ax,cf.x+cfW/2,cf.y+cf.h/2,'塔式散热器','Color',[0.30 0.80 1.0],'FontSize',7,'FontWeight','bold','HorizontalAlignment','center','VerticalAlignment','middle','Interpreter','none');
             
-            % Chipset
-            chip = s.CHIPSET.heatsink;
-            plotRect(chip.x,chip.y,chip.w,chip.h,[0.80 0.80 0.80],2.0);
-            lb(chip.x,chip.y,chip.w,chip.h,'芯',[0.90 0.90 0.90],5);
+            % 芯片组（仅显示）
+            if ~isempty(s.CHIPSET)
+                chip = s.CHIPSET.heatsink;
+                plotRect(chip.x,chip.y,chip.w,chip.h,[0.80 0.80 0.80],1.0);
+                lb(chip.x,chip.y,chip.w,chip.h,'芯',[0.90 0.90 0.90],5);
+            end
             
             % GPU散热片
             gh = s.GPU_HEATSINK.heatsink;
@@ -321,69 +323,25 @@ classdef PCAirflowSimulatorApp < handle
             plotRect(psu.x,psu.y,psu.w,psu.h,[0.88 0.80 0.00],2.0);
             lb(psu.x,psu.y,psu.w,psu.h,'PSU',[1.0 0.95 0.30],8);
             
-            % 机箱风扇 RealFan
-            th36 = linspace(0,2*pi,36);
-            for k = 1:length(s.fans)
-                f   = s.fans{k};
+            % 风扇：执行盘矩形 + 送风方向箭头（机箱进气绿、排气红，内置风扇青/橙/黄）
+            allF = s.allFans();
+            for k = 1:numel(allF)
+                f = allF{k};
                 bnd = f.getBounds();
-                cx  = bnd.x + bnd.w/2;
-                cy  = bnd.y + bnd.h/2;
-                r   = max(bnd.w,bnd.h)/2;
-                switch f.mount
-                    case {'front','right'};  rawDx= 1; rawDy= 0;
-                    case 'rear';             rawDx=-1; rawDy= 0;
-                    case 'top';              rawDx= 0; rawDy=-1;
-                    case 'bottom';           rawDx= 0; rawDy= 1;
-                    otherwise;               rawDx= 1; rawDy= 0;
+                switch f.role
+                    case 'case'
+                        if strcmp(f.type, 'intake'), col = [0.00 0.92 0.55]; else, col = [1.00 0.28 0.28]; end
+                    case 'cpu', col = [0.00 0.85 0.85];
+                    case 'gpu', col = [1.00 0.55 0.15];
+                    otherwise,  col = [0.95 0.85 0.20];
                 end
-                if strcmp(f.type,'intake')
-                    col = [0.00 0.92 0.55]; lbl = '进风'; dxi = -rawDx; dyi = -rawDy;
-                else
-                    col = [1.00 0.28 0.28]; lbl = '出风'; dxi =  rawDx; dyi =  rawDy;
-                end
-                plot(ax,cx+r*cos(th36),cy+r*sin(th36),'-','Color',col,'LineWidth',1.8);
-                text(ax,cx,cy,lbl,'Color',col,'FontSize',6,'FontWeight','bold','HorizontalAlignment','center','VerticalAlignment','middle','Interpreter','none');
-                quiver(ax,cx-dxi*r*0.5,cy-dyi*r*0.5,dxi*r*0.8,dyi*r*0.8,'AutoScale','off','Color',col,'MaxHeadSize',1.5,'LineWidth',1.2);
+                plotRect(bnd.x - 0.5, bnd.y - 0.5, bnd.w, bnd.h, col, 1.2);
+                cx = bnd.x + (bnd.w - 1)/2; cy = bnd.y + (bnd.h - 1)/2;
+                len = 0.35 * max(bnd.w, bnd.h);
+                quiver(ax, cx - f.normal(1)*len/2, cy - f.normal(2)*len/2, f.normal(1)*len, f.normal(2)*len, ...
+                    'AutoScale','off','Color',col,'MaxHeadSize',2,'LineWidth',1.4);
             end
-            
-            % 内置风扇（顶部排气风扇 + GPU底部风扇）
-            th28 = linspace(0,2*pi,28);
-            for k = 1:length(s.builtInFans)
-                f   = s.builtInFans{k};
-                bnd = f.getBounds();
-                cx  = bnd.x + bnd.w/2;
-                r   = max(bnd.w,bnd.h)/2;
-                if strcmp(f.mount,'top')
-                    % 顶部机箱排气风扇：画在顶边实际位置
-                    col  = [0.35 0.75 1.0];
-                    cy_t = max(r, bnd.y + bnd.h/2);
-                    rf   = min(r, cy_t - 1);
-                    plot(ax, cx+rf*cos(th28), cy_t+rf*sin(th28), '--', 'Color', col, 'LineWidth', 1.0);
-                    % 排气箭头：向上（-y方向）
-                    quiver(ax, cx, cy_t+rf*0.5, 0, -(rf+4), 'AutoScale','off','Color',col,'MaxHeadSize',2.5,'LineWidth',1.1);
-                    text(ax, cx, cy_t, '排气', 'Color', col, 'FontSize', 6, 'FontWeight','bold', ...
-                        'HorizontalAlignment','center','VerticalAlignment','middle','Interpreter','none');
-                elseif strcmp(f.mount,'cpu_tower')
-                    % CPU塔式风冷风扇：画在鳍片区中心，气流从右到左
-                    col  = [0.0 0.85 0.85];
-                    cy_t = bnd.y + bnd.h/2;
-                    rf   = min(r, 30);
-                    plot(ax, cx+rf*cos(th28), cy_t+rf*sin(th28), '--', 'Color', col, 'LineWidth', 1.0);
-                    % 气流从右到左（-x方向），机箱内部
-                    quiver(ax, cx+rf*0.5, cy_t, -rf*0.8, 0, 'AutoScale','off','Color',col,'MaxHeadSize',1.5,'LineWidth',1.1);
-                    text(ax, cx, cy_t, 'CPU风扇', 'Color', col, 'FontSize', 6, 'FontWeight','bold', ...
-                        'HorizontalAlignment','center','VerticalAlignment','middle','Interpreter','none');
-                elseif strcmp(f.mount,'gpu_bottom')
-                    % GPU底部风扇：画在GPU卡下方
-                    col  = [1.0 0.55 0.15];
-                    cy_b = bnd.y + bnd.h/2;
-                    rf   = max(bnd.w, bnd.h)/2;
-                    plot(ax, cx+rf*cos(th28), cy_b+rf*sin(th28), '--', 'Color', col, 'LineWidth', 1.0);
-                    % 风扇将冷气向上（-y）抽入GPU散热片
-                    quiver(ax, cx, cy_b, 0, -12, 'AutoScale','off','Color',col,'MaxHeadSize',1.5,'LineWidth',1.0);
-                end
-            end
-            
+
             % 方位标注（YDir='reverse'：y=1在顶，y=H在底）
             text(ax,W/2,3,'▲ 顶排出风','Color',[0.55 0.55 0.65],'FontSize',6,'HorizontalAlignment','center','VerticalAlignment','top','Interpreter','none');
             text(ax,3,H-3,'← 后排气','Color',[0.55 0.55 0.65],'FontSize',7,'HorizontalAlignment','left','VerticalAlignment','bottom','Interpreter','none');
@@ -405,7 +363,7 @@ classdef PCAirflowSimulatorApp < handle
             app.hSideLine(2) = plot(ax2, nan, nan, 'Color', [0.3 1 0.3], 'LineWidth', 1.5, 'DisplayName', 'GPU');
             app.hSideLine(3) = plot(ax2, nan, nan, 'Color', [0.3 0.6 1], 'LineWidth', 1.5, 'DisplayName', '后侧排气');
             legend(ax2, 'Location', 'northwest', 'Color', [0.1 0.1 0.15], 'TextColor', [0.7 0.7 0.8], 'FontSize', 8);
-            xlabel(ax2,'时间 (s)','Color',[0.6 0.6 0.7],'FontSize',11);
+            xlabel(ax2,'仿真时间 (s)','Color',[0.6 0.6 0.7],'FontSize',11);
             ylabel(ax2,'温度 (°C)','Color',[0.6 0.6 0.7],'FontSize',11);
             ax2.Color = [0.05 0.05 0.08];
             ax2.XColor = [0.4 0.4 0.5];
@@ -491,16 +449,16 @@ classdef PCAirflowSimulatorApp < handle
                         ax.Colormap = hot(256);
                         ax.CLim = [20 100];
                         cbLabel = '温度 (°C)';
-                        title(ax,'流体温度场 (°C)','Color',[0.8 0.8 1]);
+                        title(ax,'温度场 (°C)','Color',[0.8 0.8 1]);
                         contourLevels = [30 40 50 60];
                         contourColor = [0 1 1];
                     case 'vorticity'
                         field = reshape(app.Solver.latestVorticity, W, H);
                         set(app.hImg, 'CData', field);
                         ax.Colormap = cool(256);
-                        ax.CLim = [-2 2];
-                        cbLabel = '涡量';
-                        title(ax,'涡量场','Color',[0.8 0.8 1]);
+                        ax.CLim = [-60 60];
+                        cbLabel = '涡量 (1/s)';
+                        title(ax,'涡量场 (1/s)','Color',[0.8 0.8 1]);
                         contourLevels = 0;
                         contourColor = [1 1 0];
                     case 'solid'

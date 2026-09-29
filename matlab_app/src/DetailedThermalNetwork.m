@@ -3,10 +3,12 @@ classdef DetailedThermalNetwork < handle
     %   CPU/GPU：R_total = R_jc + R_TIM + R_base + R_conv，
     %            R_conv = 1/(h·A·η_overall)，h = 30 + 130·V [W/m²K]，
     %            鳍片效率 η_f = tanh(mL)/(mL)，m = √(2h/(k·t_fin))，k = 200 W/mK。
-    %   PSU：    R_total = 0.8 + 1/(h·A)，h = 15 + 80·V，A = 0.08 m²。
-    %   结温一阶惯性：C·dTj/dt = P_actual − (Tj − T_amb)/R_total（τ = tau）。
-    %   节流：无节流理论稳态温度（同 τ 低通滤波）超过节流阈后，在 5°C 窗口内
-    %         线性降功率，最多降 35%。
+    %   PSU：    R_total = R_internal + 1/(h·A)，h = 15 + 80·V，A = 0.08 m²。
+    %   V 为散热体（鳍片/电源内部）平均风速，T_amb 为进风温度。
+    %   结温一阶惯性：C·dTj/dt = P_actual − (Tj − T_amb)/R_total（τ = tau，
+    %   为数值平滑取短时间常数，不代表真实热容）。
+    %   节流（canThrottle）：无节流理论稳态温度（同 τ 低通滤波）超过节流阈后，
+    %         在 5°C 窗口内线性降功率，最多降 35%；不可节流的元件（电源）只置 overTemp。
 
     properties
         name
@@ -23,6 +25,10 @@ classdef DetailedThermalNetwork < handle
         tau = 0.25            % 结温惯性时间常数 [s]
         dt = 0.005
         T_theory_f = 25       % 无节流理论稳态温度的滤波值（节流判据）
+        canThrottle = true    % false：超温不降功率，只置 overTemp
+        overTemp = false
+        R_internal = 0.8      % 无散热器规格时（电源）的内部固定热阻 [K/W]
+        R_total = 0           % 最近一次的总热阻 [K/W]
     end
 
     methods
@@ -64,13 +70,15 @@ classdef DetailedThermalNetwork < handle
                 h = 15 + 80 * min(effective_velocity, 4);
                 A_total = 0.08;
                 R_conv = 1 / max(h * A_total, eps);
-                R_total = 0.8 + R_conv;
+                R_total = obj.R_internal + R_conv;
             end
             T_theory = T_ambient + obj.power * R_total;
             alpha = min(1, dt / obj.tau);
             obj.T_theory_f = obj.T_theory_f + alpha * (T_theory - obj.T_theory_f);
             excess = obj.T_theory_f - obj.throttling_temp;
-            if excess > 0
+            obj.R_total = R_total;
+            obj.overTemp = excess > 0;
+            if excess > 0 && obj.canThrottle
                 obj.throttling_ratio = min(0.35, excess / 5 * 0.35);
             else
                 obj.throttling_ratio = 0;

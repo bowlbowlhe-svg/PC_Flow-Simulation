@@ -32,7 +32,7 @@ function pass = test_conservation(steadyStateSteps)
     fprintf('高斯注入 Q_gaussian       = %+7.1f W\n', c.Q_gaussian);
     fprintf('平流步 Q_R_advect         = %+7.1f W\n', c.Q_R_advect);
     fprintf('扩散求解步 Q_R_diffuse    = %+7.1f W\n', c.Q_R_diffuse);
-    fprintf('海绵环重置+新风 Q_R_out   = %+7.1f W\n', c.Q_R_out);
+    fprintf('远场海绵环重置 Q_R_out    = %+7.1f W\n', c.Q_R_out);
     fprintf('温度钳位 Q_R_clamp        = %+7.1f W（扩散后 %+.1f / 平流后 %+.1f / 削顶 %+.1f / 抬底 %+.1f）\n', ...
         c.Q_R_clamp, c.Q_R_clampSolve, c.Q_R_clampAdvect, c.Q_R_clampCap, c.Q_R_clampFloor);
     fprintf('账本残差 = %+7.1f W（%+.1f%%），窗口储能速率 = %+7.1f W\n', c.ledgerW, c.ledgerPct, c.storageRateW);
@@ -44,11 +44,11 @@ function pass = test_conservation(steadyStateSteps)
         c.storageRateW, 100*c.storageRateW/max(c.Q_injected,eps));
 
     fprintf('\n--- 判据 C：双轨温度 ---\n');
-    fprintf('T_internal 代数 = %.1f°C，CFD 内部均温 = %.1f°C，偏差 %+.1f°C\n', ...
-        t.internalAmbient, t.internalAmbientCFD, t.internalDiscrepancy);
+    fprintf('代数热平衡内温 = %.1f°C，CFD 内部均温 = %.1f°C，偏差 %+.1f°C\n', ...
+        t.internalAmbientAlg, t.internalAmbientCFD, t.internalDiscrepancy);
 
     fprintf('\n--- 报告项 ---\n');
-    fprintf('开口焓流 Q_exhaust = %.0f W，机箱壁导热 Q_wall = %.1f W，开口平面扩散 = %+.1f W\n', ...
+    fprintf('开口焓流 Q_exhaust = %.0f W，定温壁导热 Q_wall = %.1f W，开口平面扩散 = %+.1f W\n', ...
         c.Q_exhaust, c.Q_wall, c.Q_openingDiff);
     for m = {'top','rear','front','bottom'}
         f = c.flux.(m{1});
@@ -60,9 +60,9 @@ function pass = test_conservation(steadyStateSteps)
         c.farFieldCfm, c.farFieldGrossCfm, c.farFieldHeatW);
     fprintf('采样口径机箱平衡：储能速率 %+7.1f W，残差 %+7.1f W（%+.1f%%）\n', ...
         c.storageRateCaseW, c.residualCorrW, c.residualCorrPct);
-    fprintf('内区算子账：注入 %+7.1f（名义 %+.1f）+ 平流 %+7.1f + 扩散 %+7.1f + 钳位 %+7.1f + 新风混合 %+7.1f − 储能 %+7.1f = %+7.2f W（%+.2f%%）\n', ...
+    fprintf('内区算子账：注入 %+7.1f（名义 %+.1f）+ 平流 %+7.1f + 扩散 %+7.1f + 钳位 %+7.1f − 储能 %+7.1f = %+7.2f W（%+.2f%%）\n', ...
         c.Q_injectCase, c.Q_gaussian, c.Q_advectCase, c.Q_diffuseCase, c.Q_clampCase, ...
-        c.Q_boundaryCase, c.storageRateCaseW, c.balanceOpW, c.balanceOpPct);
+        c.storageRateCaseW, c.balanceOpW, c.balanceOpPct);
     fprintf('结温 CPU/GPU/PSU = %.1f / %.1f / %.1f °C\n', s.thermalNetworks.cpu.T_junction, ...
         s.thermalNetworks.gpu.T_junction, s.thermalNetworks.psu.T_junction);
 
