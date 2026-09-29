@@ -1,0 +1,10 @@
+scenario=gaming
+CPU_power=100W GPU_power=200W PSU_power=500W
+Tj_cpu=63.1 Tj_gpu=89.1 Tj_psu=76.7 (deg C)
+cpu_throttle=0.0% gpu_throttle=0.0% psu_throttle=25.2%
+Re=55766 Gr=3.35e+08 Ra=2.38e+08 Nu=133.5
+flowRegime=湍流 | 混合对流 | ⚠ΔT>30K Boussinesq超限
+intake=25.0 internalAmbient=40.7 topExhaust=61.0 rearExhaust=47.4
+totalCFM=65.2 deadZoneRatio=0.000
+maxFluidV(grid)=14.16 maxPhys(m/s)=7.87
+score_total=59 cooling=62 noise_dB=40

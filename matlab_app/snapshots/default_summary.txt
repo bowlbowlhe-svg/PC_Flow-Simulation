@@ -1,0 +1,10 @@
+scenario=default
+CPU_power=125W GPU_power=250W PSU_power=450W
+Tj_cpu=70.3 Tj_gpu=91.1 Tj_psu=84.2 (deg C)
+cpu_throttle=0.0% gpu_throttle=19.3% psu_throttle=2.5%
+Re=55426 Gr=3.97e+08 Ra=2.82e+08 Nu=134.0
+flowRegime=湍流 | 混合对流 | ⚠ΔT>30K Boussinesq超限
+intake=25.0 internalAmbient=42.2 topExhaust=64.8 rearExhaust=49.4
+totalCFM=65.2 deadZoneRatio=0.000
+maxFluidV(grid)=14.16 maxPhys(m/s)=7.88
+score_total=50 cooling=44 noise_dB=40

@@ -1,0 +1,10 @@
+scenario=heavy
+CPU_power=180W GPU_power=320W PSU_power=850W
+Tj_cpu=83.8 Tj_gpu=95.6 Tj_psu=98.2 (deg C)
+cpu_throttle=4.6% gpu_throttle=35.0% psu_throttle=35.0%
+Re=55836 Gr=5.16e+08 Ra=3.66e+08 Nu=136.4
+flowRegime=湍流 | 混合对流 | ⚠ΔT>30K Boussinesq超限
+intake=25.0 internalAmbient=45.2 topExhaust=72.2 rearExhaust=53.2
+totalCFM=65.3 deadZoneRatio=0.000
+maxFluidV(grid)=14.17 maxPhys(m/s)=7.88
+score_total=33 cooling=10 noise_dB=40
