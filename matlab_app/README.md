@@ -25,12 +25,15 @@ run_all_tests          % 完整回归（含方腔、风道、守恒 1200 步、�
 run_all_tests('ui')    % 界面烟雾测试（仅 MATLAB）
 ```
 
+App 里"跑到稳态"会按收敛判据自动停止；网格可选"预览 140²"（快，结温与精确档相差约 1°C）
+或"精确 280²"。
+
 无界面使用求解器：
 
 ```matlab
 setup_paths();
 s = CFDSolverFEM(125, 250, 450);          % CPU/GPU 功率、电源输出负载 [W]，默认布局
-s.stepMultiple(1000);                     % 推进 1000 步（DT = 5 ms，约 5 s 物理时间，接近稳态）
+info = s.runToSteady();                   % 推进到稳态（默认约 500–1000 步，DT = 5 ms）
 s.thermalNetworks.gpu.T_junction          % GPU 结温
 s.setComponentPower('gpu', 320);          % 改功率
 s.reset();                                % 回到初始态
@@ -54,7 +57,7 @@ matlab_app/
 │   └── pcflow_version.m
 ├── app/PCAirflowSimulatorApp.m   界面
 ├── tests/                 平流、reset、扩散、方腔、风道、守恒、湍流、界面测试
-├── tools/                 快照生成、网格敏感性研究、单步耗时剖析
+├── tools/                 快照生成、网格敏感性研究、单步耗时剖析（profile_step）
 ├── compat/octave/         Octave 兼容层（decomposition、griddedInterpolant）
 └── snapshots/             快照输出（旧文件为 v3.3.1 口径，用 tools/generate_snapshots 重新生成）
 ```

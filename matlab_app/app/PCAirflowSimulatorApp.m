@@ -55,6 +55,7 @@ classdef PCAirflowSimulatorApp < handle
         ModeSolidBtn       matlab.ui.control.Button
         RunButton          matlab.ui.control.Button
         SteadyButton       matlab.ui.control.Button
+        GridDrop           matlab.ui.control.DropDown
         ResetButton        matlab.ui.control.Button
         DailyBtn           matlab.ui.control.Button
         GamingBtn          matlab.ui.control.Button
@@ -66,6 +67,9 @@ classdef PCAirflowSimulatorApp < handle
         IsRunning      logical = false
         VisMode        char = 'velocity'   % 'velocity','temperature','vorticity','solid'
         StepsPerFrame  double = 2
+        GridScale      double = 0.5        % 0.5 = 预览 140²，1 = 精确 280²
+        SteadyRunning  logical = false
+        CancelSteady   logical = false
         StepPending    logical = false     % 防止timer堆积
         
         % ===== 预渲染图形 handle（视图优化）=====
@@ -228,13 +232,16 @@ classdef PCAirflowSimulatorApp < handle
             
             app.RunButton = uibutton(pView,'Position',[10 40 120 28],'Text','▶ 开始仿真','FontSize',11,...
                 'BackgroundColor',[0 0.4 0.6],'FontColor',[1 1 1],'FontWeight','bold','ButtonPushedFcn',@(src,event)app.toggleRun());
-            app.SteadyButton = uibutton(pView,'Position',[140 40 120 28],'Text','⏩ 快速推进','FontSize',11,...
+            app.SteadyButton = uibutton(pView,'Position',[140 40 120 28],'Text','⏩ 跑到稳态','FontSize',11,...
                 'BackgroundColor',[0.1 0.1 0.2],'FontColor',[0.8 0.8 0.8],'ButtonPushedFcn',@(src,event)app.solveSteady());
             app.ResetButton = uibutton(pView,'Position',[270 40 120 28],'Text','重置','FontSize',11,...
                 'BackgroundColor',[0.1 0.1 0.2],'FontColor',[0.8 0.8 0.8],'ButtonPushedFcn',@(src,event)app.resetSim());
             
-            uilabel(pView,'Position',[10 10 380 18],...
-                'Text','⚠ 2D 定性教学模型，结果仅供理解风道趋势','FontColor',[0.85 0.55 0.2],'FontSize',9);
+            uilabel(pView,'Position',[10 10 40 18],'Text','网格','FontColor',[0.8 0.8 0.8],'FontSize',10);
+            app.GridDrop = uidropdown(pView,'Position',[45 10 110 20],'Items',{'预览 140²','精确 280²'},...
+                'Value','预览 140²','FontSize',10,'ValueChangedFcn',@(src,event)app.setGrid());
+            uilabel(pView,'Position',[165 10 225 18],...
+                'Text','⚠ 2D 定性模型，仅供理解风道趋势','FontColor',[0.85 0.55 0.2],'FontSize',9);
             
             % 窗口关闭时自动停止timer
             app.UIFigure.CloseRequestFcn = @(src,event)app.closeApp();
@@ -374,7 +381,8 @@ classdef PCAirflowSimulatorApp < handle
         end
         
         function setupSimulation(app)
-            app.Solver = CFDSolverFEM();
+            app.Solver = CFDSolverFEM([], [], [], [], app.GridScale);
+            app.applyGridMode();
             app.SimTimer = timer('ExecutionMode','fixedRate','Period',0.3,'TimerFcn',@(t,event)app.onTimer());
             app.initStaticGraphics();
         end
@@ -719,27 +727,98 @@ classdef PCAirflowSimulatorApp < handle
         end
         
         function solveSteady(app)
-            % 按钮防抖：计算期间禁用相关按钮
-            app.SteadyButton.Enable = 'off';
+            % 推进到稳态（runToSteady），每 50 步刷新一次画面；运行中再次点击则中止
+            if app.SteadyRunning
+                app.CancelSteady = true;
+                return;
+            end
+            if app.IsRunning, app.toggleRun(); end
+            app.SteadyRunning = true;
+            app.CancelSteady = false;
             app.RunButton.Enable = 'off';
             app.ResetButton.Enable = 'off';
-            app.SteadyButton.Text = '计算中...';
-            app.SteadyButton.BackgroundColor = [0.4 0.4 0.4];
+            app.GridDrop.Enable = 'off';
+            app.SteadyButton.Text = '■ 停止';
+            app.SteadyButton.BackgroundColor = [0.6 0.2 0.2];
             drawnow;
-            batch = 30;
-            for k = 1:5
-                app.Solver.stepMultiple(batch);
-                app.updateVisualizations();
-                app.updateUI();
-                drawnow;
+            opts = struct('progressFcn', @(info) app.steadyProgress(info));
+            try
+                info = app.Solver.runToSteady(opts);
+                if info.converged
+                    msg = sprintf('已稳态（%d 步）', info.steps);
+                elseif info.aborted
+                    msg = sprintf('已停止（%d 步）', info.steps);
+                else
+                    msg = sprintf('未完全收敛（%d 步）', info.steps);
+                end
+            catch ME
+                app.LastError = ME.message;
+                msg = '计算出错';
+                fprintf('runToSteady error: %s\n', ME.message);
             end
-            app.SteadyButton.Text = '⏩ 快速推进';
-            app.SteadyButton.BackgroundColor = [0.1 0.1 0.2];
-            app.SteadyButton.Enable = 'on';
-            app.RunButton.Enable = 'on';
-            app.ResetButton.Enable = 'on';
+            app.SteadyRunning = false;
+            if isvalid(app.SteadyButton)
+                app.SteadyButton.Text = '⏩ 跑到稳态';
+                app.SteadyButton.BackgroundColor = [0.1 0.1 0.2];
+                app.SteadyButton.Tooltip = msg;
+                app.RunButton.Enable = 'on';
+                app.ResetButton.Enable = 'on';
+                app.GridDrop.Enable = 'on';
+            end
+            app.updateVisualizations();
+            app.updateUI();
         end
-        
+
+        function stop = steadyProgress(app, info)
+            % runToSteady 的进度回调：刷新画面，返回 true 表示中止
+            stop = app.CancelSteady || ~isvalid(app.UIFigure);
+            if stop, return; end
+            app.SteadyButton.Text = sprintf('■ 停止（%d 步）', info.steps);
+            app.updateVisualizations();
+            app.updateUI();
+            drawnow;
+            stop = app.CancelSteady;
+        end
+
+        function setGrid(app)
+            % 切换网格精度：按当前功率与风扇设置重建求解器
+            if app.SteadyRunning, return; end
+            if app.IsRunning, app.toggleRun(); end
+            if strcmp(app.GridDrop.Value, '精确 280²'), app.GridScale = 1; else, app.GridScale = 0.5; end
+            old = app.Solver;
+            app.Solver = CFDSolverFEM(old.powerW.cpu, old.powerW.gpu, old.powerW.psu, old.layout, app.GridScale);
+            app.Solver.autoFanEnabled = old.autoFanEnabled;
+            app.Solver.fanSpeedRatio = old.fanSpeedRatio;
+            app.applyGridMode();
+            cla(app.MainAxes);
+            cla(app.SideAxes);
+            app.hContour = gobjects(0);
+            app.hStream = [];
+            app.initStaticGraphics();
+            app.clearHistory();
+            app.updateVisualizations();
+            app.updateUI();
+        end
+
+        function applyGridMode(app)
+            % 预览档（140²）湍流隔步更新，稳态结温与逐步更新相差约 1°C，耗时约减半
+            if app.GridScale < 1
+                app.Solver.turbUpdateEvery = 2;
+            else
+                app.Solver.turbUpdateEvery = 1;
+            end
+        end
+
+        function clearHistory(app)
+            app.timeHistory = [];
+            app.cpuTempHistory = [];
+            app.gpuTempHistory = [];
+            app.rearExhaustTempHistory = [];
+            for k = 1:numel(app.hSideLine)
+                if isvalid(app.hSideLine(k)), set(app.hSideLine(k), 'XData', nan, 'YData', nan); end
+            end
+        end
+
         function resetSim(app)
             if app.IsRunning
                 if isvalid(app.SimTimer)
@@ -752,14 +831,7 @@ classdef PCAirflowSimulatorApp < handle
                 end
             end
             app.Solver.reset();   % 场、几何、风扇状态、热网络全部回到初始态
-            % 清空温度曲线历史
-            app.timeHistory = [];
-            app.cpuTempHistory = [];
-            app.gpuTempHistory = [];
-            app.rearExhaustTempHistory = [];
-            for k = 1:3
-                set(app.hSideLine(k), 'XData', nan, 'YData', nan);
-            end
+            app.clearHistory();
             app.updateVisualizations();
             app.updateUI();
         end

@@ -888,14 +888,16 @@ classdef CFDSolverBase < handle
             end
         end
 
-        function nuEff = computeNuEff(obj)
-            % 有效粘性场 ν_eff = ν + ν_t（N×1）
+        function nuEff = computeNuEff(obj, S_mag, V_local, y_wall)
+            % 有效粘性场 ν_eff = ν + ν_t（N×1）。可传入本步已算好的应变率场以免重算。
             nuMol = obj.AIR.nu;
             if strcmp(obj.turbulenceModel, 'laminar')
                 nuEff = nuMol * ones(obj.GRID.TOTAL, 1);
                 return;
             end
-            [S_mag, V_local, y_wall] = obj.computeStrainRateMag();
+            if nargin < 4
+                [S_mag, V_local, y_wall] = obj.computeStrainRateMag();
+            end
             if strcmp(obj.turbulenceModel, 'komega')
                 % k-ω（Wilcox 2006 + SST 式应力限制器）：ν_t = a₁·k / max(a₁·ω, |S|)
                 a1 = 0.31;
@@ -1356,6 +1358,44 @@ classdef CFDSolverBase < handle
             obj.lastTemps = obj.computeAirflowTemperatures();
             result = struct('deadRatio',obj.deadZoneRatio,'vort',vort,...
                             'diag',obj.lastDiag,'temps',obj.lastTemps);
+        end
+
+        function info = runToSteady(obj, opts)
+            %RUNTOSTEADY 推进到稳态。每 chunk 步检查一次，最近 window 步内
+            %   结温变化 < tolT、机箱内均温变化 < tolT、机箱风量相对变化 < tolFlow 即判稳态。
+            %   opts 字段（均可缺省）：minSteps 400、maxSteps 3000、chunk 50、window 200、
+            %   tolT 0.3 [°C]、tolFlow 0.03、progressFcn（每 chunk 调用 fcn(info)，
+            %   返回 true 则中止）。返回 info：steps、converged、aborted、history。
+            if nargin < 2, opts = struct(); end
+            def = struct('minSteps', 400, 'maxSteps', 3000, 'chunk', 50, 'window', 200, ...
+                         'tolT', 0.3, 'tolFlow', 0.03, 'progressFcn', []);
+            fn = fieldnames(def);
+            for k = 1:numel(fn)
+                if ~isfield(opts, fn{k}), opts.(fn{k}) = def.(fn{k}); end
+            end
+            nWin = max(1, round(opts.window / opts.chunk));
+            names = fieldnames(obj.thermalNetworks)';
+            hist = zeros(0, numel(names) + 2);
+            info = struct('steps', 0, 'converged', false, 'aborted', false, 'history', hist, ...
+                          'names', {names});
+            startIter = obj.iteration;
+            while obj.iteration - startIter < opts.maxSteps
+                r = obj.stepMultiple(opts.chunk);
+                tj = cellfun(@(n) obj.thermalNetworks.(n).T_junction, names);
+                hist(end+1, :) = [tj, r.temps.internalAmbient, r.temps.totalCFM]; %#ok<AGROW>
+                info.steps = obj.iteration - startIter;
+                info.history = hist;
+                if size(hist, 1) > nWin && info.steps >= opts.minSteps
+                    a = hist(end - nWin, :); b = hist(end, :);
+                    dT = max(abs(b(1:end-1) - a(1:end-1)));
+                    dQ = abs(b(end) - a(end)) / max(b(end), 1);
+                    info.converged = dT < opts.tolT && dQ < opts.tolFlow;
+                end
+                if ~isempty(opts.progressFcn)
+                    if opts.progressFcn(info), info.aborted = true; break; end
+                end
+                if info.converged, break; end
+            end
         end
 
         function scores = calculateScores(obj)

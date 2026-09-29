@@ -10,6 +10,8 @@ classdef decomposition < handle
         U = []
         P = []
         Q = []
+        Rt = []       % chol：R 的转置（预存，避免每次求解转置）
+        perm = []     % chol：置换向量，R'R = A(perm,perm)
         n = 0
     end
 
@@ -24,10 +26,10 @@ classdef decomposition < handle
             obj.n = size(A, 1);
             if any(strcmp(obj.Type, {'chol', 'ldl'}))
                 % 对称正定：稀疏 Cholesky（带填充最小化置换）；不正定时退回 LU
-                [R, flag, Q] = chol(A);
+                [R, flag, q] = chol(A, 'vector');
                 if flag == 0
                     obj.Type = 'chol';
-                    obj.U = R; obj.Q = Q;
+                    obj.U = R; obj.Rt = R'; obj.perm = q;
                     return;
                 end
             end
@@ -37,7 +39,8 @@ classdef decomposition < handle
 
         function x = mldivide(obj, b)
             if strcmp(obj.Type, 'chol')
-                x = obj.Q * (obj.U \ (obj.U' \ (obj.Q' * b)));
+                x = zeros(size(b));
+                x(obj.perm, :) = obj.U \ (obj.Rt \ b(obj.perm, :));
             else
                 x = obj.Q * (obj.U \ (obj.L \ (obj.P * b)));
             end

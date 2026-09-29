@@ -40,6 +40,7 @@ classdef CFDSolverFEM < CFDSolverBase
         decomp_turbK = []
         decomp_turbW = []
         lastNuTKMed = 0
+        lastTurbDt = 0      % k-ω 矩阵装配时的推进时长（子循环步数变化时重装）
         wallAdjFluidIdx = []  % 障碍邻接流体格（ω 壁面边界）
         wallAdjCaseIdx = []   % 机箱壁邻接流体格（k 壁面边界）
         % 插值器
@@ -485,11 +486,13 @@ classdef CFDSolverFEM < CFDSolverBase
         % ================================================================
         % 标量（温度、k、ω）
         % ================================================================
-        function d = advectScalar(obj, d0, uvel, vvel, inflowValue)
+        function d = advectScalar(obj, d0, uvel, vvel, inflowValue, dt)
             % 格心标量半拉格朗日平流（makima）。回溯点出域时取来流值 inflowValue；
             % 障碍格值先替换为最近流体格值，避免插值从固体带入/带走不可计量的量。
+            % dt 缺省为 DT（湍流子循环时传入实际推进时长）。
+            if nargin < 6, dt = obj.DT; end
             W   = obj.GRID.W; H = obj.GRID.H;
-            dt0 = obj.DT * (W-2);
+            dt0 = dt * (W-2);
 
             umat = reshape(uvel, W, H);
             vmat = reshape(vvel, W, H);
@@ -592,7 +595,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
         end
 
-        function stepTurbulence(obj)
+        function stepTurbulence(obj, Svec)
             % k-ω 两方程（Wilcox 2006 + SST 式应力限制器）：
             %   ∂k/∂t + u·∇k = ∇·[(ν+σ_k·ν_t)∇k] + P_k − β*·k·ω
             %   ∂ω/∂t + u·∇ω = ∇·[(ν+σ_ω·ν_t)∇ω] + α·(ω/k)·P_k − β·ω²
@@ -601,12 +604,15 @@ classdef CFDSolverFEM < CFDSolverBase
             % （k 产生-耗散平衡解析解，ω 半隐式）→ 边界：障碍邻接格 ω = 6ν/(β₁y²)，
             % 机箱壁邻接格 k → 0，远场环取来流值。
             betaS = 0.09; beta1 = 0.0708; alphaW = 5/9; sigK = 0.6; sigW = 0.5;
-            nu = obj.AIR.nu; dt = obj.DT;
+            % 每 turbUpdateEvery 步更新一次，推进时长相应放大
+            nu = obj.AIR.nu; dt = obj.DT * obj.turbUpdateEvery;
             N = obj.GRID.TOTAL;
             gs = obj.diffScale;
             [kIn, wIn] = obj.turbulenceInletValues();
 
-            Svec = obj.computeStrainRateMag();
+            if nargin < 2
+                Svec = obj.computeStrainRateMag();
+            end
             Svec = Svec(:);
             a1 = 0.31;
             nuT = a1 * obj.turbK ./ max(a1 * obj.turbOmega, Svec);
@@ -615,14 +621,14 @@ classdef CFDSolverFEM < CFDSolverBase
 
             % 1) 平流
             [uTurb, vTurb] = obj.getCellVelocity();
-            kA = obj.advectScalar(obj.turbK, uTurb, vTurb, kIn);
-            wA = obj.advectScalar(obj.turbOmega, uTurb, vTurb, wIn);
+            kA = obj.advectScalar(obj.turbK, uTurb, vTurb, kIn, dt);
+            wA = obj.advectScalar(obj.turbOmega, uTurb, vTurb, wIn, dt);
             kA = max(kA, obj.nuTFloor);
             wA = max(wA, 1e-6);
 
             % 2) 隐式扩散（ν_t 中位数变化 > 5% 时重装配）
             nuTmed = median(nuT);
-            if isempty(obj.decomp_turbK) || obj.lastNuTKMed <= 0 || ...
+            if isempty(obj.decomp_turbK) || obj.lastNuTKMed <= 0 || obj.lastTurbDt ~= dt || ...
                     abs(nuTmed - obj.lastNuTKMed) / obj.lastNuTKMed > 0.05
                 LwK = obj.buildWeightedLaplacian(nu + sigK * nuT, true);
                 LwW = obj.buildWeightedLaplacian(nu + sigW * nuT, true);
@@ -631,6 +637,7 @@ classdef CFDSolverFEM < CFDSolverBase
                 obj.decomp_turbK = decomposition(obj.M_mass/dt - gs*LwK - pinK*obj.E_obs, 'ldl');
                 obj.decomp_turbW = decomposition(obj.M_mass/dt - gs*LwW - pinW*obj.E_obs, 'ldl');
                 obj.lastNuTKMed = nuTmed;
+                obj.lastTurbDt = dt;
             end
             rhsK = obj.M_mass/dt * kA;  rhsK(obj.obsIdx) = 0;
             rhsW = obj.M_mass/dt * wA;  rhsW(obj.obsIdx) = 0;
@@ -684,7 +691,14 @@ classdef CFDSolverFEM < CFDSolverBase
         % 单步推进
         % ================================================================
         function fluidStep(obj)
-            nuEff = obj.computeNuEff();
+            % 应变率场每步只算一次，粘性与湍流生产共用
+            if strcmp(obj.turbulenceModel, 'laminar')
+                S = [];
+                nuEff = obj.computeNuEff();
+            else
+                [S, Vloc, yW] = obj.computeStrainRateMag();
+                nuEff = obj.computeNuEff(S, Vloc, yW);
+            end
 
             % ---- 动量 ----
             obj.diffuseVelocity(nuEff);
@@ -700,7 +714,7 @@ classdef CFDSolverFEM < CFDSolverBase
             % ---- 湍流（用当步速度；ν_eff 下一步生效）----
             if strcmp(obj.turbulenceModel, 'komega') && ...
                     mod(obj.iteration, obj.turbUpdateEvery) == 0
-                obj.stepTurbulence();
+                obj.stepTurbulence(S);
             end
 
             % ---- 温度：扩散 → 平流 → 边界 → 注热 ----
