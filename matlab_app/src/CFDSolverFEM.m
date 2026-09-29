@@ -20,7 +20,8 @@ classdef CFDSolverFEM < CFDSolverBase
         velU_actIdx = []   % u 面激活子矩阵行映射
         velV_actIdx = []   % v 面激活子矩阵行映射
         decomp_pres        % 压力泊松 LHS 分解（无阻力，第一次投影）
-        decomp_presDrag = []  % 阻力耦合压力算子分解（第二次投影）
+pProj1 = []           % 本步第一次投影的压力（网格单位）；与 p 相加为本步总压力
+                decomp_presDrag = []  % 阻力耦合压力算子分解（第二次投影）
         betaRefU = []      % 阻力耦合算子装配时的 u 面权重 β = 1/(1+C|u|)
         betaRefV = []
         betaRefStep = -inf % 上次重装阻力耦合算子的步数
@@ -370,6 +371,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.p = obj.decomp_pres \ (-rhs_p);
             obj.p(obj.obsIdx) = 0;
             obj.p(obj.farFieldPresIdx) = 0;
+            obj.pProj1 = obj.p;
 
             pM = reshape(obj.p, W, H);
             % 只修正格间激活面；域边界面邻接 p=0 的环格，由海绵阻尼吸收

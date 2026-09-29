@@ -1,7 +1,8 @@
 classdef PCAirflowSimulatorApp < handle
     %PCAIRFLOWSIMULATORAPP PC 风道仿真器 MATLAB App（版本见 pcflow_version）。
     %   2D 不可压 Navier–Stokes + k-ω 湍流 + 共轭传热的交互式可视化。
-    %   左侧：流场主视图（点击机箱风扇安装位可切换 空 → 进气 → 排气）与温度曲线。
+    %   左侧：流场主视图（点击机箱风扇安装位可切换 空 → 进气 → 排气；粒子示踪、开口风量标注、
+    %   悬停读数）、工具栏（下方图切换、粒子、标注、导出 PNG/GIF）、温度曲线或风扇工作点图。
     %   右侧：常驻的视图与运行控制，下方四个标签页：
     %     状态       实时温度、评分、CFD 诊断、智能诊断
     %     功率与风扇 元件功率、全局风扇转速、各风扇工作状态（转速/风量/静压/噪音）
@@ -94,6 +95,15 @@ classdef PCAirflowSimulatorApp < handle
         ModeVorticityBtn   matlab.ui.control.Button
         ModeSolidBtn       matlab.ui.control.Button
         ModeDiffBtn        matlab.ui.control.Button
+        ModePressureBtn    matlab.ui.control.Button
+
+        % ----- 主视图工具栏 -----
+        HoverLabel         matlab.ui.control.Label
+        SideModeDrop       matlab.ui.control.DropDown
+        ParticleCheck      matlab.ui.control.CheckBox
+        LabelCheck         matlab.ui.control.CheckBox
+        ExportPngBtn       matlab.ui.control.Button
+        GifBtn             matlab.ui.control.Button
         RunButton          matlab.ui.control.Button
         SteadyButton       matlab.ui.control.Button
         ResetButton        matlab.ui.control.Button
@@ -127,8 +137,19 @@ classdef PCAirflowSimulatorApp < handle
         hImg
         hCbar
         hContour
-        hStream
+        hParticles          % 粒子尾迹（一个 line，NaN 分隔）
+        hHeads              % 粒子头部
+        hOpenLabels = {}    % 开口风量标注
         hSideLine = {}      % CPU/GPU/后侧排气温度曲线
+        hPQ = {}            % 风扇工作点图：每台风扇 {曲线, 工作点}
+
+        % ----- 可视化状态 -----
+        Tracer              % ParticleTracer
+        ParticleTimer       % 暂停时驱动粒子动画的定时器
+        SideMode char = 'temp'   % 'temp'（温度曲线）| 'pq'（风扇工作点）
+        GifFile char = ''        % 正在录制的 GIF 文件（空 = 未录制）
+        GifFrames double = 0
+        GifSkip double = 0
         hSlot = {}          % 安装位标记（patch）
         hSlotText = {}      % 安装位文字
 
@@ -162,7 +183,22 @@ classdef PCAirflowSimulatorApp < handle
             hold(app.MainAxes, 'on');
             disableDefaultInteractivity(app.MainAxes);
 
-            app.SideAxes = uiaxes(mainPanel, 'Position', [10 10 730 400], ...
+            % 主视图与下方图之间的工具栏
+            app.HoverLabel = uilabel(mainPanel, 'Position', [10 388 300 22], 'Text', '移动鼠标查看读数', ...
+                'FontColor', [0.7 0.7 0.8], 'FontSize', 10);
+            app.SideModeDrop = uidropdown(mainPanel, 'Position', [315 388 100 22], ...
+                'Items', {'温度曲线', '风扇工作点'}, 'Value', '温度曲线', 'FontSize', 10, ...
+                'ValueChangedFcn', @(src,event)app.setSideMode());
+            app.ParticleCheck = uicheckbox(mainPanel, 'Position', [423 388 55 22], 'Text', '粒子', ...
+                'Value', true, 'FontColor', [0.8 0.8 0.8], 'FontSize', 10, ...
+                'ValueChangedFcn', @(src,event)app.onParticleToggle());
+            app.LabelCheck = uicheckbox(mainPanel, 'Position', [480 388 80 22], 'Text', '风量标注', ...
+                'Value', true, 'FontColor', [0.8 0.8 0.8], 'FontSize', 10, ...
+                'ValueChangedFcn', @(src,event)app.updateOpeningLabels());
+            app.ExportPngBtn = app.plainButton(mainPanel, [565 388 80 22], '导出 PNG', @(src,event)app.exportPngDialog());
+            app.GifBtn = app.plainButton(mainPanel, [650 388 90 22], '● 录制 GIF', @(src,event)app.toggleGif());
+
+            app.SideAxes = uiaxes(mainPanel, 'Position', [10 10 730 370], ...
                 'Color', bg, 'XColor', [0.3 0.3 0.4], 'YColor', [0.3 0.3 0.4]);
             title(app.SideAxes, '温度曲线', 'Color', [0.8 0.8 1], 'FontSize', 12);
             app.SideAxes.XTick = []; app.SideAxes.YTick = [];
@@ -195,8 +231,9 @@ classdef PCAirflowSimulatorApp < handle
             app.createLayoutTab(app.TabLayout);
             app.createScenarioTab(app.TabScenario);
 
-            % 窗口关闭时自动停止 timer
+            % 窗口关闭时自动停止 timer；鼠标移动时显示主视图读数
             app.UIFigure.CloseRequestFcn = @(src,event)app.closeApp();
+            app.UIFigure.WindowButtonMotionFcn = @(src,event)app.onHover();
         end
 
         function p = sectionPanel(~, parent, pos, titleText)
@@ -212,12 +249,13 @@ classdef PCAirflowSimulatorApp < handle
 
         function createViewPanel(app, parent)
             pView = app.sectionPanel(parent, [10 690 400 105], '视图与操作');
-            x = 8 + (0:4) * 77;
-            app.ModeVelocityBtn  = app.plainButton(pView, [x(1) 55 73 22], '速度场',   @(src,event)app.setMode('velocity'));
-            app.ModeTempBtn      = app.plainButton(pView, [x(2) 55 73 22], '温度场',   @(src,event)app.setMode('temperature'));
-            app.ModeVorticityBtn = app.plainButton(pView, [x(3) 55 73 22], '涡量',     @(src,event)app.setMode('vorticity'));
-            app.ModeSolidBtn     = app.plainButton(pView, [x(4) 55 73 22], '固体温度', @(src,event)app.setMode('solid'));
-            app.ModeDiffBtn      = app.plainButton(pView, [x(5) 55 73 22], '温差',     @(src,event)app.setMode('diff'));
+            x = 8 + (0:5) * 64;
+            app.ModeVelocityBtn  = app.plainButton(pView, [x(1) 55 62 22], '速度',     @(src,event)app.setMode('velocity'));
+            app.ModeTempBtn      = app.plainButton(pView, [x(2) 55 62 22], '温度',     @(src,event)app.setMode('temperature'));
+            app.ModePressureBtn  = app.plainButton(pView, [x(3) 55 62 22], '压力',     @(src,event)app.setMode('pressure'));
+            app.ModeVorticityBtn = app.plainButton(pView, [x(4) 55 62 22], '涡量',     @(src,event)app.setMode('vorticity'));
+            app.ModeSolidBtn     = app.plainButton(pView, [x(5) 55 62 22], '固体温度', @(src,event)app.setMode('solid'));
+            app.ModeDiffBtn      = app.plainButton(pView, [x(6) 55 62 22], '温差',     @(src,event)app.setMode('diff'));
             app.ModeVelocityBtn.BackgroundColor = [0 0.2 0.3];
             app.ModeVelocityBtn.FontColor = [0 0.83 1];
 
@@ -402,9 +440,8 @@ classdef PCAirflowSimulatorApp < handle
             app.hCbar.Label.Color = [0.7 0.7 0.8];
             app.hCbar.FontSize = 7;
 
-            % 等温线、流线由 updateVisualizations 按需创建
+            % 等温线由 updateVisualizations 按需创建
             app.hContour = [];
-            app.hStream = [];
 
             % ========== 静态几何（仅绘制一次）==========
             plotRect = @(x,y,w,h,col,lw) plot(ax, [x x+w x+w x x], [y y y+h y+h y], 'Color', col, 'LineWidth', lw, 'PickableParts', 'none');
@@ -509,25 +546,90 @@ classdef PCAirflowSimulatorApp < handle
             text(ax, x0 + L100/2, y0 + 4, '100 mm', 'Color', [0.90 0.90 0.90], 'FontSize', 7, ...
                 'HorizontalAlignment', 'center', 'Interpreter', 'none', 'PickableParts', 'none');
 
+            % 粒子示踪（尾迹 + 头部），替代每帧重算的流线
+            app.hParticles = plot(ax, nan, nan, '-', 'Color', [0.92 0.97 1 0.35], 'LineWidth', 0.7, ...
+                'PickableParts', 'none');
+            app.hHeads = plot(ax, nan, nan, '.', 'Color', [0.92 0.97 1], 'MarkerSize', 5, ...
+                'PickableParts', 'none');
+            app.Tracer = ParticleTracer(round(1500 * max(1, s.gridScale)), 8);
+            app.Tracer.reset(s);
+
+            % 开口风量标注（壁外侧，箭头 = 流向，数字 = 净风量 CFM）
+            M = s.openingMarkers();
+            app.hOpenLabels = cell(numel(M), 1);
+            for k = 1:numel(M)
+                app.hOpenLabels{k} = text(ax, M(k).x, M(k).y, '', 'FontSize', 7, 'FontWeight', 'bold', ...
+                    'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', ...
+                    'PickableParts', 'none');
+            end
+
             % 安装位标记最后绘制，位于最上层以接收点击
             app.drawSlotMarkers();
 
-            % ========== SideAxes 预创建（时间-温度曲线）==========
+            app.initSideAxes();
+        end
+
+        function initSideAxes(app)
+            % 下方图：温度曲线（CPU/GPU/后侧排气随仿真时间）或风扇工作点（P-Q 曲线 + 工作点）
             ax2 = app.SideAxes;
+            cla(ax2);
             hold(ax2, 'on');
-            app.hSideLine = cell(3, 1);
-            app.hSideLine{1} = plot(ax2, nan, nan, 'Color', [1 0.3 0.3], 'LineWidth', 1.5, 'DisplayName', 'CPU');
-            app.hSideLine{2} = plot(ax2, nan, nan, 'Color', [0.3 1 0.3], 'LineWidth', 1.5, 'DisplayName', 'GPU');
-            app.hSideLine{3} = plot(ax2, nan, nan, 'Color', [0.3 0.6 1], 'LineWidth', 1.5, 'DisplayName', '后侧排气');
-            legend(ax2, 'Location', 'northwest', 'Color', [0.1 0.1 0.15], 'TextColor', [0.7 0.7 0.8], 'FontSize', 8);
-            xlabel(ax2, '仿真时间 (s)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
-            ylabel(ax2, '温度 (°C)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
             ax2.Color = [0.05 0.05 0.08];
             ax2.XColor = [0.4 0.4 0.5];
             ax2.YColor = [0.4 0.4 0.5];
             grid(ax2, 'on');
-            ylim(ax2, [20, 110]);
+            app.hSideLine = cell(3, 1);
+            app.hPQ = {};
+            if strcmp(app.SideMode, 'pq')
+                % 机箱风扇与 CPU 塔扇：当前转速下的 P-Q 曲线（实线）与工作点（圆点）
+                F = app.pqFans();
+                cols = lines(max(numel(F), 1));
+                for k = 1:numel(F)
+                    c = cols(k, :);
+                    app.hPQ{k} = {plot(ax2, nan, nan, '-', 'Color', c, 'LineWidth', 1.3, 'DisplayName', F{k}.name), ...
+                                  plot(ax2, nan, nan, 'o', 'Color', c, 'MarkerFaceColor', c, 'MarkerSize', 6, ...
+                                       'HandleVisibility', 'off')};
+                end
+                if ~isempty(F)
+                    legend(ax2, 'Location', 'northeast', 'Color', [0.1 0.1 0.15], ...
+                        'TextColor', [0.7 0.7 0.8], 'FontSize', 8);
+                end
+                xlabel(ax2, '风量 (CFM)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
+                ylabel(ax2, '静压 (Pa)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
+                xlim(ax2, 'auto'); ylim(ax2, 'auto');
+            else
+                app.hSideLine{1} = plot(ax2, nan, nan, 'Color', [1 0.3 0.3], 'LineWidth', 1.5, 'DisplayName', 'CPU');
+                app.hSideLine{2} = plot(ax2, nan, nan, 'Color', [0.3 1 0.3], 'LineWidth', 1.5, 'DisplayName', 'GPU');
+                app.hSideLine{3} = plot(ax2, nan, nan, 'Color', [0.3 0.6 1], 'LineWidth', 1.5, 'DisplayName', '后侧排气');
+                legend(ax2, 'Location', 'northwest', 'Color', [0.1 0.1 0.15], 'TextColor', [0.7 0.7 0.8], 'FontSize', 8);
+                xlabel(ax2, '仿真时间 (s)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
+                ylabel(ax2, '温度 (°C)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
+                ylim(ax2, [20, 110]);
+                if numel(app.timeHistory) > 1
+                    set(app.hSideLine{1}, 'XData', app.timeHistory, 'YData', app.cpuTempHistory);
+                    set(app.hSideLine{2}, 'XData', app.timeHistory, 'YData', app.gpuTempHistory);
+                    set(app.hSideLine{3}, 'XData', app.timeHistory, 'YData', app.rearExhaustTempHistory);
+                end
+            end
             hold(ax2, 'off');
+        end
+
+        function F = pqFans(app)
+            % 工作点图显示的风扇：机箱风扇 + CPU 塔扇（显卡、电源风扇不画，避免曲线过密）
+            list = app.Solver.fanStatusList();
+            allF = app.Solver.allFans();
+            F = {};
+            for k = 1:numel(allF)
+                if any(strcmp(allF{k}.role, {'case', 'cpu'}))
+                    F{end+1} = struct('fan', allF{k}, 'name', list(k).name); %#ok<AGROW>
+                end
+            end
+        end
+
+        function setSideMode(app)
+            if strcmp(app.SideModeDrop.Value, '风扇工作点'), app.SideMode = 'pq'; else, app.SideMode = 'temp'; end
+            app.initSideAxes();
+            app.updateSideView();
         end
 
         function drawSlotMarkers(app)
@@ -616,6 +718,7 @@ classdef PCAirflowSimulatorApp < handle
                     app.StepsPerFrame = 2;   % 常规工况
                 end
                 app.Solver.stepMultiple(app.StepsPerFrame);
+                app.advanceParticles();
                 app.updateVisualizations();
                 app.updateUI();
                 app.StepPending = false;
@@ -644,11 +747,10 @@ classdef PCAirflowSimulatorApp < handle
             if ~isvalid(app.UIFigure) || ~isvalid(app.MainAxes), return; end
             try
                 ax = app.MainAxes;
-                hold(ax, 'on');   % 保持 hold on，防止 streamslice/contour 清除 hImg 等静态图层
+                hold(ax, 'on');   % 保持 hold on，防止 contour 清除 hImg 等静态图层
                 W = app.Solver.GRID.W; H = app.Solver.GRID.H;
                 contourLevels = [];
                 contourColor = [1 1 1];
-                showStream = false;
 
                 switch app.VisMode
                     case 'velocity'
@@ -657,30 +759,41 @@ classdef PCAirflowSimulatorApp < handle
                         field = reshape(sqrt(uCgV.^2 + vCgV.^2), W, H) * app.Solver.VEL_SCALE;
                         obs2d = reshape(app.Solver.obstacle, W, H) > 0;
                         field(obs2d) = NaN;
-                        ax.Colormap = jet(256);
+                        ax.Colormap = pcflow_colormap('speed', 256);
                         ax.CLim = [0 2];
                         cbLabel = '速度 (m/s)';
                         ttl = '速度场 (m/s)';
-                        showStream = true;
                     case 'temperature'
                         field = app.temperatureField();
-                        ax.Colormap = hot(256);
+                        ax.Colormap = pcflow_colormap('heat', 256);
                         ax.CLim = [20 100];
                         cbLabel = '温度 (°C)';
                         ttl = '温度场 (°C)';
                         contourLevels = [30 40 50 60];
-                        contourColor = [0 1 1];
+                        contourColor = [0.4 0.9 1];
+                    case 'pressure'
+                        % 相对机箱外（远场）的静压；零压线分开正压区与负压区
+                        field = reshape(app.Solver.pressureFieldPa(), W, H);
+                        v = sort(abs(field(isfinite(field))));
+                        lim = 2;
+                        if ~isempty(v), lim = max(lim, v(max(1, round(0.99 * numel(v))))); end
+                        ax.Colormap = pcflow_colormap('diverging', 256);
+                        ax.CLim = [-lim lim];
+                        cbLabel = '静压 (Pa，相对机箱外)';
+                        ins = app.Solver.insideMask;
+                        pin = mean(field(ins(isfinite(field(ins)))));
+                        ttl = sprintf('压力场：机箱内平均 %+.2f Pa（%s）', pin, app.pick(pin >= 0, '正压', '负压'));
+                        contourLevels = [0 0];
+                        contourColor = [0.3 0.3 0.3];
                     case 'vorticity'
                         field = reshape(app.Solver.latestVorticity, W, H);
-                        ax.Colormap = cool(256);
+                        ax.Colormap = pcflow_colormap('diverging', 256);
                         ax.CLim = [-60 60];
                         cbLabel = '涡量 (1/s)';
-                        ttl = '涡量场 (1/s)';
-                        contourLevels = 0;
-                        contourColor = [1 1 0];
+                        ttl = '涡量场 (1/s，红 = 逆时针)';
                     case 'solid'
                         field = reshape(app.Solver.T_solid, W, H);
-                        ax.Colormap = parula(256);
+                        ax.Colormap = pcflow_colormap('heat', 256);
                         ax.CLim = [20 90];
                         cbLabel = '固体温度 (°C)';
                         ttl = '固体温度 (°C)';
@@ -721,27 +834,10 @@ classdef PCAirflowSimulatorApp < handle
                     app.hContour = hc;
                 end
 
-                % 流线图（速度场模式）— 障碍物区域 NaN 屏蔽，防止流线穿固体
-                if ~isempty(app.hStream) && all(isvalid(app.hStream))
-                    delete(app.hStream);
-                end
-                app.hStream = [];
-                if showStream
-                    [uCgS, vCgS] = app.Solver.getCellVelocity();
-                    umat = reshape(uCgS, W, H);
-                    vmat = reshape(vCgS, W, H);
-                    obs2d = reshape(app.Solver.obstacle, W, H) > 0;
-                    umat(obs2d) = NaN;
-                    vmat(obs2d) = NaN;
-                    % density=1.5，单标量避免被误判为 3D 调用
-                    hs = streamslice(ax, 1:W, 1:H, umat, vmat, 1.5);
-                    if ~isempty(hs)
-                        set(hs, 'Color', [1 1 1], 'LineWidth', 0.8, 'PickableParts', 'none');
-                        app.hStream = hs;
-                    end
-                end
-
+                app.drawParticles();
+                app.updateOpeningLabels();
                 drawnow limitrate;
+                app.captureGifFrame();
             catch ME
                 app.LastError = ME.message;
                 fprintf('updateVisualizations error: %s\n', ME.message);
@@ -773,13 +869,19 @@ classdef PCAirflowSimulatorApp < handle
                     app.rearExhaustTempHistory(1) = [];
                 end
 
-                set(app.hSideLine{1}, 'XData', app.timeHistory, 'YData', app.cpuTempHistory);
-                set(app.hSideLine{2}, 'XData', app.timeHistory, 'YData', app.gpuTempHistory);
-                set(app.hSideLine{3}, 'XData', app.timeHistory, 'YData', app.rearExhaustTempHistory);
-                if length(app.timeHistory) > 1 && app.timeHistory(end) > app.timeHistory(1)
-                    xlim(app.SideAxes, [app.timeHistory(1), app.timeHistory(end)]);
+                if strcmp(app.SideMode, 'pq')
+                    app.updatePQ();
+                    ttl = '风扇工作点（曲线 = 当前转速 P-Q，圆点 = 实测工作点）';
+                else
+                    set(app.hSideLine{1}, 'XData', app.timeHistory, 'YData', app.cpuTempHistory);
+                    set(app.hSideLine{2}, 'XData', app.timeHistory, 'YData', app.gpuTempHistory);
+                    set(app.hSideLine{3}, 'XData', app.timeHistory, 'YData', app.rearExhaustTempHistory);
+                    if length(app.timeHistory) > 1 && app.timeHistory(end) > app.timeHistory(1)
+                        xlim(app.SideAxes, [app.timeHistory(1), app.timeHistory(end)]);
+                    end
+                    ttl = '温度曲线';
                 end
-                if isempty(app.StatusMsg), ttl = '温度曲线'; else, ttl = ['温度曲线 — ' app.StatusMsg]; end
+                if ~isempty(app.StatusMsg), ttl = [ttl ' — ' app.StatusMsg]; end
                 title(app.SideAxes, ttl, 'Color', [0.8 0.8 1]);
                 drawnow limitrate;
             catch ME
@@ -848,6 +950,206 @@ classdef PCAirflowSimulatorApp < handle
             % 表格只在所在标签页可见时刷新（uitable 更新较慢）
             if app.isTabSelected(app.TabFans), app.refreshFanTable(); end
             if app.isTabSelected(app.TabScenario), app.refreshScenarioTable(); end
+        end
+
+        function updatePQ(app)
+            % 刷新工作点图：各风扇当前转速的 P-Q 曲线与实测工作点
+            F = app.pqFans();
+            s = app.Solver;
+            for k = 1:min(numel(F), numel(app.hPQ))
+                f = F{k}.fan;
+                rpm = f.getRPM(s);
+                qFree = f.cfm_max * rpm / f.rpm_max;               % CFM
+                q = linspace(0, 1, 21);
+                dp = f.pmax_pa * (rpm / f.rpm_max)^2 * interp1(f.PQ_QGRID, f.pq_curve, q, 'pchip');
+                set(app.hPQ{k}{1}, 'XData', q * qFree, 'YData', dp);
+                set(app.hPQ{k}{2}, 'XData', max(f.lastQ, 0) * Fan.CFM_PER_M3S, 'YData', max(f.lastDp, 0));
+            end
+        end
+
+        function out = pick(~, cond, a, b)
+            if cond, out = a; else, out = b; end
+        end
+
+        % ================= 粒子示踪、标注、悬停、导出 =================
+        function advanceParticles(app)
+            % 粒子前进一帧（0.02 s 物理时间）；关闭粒子时不计算
+            if isempty(app.Tracer) || ~app.ParticleCheck.Value, return; end
+            app.Tracer.step(app.Solver, 0.02);
+        end
+
+        function drawParticles(app)
+            if isempty(app.hParticles) || ~isvalid(app.hParticles), return; end
+            if isempty(app.Tracer) || ~app.ParticleCheck.Value
+                set(app.hParticles, 'XData', nan, 'YData', nan);
+                set(app.hHeads, 'XData', nan, 'YData', nan);
+                return;
+            end
+            [xs, ys] = app.Tracer.trailLines();
+            set(app.hParticles, 'XData', xs, 'YData', ys);
+            set(app.hHeads, 'XData', app.Tracer.X(:, 1), 'YData', app.Tracer.Y(:, 1));
+        end
+
+        function updateOpeningLabels(app)
+            % 开口旁的风量标注：箭头为流向（进 / 出机箱），数字为净风量 CFM
+            show = app.LabelCheck.Value;
+            M = app.Solver.openingMarkers();
+            arrows = struct('front', '←→', 'rear', '→←', 'top', '↓↑', 'bottom', '↑↓');   % {进, 出}
+            for k = 1:min(numel(M), numel(app.hOpenLabels))
+                h = app.hOpenLabels{k};
+                if isempty(h) || ~isvalid(h), continue; end
+                if ~show || abs(M(k).cfm) < 0.5
+                    set(h, 'String', '');
+                    continue;
+                end
+                a = arrows.(M(k).mount);
+                if M(k).cfm > 0
+                    set(h, 'String', sprintf('%s%.0f', a(2), M(k).cfm), 'Color', [1.00 0.62 0.30]);
+                else
+                    set(h, 'String', sprintf('%s%.0f', a(1), -M(k).cfm), 'Color', [0.35 0.90 1.00]);
+                end
+            end
+        end
+
+        function onParticleToggle(app)
+            if app.ParticleCheck.Value
+                app.Tracer.reset(app.Solver);
+                app.startParticleAnim();
+            else
+                app.stopParticleAnim();
+            end
+            app.drawParticles();
+        end
+
+        function startParticleAnim(app)
+            % 暂停/稳态时用单独的定时器让粒子在当前流场里继续运动（流场本身不推进）
+            if app.IsRunning || app.SteadyRunning || ~app.ParticleCheck.Value, return; end
+            if isempty(app.ParticleTimer) || ~isvalid(app.ParticleTimer)
+                app.ParticleTimer = timer('ExecutionMode', 'fixedSpacing', 'Period', 0.05, ...
+                    'BusyMode', 'drop', 'TimerFcn', @(t,event)app.particleTick());
+            end
+            if ~strcmp(char(app.ParticleTimer.Running), 'on'), start(app.ParticleTimer); end
+        end
+
+        function stopParticleAnim(app)
+            if ~isempty(app.ParticleTimer) && isvalid(app.ParticleTimer) && strcmp(char(app.ParticleTimer.Running), 'on')
+                stop(app.ParticleTimer);
+            end
+        end
+
+        function particleTick(app)
+            try
+                if ~isvalid(app.UIFigure), app.stopParticleAnim(); return; end
+                if app.IsRunning || app.SteadyRunning || app.StepPending, return; end
+                app.advanceParticles();
+                app.drawParticles();
+                drawnow limitrate;
+                app.captureGifFrame();
+            catch ME
+                app.stopParticleAnim();
+                app.LastError = ME.message;
+                fprintf('particleTick error: %s\n', ME.message);
+            end
+        end
+
+        function onHover(app)
+            try
+                cp = app.MainAxes.CurrentPoint;
+                if isempty(cp), return; end
+                app.hoverAt(cp(1, 1), cp(1, 2));
+            catch
+                % 悬停读数失败不影响仿真
+            end
+        end
+
+        function hoverAt(app, x, y)
+            % 主视图读数：位置（mm，相对机箱外沿）、速度、温度、压力；x/y 为格坐标
+            try
+                s = app.Solver;
+                j = round(x); i = round(y);
+                if i < 1 || i > s.GRID.W || j < 1 || j > s.GRID.H
+                    return;
+                end
+                idx = (j - 1) * s.GRID.W + i;
+                co = s.CASE2D.outer;
+                xm = (j - co.x + 0.5) * s.GRID.cell_size_mm;
+                ym = (i - co.y + 0.5) * s.GRID.cell_size_mm;
+                if s.obstacle(idx) > 0
+                    txt = sprintf('x %.0f  y %.0f mm │ 固体 %.1f°C', xm, ym, s.T_solid(idx));
+                else
+                    [uc, vc] = s.getCellVelocity();
+                    P = s.pressureFieldPa();
+                    txt = sprintf('x %.0f  y %.0f mm │ %.2f m/s │ %.1f°C │ %+.2f Pa', xm, ym, ...
+                        hypot(uc(idx), vc(idx)) * s.VEL_SCALE, s.T_fluid(idx), P(idx));
+                end
+                app.HoverLabel.Text = txt;
+            catch
+                % 悬停读数失败不影响仿真
+            end
+        end
+
+        function exportPngDialog(app)
+            [f, p] = uiputfile('*.png', '导出主视图', 'pcflow_view.png');
+            if isequal(f, 0), return; end
+            app.exportPng(fullfile(p, f));
+        end
+
+        function exportPng(app, file)
+            try
+                exportgraphics(app.MainAxes, file, 'Resolution', 150);
+                app.HoverLabel.Text = ['已导出 ' file];
+            catch ME
+                app.reportError('导出 PNG 失败', ME);
+            end
+        end
+
+        function toggleGif(app)
+            if isempty(app.GifFile)
+                [f, p] = uiputfile('*.gif', '录制 GIF（再点一次停止）', 'pcflow_anim.gif');
+                if isequal(f, 0), return; end
+                app.startGif(fullfile(p, f));
+            else
+                app.stopGif();
+            end
+        end
+
+        function startGif(app, file)
+            app.GifFile = file;
+            app.GifFrames = 0;
+            app.GifSkip = 0;
+            app.GifBtn.Text = '■ 停止录制';
+            app.GifBtn.BackgroundColor = [0.6 0.2 0.2];
+        end
+
+        function stopGif(app)
+            n = app.GifFrames; f = app.GifFile;
+            app.GifFile = '';
+            app.GifBtn.Text = '● 录制 GIF';
+            app.GifBtn.BackgroundColor = [0.1 0.1 0.2];
+            if n > 0
+                app.HoverLabel.Text = sprintf('GIF 已保存（%d 帧）：%s', n, f);
+            end
+        end
+
+        function captureGifFrame(app)
+            % 录制中每隔一次刷新截取主视图一帧；最多 300 帧后自动停止
+            if isempty(app.GifFile), return; end
+            app.GifSkip = app.GifSkip + 1;
+            if mod(app.GifSkip, 2) ~= 1, return; end
+            tmp = [tempname() '.png'];
+            try
+                exportgraphics(app.MainAxes, tmp, 'Resolution', 72);
+                img = imread(tmp);
+                delete(tmp);
+                pcflow_gif_frame(app.GifFile, img, app.GifFrames == 0, 0.1);
+                app.GifFrames = app.GifFrames + 1;
+            catch ME
+                if exist(tmp, 'file'), delete(tmp); end
+                app.stopGif();
+                app.reportError('录制 GIF 失败', ME);
+                return;
+            end
+            if app.GifFrames >= 300, app.stopGif(); end
         end
 
         function T = junctionOrNaN(app, name)
@@ -975,8 +1277,9 @@ classdef PCAirflowSimulatorApp < handle
                 app.DiffRef = find(strcmp(app.SCENARIO_NAMES, app.DiffRefDrop.Value), 1);
             end
             app.VisMode = mode;
-            buttons = {app.ModeVelocityBtn, app.ModeTempBtn, app.ModeVorticityBtn, app.ModeSolidBtn, app.ModeDiffBtn};
-            modes = {'velocity', 'temperature', 'vorticity', 'solid', 'diff'};
+            buttons = {app.ModeVelocityBtn, app.ModeTempBtn, app.ModePressureBtn, app.ModeVorticityBtn, ...
+                       app.ModeSolidBtn, app.ModeDiffBtn};
+            modes = {'velocity', 'temperature', 'pressure', 'vorticity', 'solid', 'diff'};
             for k = 1:numel(buttons)
                 if strcmp(modes{k}, mode)
                     buttons{k}.BackgroundColor = [0 0.2 0.3];
@@ -996,15 +1299,17 @@ classdef PCAirflowSimulatorApp < handle
 
         function toggleRun(app)
             if app.IsRunning
-                if ~isempty(app.SimTimer) && isvalid(app.SimTimer) && strcmp(app.SimTimer.Running, 'on')
+                if ~isempty(app.SimTimer) && isvalid(app.SimTimer) && strcmp(char(app.SimTimer.Running), 'on')
                     stop(app.SimTimer);
                 end
                 app.RunButton.Text = '▶ 开始仿真';
                 app.RunButton.BackgroundColor = [0 0.4 0.6];
                 app.IsRunning = false;
+                app.startParticleAnim();
             else
+                app.stopParticleAnim();
                 if ~isempty(app.SimTimer) && isvalid(app.SimTimer)
-                    if strcmp(app.SimTimer.Running, 'on')
+                    if strcmp(char(app.SimTimer.Running), 'on')
                         stop(app.SimTimer);
                     end
                 else
@@ -1034,6 +1339,7 @@ classdef PCAirflowSimulatorApp < handle
                 return;
             end
             if app.IsRunning, app.toggleRun(); end
+            app.stopParticleAnim();
             app.SteadyRunning = true;
             app.CancelSteady = false;
             app.setBusy(true);
@@ -1071,6 +1377,7 @@ classdef PCAirflowSimulatorApp < handle
             app.setBusy(false);
             app.updateVisualizations();
             app.updateUI();
+            app.startParticleAnim();
         end
 
         function stop = steadyProgress(app, info)
@@ -1152,7 +1459,6 @@ classdef PCAirflowSimulatorApp < handle
             cla(app.MainAxes);
             cla(app.SideAxes);
             app.hContour = [];
-            app.hStream = [];
             app.initStaticGraphics();
             app.clearHistory();
             app.updateVisualizations();
@@ -1182,6 +1488,7 @@ classdef PCAirflowSimulatorApp < handle
             app.Solver.reset();   % 场、几何、风扇状态、热网络全部回到初始态
             app.SteadyIter = -1;
             app.StatusMsg = '';
+            if ~isempty(app.Tracer), app.Tracer.reset(app.Solver); end
             app.clearHistory();
             app.updateVisualizations();
             app.updateUI();
@@ -1444,14 +1751,13 @@ classdef PCAirflowSimulatorApp < handle
             app.refreshScenarioTable();
             app.updateVisualizations();
             app.updateUI();
+            app.startParticleAnim();
         end
 
         function closeApp(app)
             app.CancelSteady = true;     % 跑稳态中关窗：下一次进度回调即停止
-            if ~isempty(app.SimTimer) && isvalid(app.SimTimer)
-                stop(app.SimTimer);
-                delete(app.SimTimer);
-            end
+            if ~isempty(app.GifFile), app.stopGif(); end
+            app.deleteTimers();
             app.IsRunning = false;
             drawnow;
             if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
@@ -1460,13 +1766,21 @@ classdef PCAirflowSimulatorApp < handle
         end
 
         function delete(app)
-            if ~isempty(app.SimTimer) && isvalid(app.SimTimer)
-                stop(app.SimTimer);
-                delete(app.SimTimer);
-            end
+            app.deleteTimers();
             drawnow;
             if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
                 delete(app.UIFigure);
+            end
+        end
+
+        function deleteTimers(app)
+            tm = {app.SimTimer, app.ParticleTimer};
+            for k = 1:2
+                t = tm{k};
+                if ~isempty(t) && isvalid(t)
+                    stop(t);
+                    delete(t);
+                end
             end
         end
 
@@ -1482,6 +1796,11 @@ classdef PCAirflowSimulatorApp < handle
                 case 'onTimer',        app.onTimer();
                 case 'saveLayoutFile', app.saveLayoutFile(varargin{:});
                 case 'loadLayoutFile', app.loadLayoutFile(varargin{:});
+                case 'particleTick',   app.particleTick();
+                case 'hoverAt',        app.hoverAt(varargin{:});
+                case 'exportPng',      app.exportPng(varargin{:});
+                case 'startGif',       app.startGif(varargin{:});
+                case 'stopGif',        app.stopGif();
                 case 'refresh'
                     app.updateVisualizations();
                     app.updateUI();

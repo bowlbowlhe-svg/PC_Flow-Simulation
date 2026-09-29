@@ -44,8 +44,8 @@ function pass = test_ui()
     fprintf('[2] 场景按钮与视图模式\n');
     errs = act(errs, 'gaming', @() ui_press(app.GamingBtn));
     errs = expect(errs, app.Solver.powerW.gpu == 200, 'gaming', 'GPU 功率应为 200 W');
-    modeBtns = {app.ModeTempBtn, app.ModeVorticityBtn, app.ModeSolidBtn, app.ModeDiffBtn, app.ModeVelocityBtn};
-    modeNames = {'temperature', 'vorticity', 'solid', 'diff', 'velocity'};
+    modeBtns = {app.ModeTempBtn, app.ModePressureBtn, app.ModeVorticityBtn, app.ModeSolidBtn, app.ModeDiffBtn, app.ModeVelocityBtn};
+    modeNames = {'temperature', 'pressure', 'vorticity', 'solid', 'diff', 'velocity'};
     for k = 1:numel(modeBtns)
         errs = act(errs, ['mode ' modeNames{k}], @() ui_press(modeBtns{k}));
         errs = expect(errs, strcmp(app.VisMode, modeNames{k}), 'mode', ['视图应为 ' modeNames{k}]);
@@ -65,6 +65,50 @@ function pass = test_ui()
     errs = expect(errs, ~app.IsRunning, 'run', '暂停后应停止');
     errs = act(errs, 'cpu slider', @() ui_slide(app.CPUPowerSlider, 150));
     errs = expect(errs, app.Solver.powerW.cpu == 150, 'cpu slider', 'CPU 功率应为 150 W');
+
+    %% 3b. 可视化：粒子、开口标注、压力视图、工作点图、悬停、导出
+    fprintf('[3b] 粒子、标注、压力、工作点图、悬停、PNG/GIF\n');
+    xd = app.hParticles.XData;
+    errs = expect(errs, sum(isfinite(xd)) > 1000, 'particles', '粒子尾迹应已绘制');
+    x0 = app.Tracer.X(:, 1);
+    errs = act(errs, 'particle tick', @() app.runTestHook('particleTick'));      % 暂停时的粒子动画
+    errs = expect(errs, any(app.Tracer.X(:, 1) ~= x0), 'particle tick', '暂停时粒子应继续运动');
+    labels = cellfun(@(h) h.String, app.hOpenLabels, 'UniformOutput', false);
+    errs = expect(errs, sum(~cellfun(@isempty, labels)) >= 3, 'labels', '至少 3 个开口应有风量标注');
+    errs = act(errs, 'labels off', @() ui_check(app.LabelCheck, false));
+    labels = cellfun(@(h) h.String, app.hOpenLabels, 'UniformOutput', false);
+    errs = expect(errs, all(cellfun(@isempty, labels)), 'labels off', '关闭标注后应无文字');
+    errs = act(errs, 'labels on', @() ui_check(app.LabelCheck, true));
+    errs = act(errs, 'particles off', @() ui_check(app.ParticleCheck, false));
+    errs = expect(errs, all(isnan(app.hParticles.XData)), 'particles off', '关闭粒子后应不显示');
+    errs = act(errs, 'particles on', @() ui_check(app.ParticleCheck, true));
+    errs = act(errs, 'mode pressure', @() ui_press(app.ModePressureBtn));
+    cdat = app.hImg.CData;
+    errs = expect(errs, any(isfinite(cdat(:))) && app.MainAxes.CLim(2) > 0, 'pressure', '压力场应有有限值与对称色标');
+    errs = act(errs, 'mode velocity', @() ui_press(app.ModeVelocityBtn));
+    errs = act(errs, 'side pq', @() ui_choose(app.SideModeDrop, '风扇工作点'));
+    errs = expect(errs, strcmp(app.SideMode, 'pq') && numel(app.hPQ) == 5, 'side pq', '工作点图应有 4 台机箱风扇 + CPU 塔扇');
+    errs = act(errs, 'onTimer pq', @() app.runTestHook('onTimer'));
+    pq = app.hPQ{1}{1};
+    errs = expect(errs, numel(pq.XData) == 21 && all(isfinite(pq.YData)), 'side pq', 'P-Q 曲线应已绘制');
+    errs = act(errs, 'side temp', @() ui_choose(app.SideModeDrop, '温度曲线'));
+    W = app.Solver.GRID.W;
+    errs = act(errs, 'hover', @() app.runTestHook('hoverAt', W/2, W/2));
+    errs = expect(errs, ~isempty(strfind(app.HoverLabel.Text, 'mm')), 'hover', '悬停应显示读数');
+    fpng = [tempname() '.png'];
+    errs = act(errs, 'export png', @() app.runTestHook('exportPng', fpng));
+    errs = expect(errs, exist(fpng, 'file') == 2, 'export png', '应导出 PNG');
+    if exist(fpng, 'file'), delete(fpng); end
+    fgif = [tempname() '.gif'];
+    errs = act(errs, 'gif start', @() app.runTestHook('startGif', fgif));
+    for k = 1:6
+        errs = act(errs, 'onTimer gif', @() app.runTestHook('onTimer'));
+    end
+    nFrames = app.GifFrames;
+    errs = act(errs, 'gif stop', @() app.runTestHook('stopGif'));
+    errs = expect(errs, nFrames >= 3 && exist(fgif, 'file') == 2 && isempty(app.GifFile), 'gif', ...
+        sprintf('GIF 应已录制（%d 帧）', nFrames));
+    if exist(fgif, 'file'), delete(fgif); end
     errs = act(errs, 'tab fans', @() ui_tab(app.TabGroup, app.TabFans));
     errs = expect(errs, size(app.FanTable.Data, 1) == numel(app.Solver.allFans()), 'fan table', '风扇表行数应等于风扇数');
     errs = expect(errs, size(app.FanTable.Data, 2) == 7 && ~isempty(app.NoiseDetailLabel.Text), 'fan table', ...

@@ -1519,6 +1519,44 @@ classdef CFDSolverBase < handle
                 'nCaseFans', numel(obj.fans), 'steps', obj.iteration);
         end
 
+        function P = pressureFieldPa(obj)
+            % 相对远场的静压 [Pa]（列向量，障碍格为 NaN）。
+            %   投影的速度修正 Δu_grid = −Δp（每格），物理上 Δu = −(DT/ρ)·ΔP/Δx，
+            %   故 P = ρ·VEL_SCALE·Δx·p / DT。一步内两次投影的压力相加为总压力
+            %   （稳态时第一次投影的压力接近 0）。远场海绵环 p = 0。
+            p = obj.p;
+            if isprop(obj, 'pProj1') && numel(obj.pProj1) == numel(p)
+                p = p + obj.pProj1;
+            end
+            if isempty(p), p = zeros(obj.GRID.TOTAL, 1); end
+            dx = obj.GRID.cell_size_mm / 1000;
+            P = p * obj.AIR.rho * obj.VEL_SCALE * dx / obj.DT;
+            P(obj.obstacle > 0) = NaN;
+        end
+
+        function M = openingMarkers(obj)
+            % 各开口的标注位置与净风量（界面用）：x/y 为壁外侧的格坐标，
+            % cfm > 0 为流出机箱，mount 为所在壁，kind 为 fan / vent / psu_intake / psu_exhaust
+            W = obj.GRID.W;
+            fl = obj.openingFluxList();
+            M = struct('x', {}, 'y', {}, 'mount', {}, 'kind', {}, 'cfm', {});
+            off = 3 + obj.fanDiskCells;
+            for k = 1:numel(obj.openings)
+                op = obj.openings(k);
+                if isempty(op.idx), continue; end
+                yy = mod(op.idx - 1, W) + 1; xx = ceil(op.idx / W);
+                x = mean(xx); y = mean(yy);
+                switch op.mount
+                    case 'front',  x = max(xx) + off;
+                    case 'rear',   x = min(xx) - off;
+                    case 'top',    y = min(yy) - off;
+                    case 'bottom', y = max(yy) + off;
+                end
+                M(end+1) = struct('x', x, 'y', y, 'mount', op.mount, 'kind', op.kind, ...
+                    'cfm', fl{k}.cfm); %#ok<AGROW>
+            end
+        end
+
         function list = fanStatusList(obj)
             % 全部风扇的实时状态（界面风扇表用）：名称、转速、实测/自由风量、静压、噪音
             allF = obj.allFans();
