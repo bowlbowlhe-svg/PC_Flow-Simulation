@@ -60,6 +60,14 @@
 
 ## 阶段 7：定稿
 - 算法规格文档（方程、离散、单位、参数）；多布局"标准答案"数据集；冻结 v4.0。
+- 完成：`docs/ALGORITHM.md`；`matlab_app/tests/reference/`（`tools/make_reference_dataset`）；
+  `test_reference`。
+
+## 下一步：网页版
+- 以 `docs/ALGORITHM.md` 为规格、`tests/reference/` 为验收数据移植（建议 TypeScript + WebGL/WebGPU
+  或 WebAssembly 线性代数）；先对固定步数算例逐场对照，再对稳态算例对照结温/风量/噪音。
+- 界面沿用 MATLAB 版的布局编辑、方案对比、粒子示踪与压力视图。
+- MATLAB 版进入维护：只修缺陷，不加功能。
 
 ## 版本号
 阶段 1 → v3.4.0，阶段 2 → v3.5.0，阶段 3 → v3.6.0，阶段 4 → v3.7.0，阶段 5 → v3.8.0，阶段 6 → v3.9.0，阶段 7 → v4.0.0。

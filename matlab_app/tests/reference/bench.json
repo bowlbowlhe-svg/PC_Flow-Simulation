@@ -1,0 +1,1 @@
+{"kind":"bench","diffusion":"test_diffusion：方差增长与解析解比值 1.000（容差 2%）","cavityNu_Ra10000":2.2998715333654546,"cavityNu_Ra100000":4.612613135349042,"ductCfm_zeta5":45.84774742354044,"ductCfm_zeta20":35.151796620784029,"ductCfm_zeta60":24.8109423152054,"case":"bench","generator":{"platform":"Octave","version":"8.4.0","simulator":"3.9.2"}}
