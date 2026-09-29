@@ -1,7 +1,9 @@
 function pass = test_visual()
 %TEST_VISUAL 可视化数据：粒子示踪、开口标注、配色表。
-%   1) 粒子示踪：默认场景推进后撒点、走 100 帧，粒子不进入固体、全部在域内；
+%   1) 粒子示踪：默认场景推进后撒点、走 100 帧，粒子不进入固体、全部在域内、
+%      不堆积在域边（距域边 3 格内 < 5%）、多数在机箱内（> 60%）；
 %      直风道基准里粒子整体沿风道方向（前 → 后，x 减小）移动。
+%   1b) 涡量符号约定：屏幕上逆时针的刚体旋转，求解器 ω < 0（主视图显示 −ω，红 = 逆时针）。
 %   2) 开口标注：每个开口一个标注、都在机箱外侧；各开口净风量之和≈0（质量守恒）。
 %   3) 配色表：尺寸、取值范围、发散色中点为浅灰。
     errs = {};
@@ -20,6 +22,19 @@ function pass = test_visual()
     errs = check(errs, all(s.obstacle(idx) == 0), '粒子不应进入固体');
     [xs, ys] = pt.trailLines();
     errs = check(errs, numel(xs) == pt.n * (pt.trail + 2) && sum(isnan(xs)) == pt.n, '尾迹折线格式');
+    nearEdge = mean(x < 4 | x > s.GRID.H - 3 | y < 4 | y > s.GRID.W - 3);
+    co0 = s.CASE2D.outer;
+    inCase = mean(x >= co0.x & x <= co0.x + co0.w - 1 & y >= co0.y & y <= co0.y + co0.h - 1);
+    errs = check(errs, nearEdge < 0.05, sprintf('粒子不应堆积在域边（距域边 3 格内 %.1f%%）', 100*nearEdge));
+    errs = check(errs, inCase > 0.6, sprintf('多数粒子应在机箱内（%.1f%%）', 100*inCase));
+
+    % 1b) 涡量符号：屏幕逆时针旋转 u = c(y − yc)、v = −c(x − xc)（y 向下）→ ω = −2c
+    e = CFDSolverFEM(0, 0, 0, layout_benchmark('empty'), 0.5);
+    We = e.GRID.W; He = e.GRID.H; c = 0.01;
+    [Yu, Xu] = ndgrid(1:We, 0.5:He+0.5);  e.uF = reshape(c * (Yu - (We+1)/2), [], 1);
+    [Yv, Xv] = ndgrid(0.5:We+0.5, 1:He);  e.vF = reshape(-c * (Xv - (He+1)/2), [], 1);
+    w = reshape(e.computeVorticity(), We, He);
+    errs = check(errs, w(round(We/2), round(He/2)) < 0, '屏幕逆时针旋转时求解器涡量应为负');
 
     d = CFDSolverFEM(0, 0, 0, layout_benchmark('duct', 20), 0.5);
     d.stepMultiple(300);
@@ -56,8 +71,8 @@ function pass = test_visual()
     pass = isempty(errs);
     for k = 1:numel(errs), fprintf('  - %s\n', errs{k}); end
     if pass, st = 'PASS'; else, st = 'FAIL'; end
-    fprintf('[visual] 粒子（域内/非固体/风道方向）、开口标注（%d 个，净和 %+.2f CFM）、配色表：%s\n', ...
-        numel(M), sum(q), st);
+    fprintf('[visual] 粒子（域边 %.1f%%、机箱内 %.0f%%、风道方向）、涡量符号、开口标注（%d 个，净和 %+.2f CFM）、配色表：%s\n', ...
+        100*nearEdge, 100*inCase, numel(M), sum(q), st);
 end
 
 function errs = check(errs, cond, msg)

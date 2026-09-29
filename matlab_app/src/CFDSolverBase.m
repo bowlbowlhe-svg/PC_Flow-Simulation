@@ -1543,7 +1543,7 @@ classdef CFDSolverBase < handle
             % cfm > 0 为流出机箱，mount 为所在壁，kind 为 fan / vent / psu_intake / psu_exhaust
             W = obj.GRID.W;
             fl = obj.openingFluxList();
-            M = struct('x', {}, 'y', {}, 'mount', {}, 'kind', {}, 'cfm', {});
+            M = struct('x', {}, 'y', {}, 'mount', {}, 'kind', {}, 'fan', {}, 'cfm', {});
             off = 3 + obj.fanDiskCells;
             for k = 1:numel(obj.openings)
                 op = obj.openings(k);
@@ -1557,12 +1557,27 @@ classdef CFDSolverBase < handle
                     case 'bottom', y = max(yy) + off;
                 end
                 M(end+1) = struct('x', x, 'y', y, 'mount', op.mount, 'kind', op.kind, ...
-                    'cfm', fl{k}.cfm); %#ok<AGROW>
+                    'fan', op.fan, 'cfm', fl{k}.cfm); %#ok<AGROW>
             end
         end
 
+        function r = cellReadout(obj, idx)
+            % 单格读数（悬停用，只算这一格）：风速 [m/s]、温度 [°C]、静压 [Pa]、是否固体
+            W = obj.GRID.W;
+            y = mod(idx - 1, W) + 1; x = ceil(idx / W);
+            u = 0.5 * (obj.uF((x-1)*W + y) + obj.uF(x*W + y));
+            v = 0.5 * (obj.vF((x-1)*(W+1) + y) + obj.vF((x-1)*(W+1) + y + 1));
+            p = obj.p(idx);
+            if isprop(obj, 'pProj1') && numel(obj.pProj1) == numel(obj.p), p = p + obj.pProj1(idx); end
+            r = struct('solid', obj.obstacle(idx) > 0, 'speed', hypot(u, v) * obj.VEL_SCALE, ...
+                'T', obj.T_fluid(idx), 'Tsolid', obj.T_solid(idx), ...
+                'P', p * obj.AIR.rho * obj.VEL_SCALE * obj.GRID.cell_size_mm / 1000 / obj.DT);
+        end
+
         function list = fanStatusList(obj)
-            % 全部风扇的实时状态（界面风扇表用）：名称、转速、实测/自由风量、静压、噪音
+            % 全部风扇的实时状态（界面风扇表用）：名称、转速、实测/自由风量、静压、噪音。
+            % 实测风量取当前（投影后）流场穿盘中面的流量；工作点静压 lastDp 由本步施力前
+            % 的中间流场求得，后者流量约低 4%，因此工作点图上的点略偏离曲线。
             allF = obj.allFans();
             list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, ...
                           'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {});
@@ -1581,7 +1596,7 @@ classdef CFDSolverBase < handle
                     otherwise,  name = '电源风扇';
                 end
                 list(end+1) = struct('name', name, 'role', f.role, 'rpm', f.getRPM(obj), ...
-                    'cfm', abs(f.lastQ) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
+                    'cfm', abs(obj.diskFlow(f)) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
                     'dp', f.lastDp, 'qRatio', f.noiseQRatio, 'noiseDb', perFan(k), ...
                     'noise', parts(k), 'sharePct', share(k)); %#ok<AGROW>
             end

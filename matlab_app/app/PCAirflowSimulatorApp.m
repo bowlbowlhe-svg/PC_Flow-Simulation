@@ -113,7 +113,7 @@ classdef PCAirflowSimulatorApp < handle
         Solver         CFDSolverFEM
         SimTimer       timer
         IsRunning      logical = false
-        VisMode        char = 'velocity'   % 'velocity','temperature','vorticity','solid','diff'
+        VisMode        char = 'velocity'   % 'velocity','temperature','pressure','vorticity','solid','diff'
         StepsPerFrame  double = 2
         GridScale      double = 0.5        % 0.5 = 预览 140²，1 = 精确 280²
         SteadyRunning  logical = false
@@ -150,6 +150,11 @@ classdef PCAirflowSimulatorApp < handle
         GifFile char = ''        % 正在录制的 GIF 文件（空 = 未录制）
         GifFrames double = 0
         GifSkip double = 0
+        GifSize = []             % 第一帧的像素尺寸，后续帧裁剪/填充到同一尺寸
+        GifMap = []              % GIF 调色板（录制开始时由当前色表与界面颜色组成）
+        OpenMarkers = []         % 最近一次的开口风量（openingMarkers），安装位文字与标注共用
+        LastHoverIdx double = 0
+        ParticleTicks double = 0
         hSlot = {}          % 安装位标记（patch）
         hSlotText = {}      % 安装位文字
 
@@ -547,7 +552,7 @@ classdef PCAirflowSimulatorApp < handle
                 'HorizontalAlignment', 'center', 'Interpreter', 'none', 'PickableParts', 'none');
 
             % 粒子示踪（尾迹 + 头部），替代每帧重算的流线
-            app.hParticles = plot(ax, nan, nan, '-', 'Color', [0.92 0.97 1 0.35], 'LineWidth', 0.7, ...
+            app.hParticles = plot(ax, nan, nan, '-', 'Color', [0.70 0.78 0.86], 'LineWidth', 0.6, ...
                 'PickableParts', 'none');
             app.hHeads = plot(ax, nan, nan, '.', 'Color', [0.92 0.97 1], 'MarkerSize', 5, ...
                 'PickableParts', 'none');
@@ -572,8 +577,16 @@ classdef PCAirflowSimulatorApp < handle
         function initSideAxes(app)
             % 下方图：温度曲线（CPU/GPU/后侧排气随仿真时间）或风扇工作点（P-Q 曲线 + 工作点）
             ax2 = app.SideAxes;
+            for k = 1:numel(app.hPQ)                  % 句柄隐藏的工作点圆点 cla 删不掉，先显式删除
+                for j = 1:numel(app.hPQ{k})
+                    h = app.hPQ{k}{j};
+                    if ~isempty(h) && isvalid(h), delete(h); end
+                end
+            end
             cla(ax2);
             hold(ax2, 'on');
+            ax2.XTickMode = 'auto';                   % 构造时关了刻度，这里恢复
+            ax2.YTickMode = 'auto';
             ax2.Color = [0.05 0.05 0.08];
             ax2.XColor = [0.4 0.4 0.5];
             ax2.YColor = [0.4 0.4 0.5];
@@ -583,9 +596,10 @@ classdef PCAirflowSimulatorApp < handle
             if strcmp(app.SideMode, 'pq')
                 % 机箱风扇与 CPU 塔扇：当前转速下的 P-Q 曲线（实线）与工作点（圆点）
                 F = app.pqFans();
-                cols = lines(max(numel(F), 1));
+                pal = [0.35 0.80 1.00; 1.00 0.60 0.25; 0.50 1.00 0.50; 1.00 0.45 0.75; ...
+                       0.95 0.90 0.30; 0.75 0.65 1.00; 0.30 1.00 0.85; 1.00 0.50 0.40];   % 深色背景上的亮色
                 for k = 1:numel(F)
-                    c = cols(k, :);
+                    c = pal(mod(k - 1, size(pal, 1)) + 1, :);
                     app.hPQ{k} = {plot(ax2, nan, nan, '-', 'Color', c, 'LineWidth', 1.3, 'DisplayName', F{k}.name), ...
                                   plot(ax2, nan, nan, 'o', 'Color', c, 'MarkerFaceColor', c, 'MarkerSize', 6, ...
                                        'HandleVisibility', 'off')};
@@ -593,6 +607,8 @@ classdef PCAirflowSimulatorApp < handle
                 if ~isempty(F)
                     legend(ax2, 'Location', 'northeast', 'Color', [0.1 0.1 0.15], ...
                         'TextColor', [0.7 0.7 0.8], 'FontSize', 8);
+                else
+                    legend(ax2, 'off');
                 end
                 xlabel(ax2, '风量 (CFM)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
                 ylabel(ax2, '静压 (Pa)', 'Color', [0.6 0.6 0.7], 'FontSize', 11);
@@ -665,7 +681,9 @@ classdef PCAirflowSimulatorApp < handle
         end
 
         function updateSlotMarkers(app)
-            % 标记颜色反映待应用的状态（绿 = 进气，红 = 排气，灰虚线 = 空）
+            % 标记颜色反映待应用的状态（绿 = 进气，红 = 排气，灰虚线 = 空）；
+            % 文字附已应用风扇的开口净风量
+            slots = fan_slots();
             for k = 1:numel(app.hSlot)
                 h = app.hSlot{k};
                 if isempty(h) || ~isvalid(h), continue; end
@@ -678,9 +696,27 @@ classdef PCAirflowSimulatorApp < handle
                 set(h, 'FaceColor', col, 'FaceAlpha', a, 'EdgeColor', col, 'LineStyle', ls);
                 t = app.hSlotText{k};
                 if ~isempty(t) && isvalid(t)
+                    q = app.slotFlow(k);
+                    if ~isnan(q) && app.LabelCheck.Value && abs(q) >= 0.5
+                        [ft, ~] = app.flowText(slots(k).mount, q);
+                        cap = [cap ' ' ft]; %#ok<AGROW>
+                    end
                     set(t, 'String', cap, 'Color', col);
                 end
             end
+        end
+
+        function q = slotFlow(app, k)
+            % 安装位 k 上已应用的机箱风扇的开口净风量（CFM，> 0 流出）；没有则 NaN
+            q = NaN;
+            M = app.OpenMarkers;
+            if isempty(M) || ~isfield(app.Solver.layout, 'caseFans'), return; end
+            slots = fan_slots();
+            cf = app.Solver.layout.caseFans;
+            j = find(strcmp({cf.mount}, slots(k).mount) & abs([cf.alongMm] - slots(k).alongMm) < 1, 1);
+            if isempty(j), return; end
+            m = find(strcmp({M.kind}, 'fan') & [M.fan] == j, 1);
+            if ~isempty(m), q = M(m).cfm; end
         end
 
         function setupSimulation(app)
@@ -782,11 +818,14 @@ classdef PCAirflowSimulatorApp < handle
                         cbLabel = '静压 (Pa，相对机箱外)';
                         ins = app.Solver.insideMask;
                         pin = mean(field(ins(isfinite(field(ins)))));
-                        ttl = sprintf('压力场：机箱内平均 %+.2f Pa（%s）', pin, app.pick(pin >= 0, '正压', '负压'));
+                        if abs(pin) < 0.05, pst = '≈ 机箱外'; else, pst = app.pick(pin > 0, '正压', '负压'); end
+                        ttl = sprintf('压力场：机箱内平均 %+.2f Pa（%s）', pin, pst);
                         contourLevels = [0 0];
                         contourColor = [0.3 0.3 0.3];
                     case 'vorticity'
-                        field = reshape(app.Solver.latestVorticity, W, H);
+                        % 求解器 ω = ∂v/∂x − ∂u/∂y 以 y 向下为正；主视图 y 轴反向显示，
+                        % 取 −ω 使屏幕上逆时针旋转为正（红）
+                        field = -reshape(app.Solver.latestVorticity, W, H);
                         ax.Colormap = pcflow_colormap('diverging', 256);
                         ax.CLim = [-60 60];
                         cbLabel = '涡量 (1/s)';
@@ -819,8 +858,15 @@ classdef PCAirflowSimulatorApp < handle
                         ax.CLim = [-10 10];
                         cbLabel = '温差 (°C)';
                 end
-                set(app.hImg, 'CData', field);
+                % 固体格（NaN）透明，露出坐标轴背景色，避免被画成色表第一色
+                set(app.hImg, 'CData', field, 'AlphaData', double(isfinite(field)));
                 title(ax, ttl, 'Color', [0.8 0.8 1]);
+                % 发散色（中点浅灰）上用深色粒子，其余用浅色
+                if any(strcmp(app.VisMode, {'pressure', 'vorticity', 'diff'}))
+                    set(app.hParticles, 'Color', [0.25 0.25 0.32]); set(app.hHeads, 'Color', [0.10 0.10 0.15]);
+                else
+                    set(app.hParticles, 'Color', [0.70 0.78 0.86]); set(app.hHeads, 'Color', [0.92 0.97 1.00]);
+                end
                 app.hCbar.Label.String = cbLabel;
 
                 % 等温线 / 涡量线（删除重建；contour 第二输出才是句柄）
@@ -965,7 +1011,7 @@ classdef PCAirflowSimulatorApp < handle
                 q = linspace(0, 1, 21);
                 dp = f.pmax_pa * (rpm / f.rpm_max)^2 * interp1(f.PQ_QGRID, f.pq_curve, q, 'pchip');
                 set(app.hPQ{k}{1}, 'XData', q * qFree, 'YData', dp);
-                set(app.hPQ{k}{2}, 'XData', max(f.lastQ, 0) * Fan.CFM_PER_M3S, 'YData', max(f.lastDp, 0));
+                set(app.hPQ{k}{2}, 'XData', max(s.diskFlow(f), 0) * Fan.CFM_PER_M3S, 'YData', max(f.lastDp, 0));
             end
         end
 
@@ -994,22 +1040,32 @@ classdef PCAirflowSimulatorApp < handle
 
         function updateOpeningLabels(app)
             % 开口旁的风量标注：箭头为流向（进 / 出机箱），数字为净风量 CFM
+            % 机箱风扇开口的风量并入安装位文字（避免与其重叠），这里只标电源与被动通风口
             show = app.LabelCheck.Value;
             M = app.Solver.openingMarkers();
-            arrows = struct('front', '←→', 'rear', '→←', 'top', '↓↑', 'bottom', '↑↓');   % {进, 出}
+            app.OpenMarkers = M;
             for k = 1:min(numel(M), numel(app.hOpenLabels))
                 h = app.hOpenLabels{k};
                 if isempty(h) || ~isvalid(h), continue; end
-                if ~show || abs(M(k).cfm) < 0.5
+                if ~show || strcmp(M(k).kind, 'fan') || abs(M(k).cfm) < 0.5
                     set(h, 'String', '');
-                    continue;
-                end
-                a = arrows.(M(k).mount);
-                if M(k).cfm > 0
-                    set(h, 'String', sprintf('%s%.0f', a(2), M(k).cfm), 'Color', [1.00 0.62 0.30]);
                 else
-                    set(h, 'String', sprintf('%s%.0f', a(1), -M(k).cfm), 'Color', [0.35 0.90 1.00]);
+                    [txt, col] = app.flowText(M(k).mount, M(k).cfm);
+                    set(h, 'String', txt, 'Color', col);
                 end
+            end
+            app.updateSlotMarkers();
+        end
+
+        function [txt, col] = flowText(~, mount, cfm)
+            % 流向箭头 + 净风量（CFM）：青 = 流入机箱，橙 = 流出
+            % {进, 出}；用 cell 而不是按字符下标取，Octave 的字符串是 UTF-8 字节
+            arrows = struct('front', {{'←', '→'}}, 'rear', {{'→', '←'}}, 'top', {{'↓', '↑'}}, 'bottom', {{'↑', '↓'}});
+            a = arrows.(mount);
+            if cfm > 0
+                txt = sprintf('%s%.0f', a{2}, cfm); col = [1.00 0.62 0.30];
+            else
+                txt = sprintf('%s%.0f', a{1}, -cfm); col = [0.35 0.90 1.00];
             end
         end
 
@@ -1030,6 +1086,7 @@ classdef PCAirflowSimulatorApp < handle
                 app.ParticleTimer = timer('ExecutionMode', 'fixedSpacing', 'Period', 0.05, ...
                     'BusyMode', 'drop', 'TimerFcn', @(t,event)app.particleTick());
             end
+            app.ParticleTicks = 0;
             if ~strcmp(char(app.ParticleTimer.Running), 'on'), start(app.ParticleTimer); end
         end
 
@@ -1043,6 +1100,12 @@ classdef PCAirflowSimulatorApp < handle
             try
                 if ~isvalid(app.UIFigure), app.stopParticleAnim(); return; end
                 if app.IsRunning || app.SteadyRunning || app.StepPending, return; end
+                app.ParticleTicks = app.ParticleTicks + 1;
+                if app.ParticleTicks > 2400 && isempty(app.GifFile)   % 空闲约 2 分钟后自动停，省 CPU
+                    app.stopParticleAnim();
+                    app.HoverLabel.Text = '粒子动画已暂停（重新勾选"粒子"继续）';
+                    return;
+                end
                 app.advanceParticles();
                 app.drawParticles();
                 drawnow limitrate;
@@ -1073,16 +1136,16 @@ classdef PCAirflowSimulatorApp < handle
                     return;
                 end
                 idx = (j - 1) * s.GRID.W + i;
+                if idx == app.LastHoverIdx && ~app.IsRunning, return; end   % 同一格不重复刷新
+                app.LastHoverIdx = idx;
                 co = s.CASE2D.outer;
                 xm = (j - co.x + 0.5) * s.GRID.cell_size_mm;
                 ym = (i - co.y + 0.5) * s.GRID.cell_size_mm;
-                if s.obstacle(idx) > 0
-                    txt = sprintf('x %.0f  y %.0f mm │ 固体 %.1f°C', xm, ym, s.T_solid(idx));
+                r = s.cellReadout(idx);
+                if r.solid
+                    txt = sprintf('x %.0f  y %.0f mm │ 固体 %.1f°C', xm, ym, r.Tsolid);
                 else
-                    [uc, vc] = s.getCellVelocity();
-                    P = s.pressureFieldPa();
-                    txt = sprintf('x %.0f  y %.0f mm │ %.2f m/s │ %.1f°C │ %+.2f Pa', xm, ym, ...
-                        hypot(uc(idx), vc(idx)) * s.VEL_SCALE, s.T_fluid(idx), P(idx));
+                    txt = sprintf('x %.0f  y %.0f mm │ %.2f m/s │ %.1f°C │ %+.2f Pa', xm, ym, r.speed, r.T, r.P);
                 end
                 app.HoverLabel.Text = txt;
             catch
@@ -1119,6 +1182,15 @@ classdef PCAirflowSimulatorApp < handle
             app.GifFile = file;
             app.GifFrames = 0;
             app.GifSkip = 0;
+            app.GifSize = [];
+            % 调色板：当前色表 192 色 + 灰阶 32 色 + 界面与标注颜色
+            cm = app.MainAxes.Colormap;
+            if isempty(cm), cm = pcflow_colormap('speed', 256); end
+            cm = cm(round(linspace(1, size(cm, 1), 192)), :);
+            ui = [0.05 0.05 0.08; 0.02 0.02 0.05; 0.60 0.60 0.72; 0.00 0.92 0.55; 1.00 0.28 0.28; ...
+                  0.35 0.90 1.00; 1.00 0.62 0.30; 0.92 0.97 1.00; 0.70 0.78 0.86; 0.00 0.75 1.00; ...
+                  1.00 0.38 0.00; 0.88 0.80 0.00; 0.72 0.30 1.00; 0.80 0.80 1.00; 0.25 0.25 0.32];
+            app.GifMap = [cm; repmat(linspace(0, 1, 32)', 1, 3); ui];
             app.GifBtn.Text = '■ 停止录制';
             app.GifBtn.BackgroundColor = [0.6 0.2 0.2];
         end
@@ -1130,6 +1202,8 @@ classdef PCAirflowSimulatorApp < handle
             app.GifBtn.BackgroundColor = [0.1 0.1 0.2];
             if n > 0
                 app.HoverLabel.Text = sprintf('GIF 已保存（%d 帧）：%s', n, f);
+            elseif ~isempty(f)
+                app.HoverLabel.Text = '未录到帧：请开始仿真或打开粒子动画后再录制';
             end
         end
 
@@ -1143,7 +1217,16 @@ classdef PCAirflowSimulatorApp < handle
                 exportgraphics(app.MainAxes, tmp, 'Resolution', 72);
                 img = imread(tmp);
                 delete(tmp);
-                pcflow_gif_frame(app.GifFile, img, app.GifFrames == 0, 0.1);
+                if isempty(app.GifSize)
+                    app.GifSize = [size(img, 1), size(img, 2)];
+                else                               % 裁剪/填充到第一帧尺寸（色标刻度变化会改变裁剪边界）
+                    fit = zeros(app.GifSize(1), app.GifSize(2), 3, 'uint8');
+                    fit(:, :, 1) = 13; fit(:, :, 2) = 13; fit(:, :, 3) = 20;
+                    r = min(size(img, 1), app.GifSize(1)); c = min(size(img, 2), app.GifSize(2));
+                    fit(1:r, 1:c, :) = img(1:r, 1:c, 1:3);
+                    img = fit;
+                end
+                pcflow_gif_frame(app.GifFile, img, app.GifFrames == 0, 0.1, app.GifMap);
                 app.GifFrames = app.GifFrames + 1;
             catch ME
                 if exist(tmp, 'file'), delete(tmp); end

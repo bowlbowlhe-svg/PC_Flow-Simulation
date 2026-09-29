@@ -3,7 +3,7 @@ function cmap = pcflow_colormap(name, n)
 %   'speed'     速度：深紫—蓝—青绿—黄（感知均匀，近似 viridis）
 %   'heat'      温度：黑—紫—红—橙—浅黄（感知均匀，近似 inferno）
 %   'diverging' 发散：蓝—白—红（温差、涡量、压力，0 为白）
-%   锚点取自 matplotlib 配色（9 点线性插值，与原表的差异肉眼不可辨）。
+%   锚点取自 matplotlib 配色（11 点线性插值，与原表最大偏差约 0.01）。
     if nargin < 2, n = 256; end
     switch name
         case 'speed'

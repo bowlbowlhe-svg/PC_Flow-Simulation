@@ -3,8 +3,9 @@ function pass = test_fan_duct(zetaPlug, nSteps)
 %   120 mm 高直风道：前壁进气 P12 满速（格栅 ζ=2），中部多孔塞（ζ_plug），
 %   后壁通风口（ζ=1），出口动能损失 ζ=1。系统曲线 Δp = K·½ρv²，
 %   K = ζ_plug + 2 + 1 + 1。稳态流量应落在风扇 P-Q 曲线与系统曲线交点。
-%   解析式未计入壁面摩擦与速度剖面不均（二次阻力下 mean(u²) > mean(u)²），
-%   仿真系统性偏低约 2–3%（ζ_plug = 5/20/60 实测 −1.9/−3.0/−2.4%），容差取 ±5%。
+%   仿真流量取推进结束时（投影后）流场穿过风扇盘中面的流量（diskFlow）。
+%   注意 Fan.lastQ 是本步施加风扇力之前的中间流场上测得的（工作点由它确定），约低 4%。
+%   容差 ±5%。
     if nargin < 1 || isempty(zetaPlug), zetaPlug = 20; end
     if nargin < 2 || isempty(nSteps), nSteps = 600; end
     L = layout_benchmark('duct', zetaPlug);
@@ -27,7 +28,7 @@ function pass = test_fan_duct(zetaPlug, nSteps)
         if fanDp(mid) > sysDp(mid), lo = mid; else, hi = mid; end
     end
     qExp = 0.5*(lo+hi) * qMax;
-    qSim = fan.lastQ;
+    qSim = s.diskFlow(fan);
     err = (qSim - qExp) / qExp;
     pass = abs(err) <= 0.05;
     if pass, st = 'PASS'; else, st = 'FAIL'; end

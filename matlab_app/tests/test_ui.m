@@ -74,7 +74,9 @@ function pass = test_ui()
     errs = act(errs, 'particle tick', @() app.runTestHook('particleTick'));      % 暂停时的粒子动画
     errs = expect(errs, any(app.Tracer.X(:, 1) ~= x0), 'particle tick', '暂停时粒子应继续运动');
     labels = cellfun(@(h) h.String, app.hOpenLabels, 'UniformOutput', false);
-    errs = expect(errs, sum(~cellfun(@isempty, labels)) >= 3, 'labels', '至少 3 个开口应有风量标注');
+    errs = expect(errs, sum(~cellfun(@isempty, labels)) >= 2, 'labels', '电源进/出风口应有风量标注');
+    capF2 = app.hSlotText{2}.String;
+    errs = expect(errs, ~isempty(strfind(capF2, '←')), 'labels', sprintf('F2 安装位文字应附进风量（%s）', capF2));
     errs = act(errs, 'labels off', @() ui_check(app.LabelCheck, false));
     labels = cellfun(@(h) h.String, app.hOpenLabels, 'UniformOutput', false);
     errs = expect(errs, all(cellfun(@isempty, labels)), 'labels off', '关闭标注后应无文字');
@@ -83,14 +85,21 @@ function pass = test_ui()
     errs = expect(errs, all(isnan(app.hParticles.XData)), 'particles off', '关闭粒子后应不显示');
     errs = act(errs, 'particles on', @() ui_check(app.ParticleCheck, true));
     errs = act(errs, 'mode pressure', @() ui_press(app.ModePressureBtn));
-    cdat = app.hImg.CData;
+    cdat = app.hImg.CData; adat = app.hImg.AlphaData;
     errs = expect(errs, any(isfinite(cdat(:))) && app.MainAxes.CLim(2) > 0, 'pressure', '压力场应有有限值与对称色标');
+    obsM = reshape(app.Solver.obstacle, size(cdat)) > 0;
+    errs = expect(errs, isequal(size(adat), size(cdat)) && all(adat(obsM) == 0) && all(adat(~obsM) == 1), ...
+        'pressure', '压力视图中固体应透明（不画成最负压色）');
     errs = act(errs, 'mode velocity', @() ui_press(app.ModeVelocityBtn));
     errs = act(errs, 'side pq', @() ui_choose(app.SideModeDrop, '风扇工作点'));
     errs = expect(errs, strcmp(app.SideMode, 'pq') && numel(app.hPQ) == 5, 'side pq', '工作点图应有 4 台机箱风扇 + CPU 塔扇');
     errs = act(errs, 'onTimer pq', @() app.runTestHook('onTimer'));
     pq = app.hPQ{1}{1};
     errs = expect(errs, numel(pq.XData) == 21 && all(isfinite(pq.YData)), 'side pq', 'P-Q 曲线应已绘制');
+    errs = expect(errs, strcmp(app.SideAxes.XTickMode, 'auto'), 'side pq', '工作点图应有刻度');
+    old = app.hPQ{1}{2};
+    errs = act(errs, 'side pq again', @() ui_choose(app.SideModeDrop, '风扇工作点'));
+    errs = expect(errs, ~isvalid(old), 'side pq', '重建工作点图时旧的工作点圆点应被删除');
     errs = act(errs, 'side temp', @() ui_choose(app.SideModeDrop, '温度曲线'));
     W = app.Solver.GRID.W;
     errs = act(errs, 'hover', @() app.runTestHook('hoverAt', W/2, W/2));
