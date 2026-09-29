@@ -77,6 +77,8 @@ classdef CFDSolverBase < handle
         porousZones = []      % 多孔区 struct 数组：rect / zetaThru / zetaCross / thru
         uDragCoef = []        % u 面二次阻力系数（u ← u/(1+C|u|)），无阻力面为 0
         vDragCoef = []
+        uGrilleFace = []      % 开口格栅所在的 u / v 面（逻辑列向量）
+        vGrilleFace = []
         nearestFluidIdx = []  % 每格最近流体格（平流时替换障碍格值）
         insideMask = []       % 机箱内部流体格
         outsideMask = []      % 机箱外部流体格
@@ -99,6 +101,7 @@ classdef CFDSolverBase < handle
         thermalNetworks = struct()  % 存在的元件：cpu / gpu / psu（DetailedThermalNetwork）
         autoFanEnabled = true
         fanSpeedRatio = 40    % 全局手动转速 [%]
+        fanDiskCells = 6      % 执行盘厚 [格]（由 layout.fanDiskMm 换算）
 
         % ===== 模型开关与参数 =====
         spongeDamping = 0.8   % 远场海绵环速度保留比例（每步）
@@ -280,13 +283,15 @@ classdef CFDSolverBase < handle
                     'heatsink', obj.rectToGrid(L.gpu.heatsink), 'thermal', L.gpu.thermal);
             end
             if obj.hasPsu
-                % 电源贴后壁/底壁安装：距壁 ≤ 1 格时对齐到壁内侧（避免粗网格取整压到壁上）
+                % 电源贴后壁/底壁安装：与壁内侧的间隙 ≤ 6 mm 时对齐到壁内侧
+                % （按 mm 判断，各档网格一致；粗网格取整可能压到壁上，也一并对齐）
                 b = obj.rectToGrid(L.psu.body);
                 cL = ox + 1; cB = oy + cs;
-                if b.x <= cL + 2
+                snapCells = 6 / obj.GRID.cell_size_mm;
+                if b.x - (cL + 1) <= snapCells
                     b.w = b.w + (b.x - (cL + 1)); b.x = cL + 1;
                 end
-                if b.y + b.h - 1 >= cB - 2
+                if (cB - 1) - (b.y + b.h - 1) <= snapCells
                     b.h = (cB - 1) - b.y + 1;
                 end
                 obj.PSU2D = struct('body', b);
@@ -431,7 +436,7 @@ classdef CFDSolverBase < handle
                      'front',  (cR-1)*W + (cT+1:cB-1)'};
             for k = 1:size(sides,1)
                 Tw = wt.(sides{k,1});
-                if isnan(Tw), continue; end
+                if isempty(Tw) || isnan(Tw), continue; end    % NaN（JSON 读回为 []）= 绝热
                 cells = sides{k,2};
                 cells = cells(obj.obstacle(cells) == obj.OBSTACLE.WALL);
                 idx = [idx; cells];                       %#ok<AGROW>
@@ -449,6 +454,8 @@ classdef CFDSolverBase < handle
             cellM = obj.GRID.cell_size_mm / 1000;
             uC = zeros(W, H+1);
             vC = zeros(W+1, H);
+            gU = false(W, H+1);          % 开口格栅面（阻力重装判据分组用）
+            gV = false(W+1, H);
             for z = 1:numel(obj.porousZones)
                 zn = obj.porousZones(z); r = zn.rect;
                 x0 = max(2, r.x);         x1 = min(H-1, r.x + r.w - 1);
@@ -474,14 +481,16 @@ classdef CFDSolverBase < handle
                 yy = mod(op.idx-1, W) + 1;
                 xx = ceil(op.idx / W);
                 switch op.mount
-                    case 'rear',   uC(sub2ind([W H+1], yy, xx+1)) = c;
-                    case 'front',  uC(sub2ind([W H+1], yy, xx))   = c;
-                    case 'top',    vC(sub2ind([W+1 H], yy+1, xx)) = c;
-                    case 'bottom', vC(sub2ind([W+1 H], yy, xx))   = c;
+                    case 'rear',   f = sub2ind([W H+1], yy, xx+1); uC(f) = c; gU(f) = true;
+                    case 'front',  f = sub2ind([W H+1], yy, xx);   uC(f) = c; gU(f) = true;
+                    case 'top',    f = sub2ind([W+1 H], yy+1, xx); vC(f) = c; gV(f) = true;
+                    case 'bottom', f = sub2ind([W+1 H], yy, xx);   vC(f) = c; gV(f) = true;
                 end
             end
             obj.uDragCoef = uC(:);
             obj.vDragCoef = vC(:);
+            obj.uGrilleFace = gU(:);
+            obj.vGrilleFace = gV(:);
         end
 
         function computeInsideOutsideMasks(obj)
@@ -611,6 +620,7 @@ classdef CFDSolverBase < handle
             obj.fans = {};
             obj.builtInFans = {};
             t = max(1, obj.toCell(L.fanDiskMm));
+            obj.fanDiskCells = t;
             cat = fan_catalog();
             if isfield(L, 'caseFans')
                 for k = 1:numel(L.caseFans)
@@ -638,13 +648,15 @@ classdef CFDSolverBase < handle
             end
             if obj.hasGpu && isfield(L.gpu, 'fans')
                 hs = obj.GPU_HEATSINK.heatsink;
+                prevC1 = -Inf;
                 for i = 1:numel(L.gpu.fans.xs)
                     fan = Fan(struct('id', sprintf('gpu_fan_%d', i-1), 'role', 'gpu', ...
                         'model', L.gpu.fans.model, 'sensor', 'gpu'));
                     n = obj.toCell(cat.(fan.model).size);
                     c = obj.caseOffsetX + obj.toCell(L.gpu.fans.xs(i));
-                    c0 = c - floor(n/2);
+                    c0 = max(c - floor(n/2), prevC1 + 1);             % 相邻风扇盘不重叠
                     fan.cols = [c0, c0 + n - 1];
+                    prevC1 = fan.cols(2);
                     fan.rows = [hs.y + hs.h, hs.y + hs.h + t - 1];      % 散热片下方
                     fan.normal = [0 -1];                                 % 向上吹入鳍片
                     fan.thickM = t * obj.GRID.cell_size_mm / 1000;
@@ -668,27 +680,35 @@ classdef CFDSolverBase < handle
 
         function placeWallFan(obj, fan, alongMm, t)
             % 机箱风扇：盘紧贴壁面内侧，宽 = 风扇直径，厚 t 格；进气吹向箱内、排气吹向箱外
+            [fan.cols, fan.rows] = obj.wallFanSpan(fan.mount, alongMm, fan.size, t);
+            sgn = 1; if strcmp(fan.type, 'intake'), sgn = -1; end
+            switch fan.mount
+                case 'front',  fan.normal = [ sgn 0];
+                case 'rear',   fan.normal = [-sgn 0];
+                case 'top',    fan.normal = [0 -sgn];
+                case 'bottom', fan.normal = [0  sgn];
+            end
+            fan.thickM = t * obj.GRID.cell_size_mm / 1000;
+        end
+
+        function [cols, rows] = wallFanSpan(obj, mount, alongMm, sizeMm, t)
+            % 壁装风扇执行盘占据的格列/格行（placeWallFan 与界面安装位标记共用）
+            if nargin < 5, t = obj.fanDiskCells; end
             co = obj.CASE2D.outer;
             cL = co.x; cR = co.x + co.w - 1; cT = co.y; cB = co.y + co.h - 1;
-            n = obj.toCell(fan.size);
+            n = obj.toCell(sizeMm);
             c = obj.toCell(alongMm);
             a0 = c - floor(n/2);
             a0 = max(2, min(co.w - n, a0));              % 夹在壁内侧范围
             a1 = a0 + n - 1;
-            sgn = 1; if strcmp(fan.type, 'intake'), sgn = -1; end
-            switch fan.mount
-                case 'front'
-                    fan.cols = [cR - t, cR - 1];  fan.rows = co.y - 1 + [a0 a1];  fan.normal = [ sgn 0];
-                case 'rear'
-                    fan.cols = [cL + 1, cL + t];  fan.rows = co.y - 1 + [a0 a1];  fan.normal = [-sgn 0];
-                case 'top'
-                    fan.rows = [cT + 1, cT + t];  fan.cols = co.x - 1 + [a0 a1];  fan.normal = [0 -sgn];
-                case 'bottom'
-                    fan.rows = [cB - t, cB - 1];  fan.cols = co.x - 1 + [a0 a1];  fan.normal = [0  sgn];
+            switch mount
+                case 'front',  cols = [cR - t, cR - 1];  rows = co.y - 1 + [a0 a1];
+                case 'rear',   cols = [cL + 1, cL + t];  rows = co.y - 1 + [a0 a1];
+                case 'top',    rows = [cT + 1, cT + t];  cols = co.x - 1 + [a0 a1];
+                case 'bottom', rows = [cB - t, cB - 1];  cols = co.x - 1 + [a0 a1];
                 otherwise
-                    error('CFDSolverBase:mount', '未知风扇安装位：%s', fan.mount);
+                    error('CFDSolverBase:mount', '未知风扇安装位：%s', mount);
             end
-            fan.thickM = t * obj.GRID.cell_size_mm / 1000;
         end
 
         function initOpenings(obj)
@@ -786,6 +806,7 @@ classdef CFDSolverBase < handle
                 hs = obj.GPU_HEATSINK.heatsink;
                 obj.gpuFinIdx = keepFluid(obj.rectCells(hs));
                 gf = obj.findFan('gpu');
+                r0 = hs.y + hs.h;
                 if ~isempty(gf), r0 = gf.rows(2) + 1; end
                 obj.gpuInletIdx = keepFluid(obj.rectCells(struct('x', hs.x, 'y', r0, 'w', hs.w, 'h', nIn)));
             end
@@ -1361,14 +1382,23 @@ classdef CFDSolverBase < handle
         end
 
         function info = runToSteady(obj, opts)
-            %RUNTOSTEADY 推进到稳态。每 chunk 步检查一次，最近 window 步内
-            %   结温变化 < tolT、机箱内均温变化 < tolT、机箱风量相对变化 < tolFlow 即判稳态。
-            %   opts 字段（均可缺省）：minSteps 400、maxSteps 3000、chunk 50、window 200、
-            %   tolT 0.3 [°C]、tolFlow 0.03、progressFcn（每 chunk 调用 fcn(info)，
-            %   返回 true 则中止）。返回 info：steps、converged、aborted、history。
+            %RUNTOSTEADY 推进到稳态。每 chunk 步记录一行：各元件结温、机箱内均温、机箱风量。
+            %   判据：比较最近两个相邻窗口（各约 window 步）的均值，结温与内温均值变化
+            %   < tolT、风量均值相对变化 < tolFlow 即判稳态。窗口均值能滤掉准周期波动
+            %   （GPU 结温约 ±0.5°C），也能发现缓慢漂移。
+            %   opts 字段（均可缺省）：
+            %     minSteps  最少步数，默认 2 s 物理时间（DT = 0.005 s 时 400 步）
+            %     maxSteps  最多步数，默认 15 s（3000 步），严格不超过
+            %     chunk 50（每块步数）、window 默认 1 s（200 步；实际取 chunk 的整数倍）
+            %     tolT 0.3 [°C]、tolFlow 0.03、progressFcn（每块调用 fcn(info)，返回 true 则中止）
+            %   返回 info：
+            %     steps、converged、aborted、diverged（出现 NaN/Inf 时提前停止）
+            %     history  每块一行，列名见 columns（{元件名..., 'interior', 'cfm'}）
+            %     final    最近一个窗口的均值（列同 history），稳态结果应取它而不是瞬时值
+            %     names    元件名（history 前几列）
             if nargin < 2, opts = struct(); end
-            def = struct('minSteps', 400, 'maxSteps', 3000, 'chunk', 50, 'window', 200, ...
-                         'tolT', 0.3, 'tolFlow', 0.03, 'progressFcn', []);
+            def = struct('minSteps', round(2 / obj.DT), 'maxSteps', round(15 / obj.DT), 'chunk', 50, ...
+                         'window', round(1 / obj.DT), 'tolT', 0.3, 'tolFlow', 0.03, 'progressFcn', []);
             fn = fieldnames(def);
             for k = 1:numel(fn)
                 if ~isfield(opts, fn{k}), opts.(fn{k}) = def.(fn{k}); end
@@ -1376,17 +1406,26 @@ classdef CFDSolverBase < handle
             nWin = max(1, round(opts.window / opts.chunk));
             names = fieldnames(obj.thermalNetworks)';
             hist = zeros(0, numel(names) + 2);
-            info = struct('steps', 0, 'converged', false, 'aborted', false, 'history', hist, ...
-                          'names', {names});
+            info = struct('steps', 0, 'converged', false, 'aborted', false, 'diverged', false, ...
+                          'history', hist, 'columns', {[names, {'interior', 'cfm'}]}, ...
+                          'final', nan(1, numel(names) + 2), 'names', {names});
             startIter = obj.iteration;
             while obj.iteration - startIter < opts.maxSteps
-                r = obj.stepMultiple(opts.chunk);
-                tj = cellfun(@(n) obj.thermalNetworks.(n).T_junction, names);
-                hist(end+1, :) = [tj, r.temps.internalAmbient, r.temps.totalCFM]; %#ok<AGROW>
+                n = min(opts.chunk, opts.maxSteps - (obj.iteration - startIter));
+                r = obj.stepMultiple(n);
+                tj = cellfun(@(nm) obj.thermalNetworks.(nm).T_junction, names);
+                row = [tj, r.temps.internalAmbient, r.temps.totalCFM];
+                hist(end+1, :) = row; %#ok<AGROW>
                 info.steps = obj.iteration - startIter;
                 info.history = hist;
-                if size(hist, 1) > nWin && info.steps >= opts.minSteps
-                    a = hist(end - nWin, :); b = hist(end, :);
+                info.final = mean(hist(max(1, end - nWin + 1):end, :), 1);
+                if ~all(isfinite(row)) || ~all(isfinite(obj.T_fluid))
+                    info.diverged = true;
+                    break;
+                end
+                if size(hist, 1) >= 2 * nWin && info.steps >= opts.minSteps
+                    a = mean(hist(end - 2*nWin + 1:end - nWin, :), 1);
+                    b = info.final;
                     dT = max(abs(b(1:end-1) - a(1:end-1)));
                     dQ = abs(b(end) - a(end)) / max(b(end), 1);
                     info.converged = dT < opts.tolT && dQ < opts.tolFlow;
@@ -1398,6 +1437,16 @@ classdef CFDSolverBase < handle
             end
         end
 
+        function tn = netOrIdle(obj, name)
+            % 元件热网络；布局中缺该元件时返回环境温度、零功率的占位（评分/诊断用）
+            if isfield(obj.thermalNetworks, name)
+                tn = obj.thermalNetworks.(name);
+            else
+                tn = struct('T_junction', obj.T_amb, 'throttling_temp', 95, ...
+                            'power', 0, 'actual_power', 0);
+            end
+        end
+
         function scores = calculateScores(obj)
             % 六维评分（锚定节流阈）：
             %   散热 25%：CPU ≤60°C / GPU ≤70°C 满分 → 节流阈零分，各占一半
@@ -1405,7 +1454,7 @@ classdef CFDSolverBase < handle
             %   均衡 10%：CPU/GPU 温差；余量 15%：距节流阈归一化温差
             %   噪音 20%：100 − 3·(dB − 20)；性价比 10%：100 − 机箱风扇总价/15
             temps = obj.computeAirflowTemperatures();
-            tnC = obj.thermalNetworks.cpu; tnG = obj.thermalNetworks.gpu;
+            tnC = obj.netOrIdle('cpu'); tnG = obj.netOrIdle('gpu');
             cpuT = tnC.T_junction; gpuT = tnG.T_junction;
             psuT = obj.junctionOr('psu');
             [noiseDb, ~] = obj.totalNoise();
@@ -1435,6 +1484,47 @@ classdef CFDSolverBase < handle
                 'rearExhaust',temps.rearExhaust);
         end
 
+        function S = scenarioSummary(obj)
+            % 方案对比用的汇总指标（当前时刻）。压力状态按机箱风扇当前转速下的
+            % 标称自由风量判断：进 > 排 ×1.1 为正压，< ×0.9 为负压，其余为平衡。
+            sc = obj.calculateScores();
+            t = obj.lastTemps;
+            if isempty(t), t = obj.computeAirflowTemperatures(); end
+            [db, ~] = obj.totalNoise();
+            qin = 0; qout = 0;
+            for k = 1:numel(obj.fans)
+                f = obj.fans{k};
+                if strcmp(f.type, 'intake'), qin = qin + f.getCFM(obj); else, qout = qout + f.getCFM(obj); end
+            end
+            S = struct('cpu', obj.junctionOr('cpu'), 'gpu', obj.junctionOr('gpu'), ...
+                'psu', obj.junctionOr('psu'), 'interior', t.internalAmbient, 'cfm', t.totalCFM, ...
+                'noiseDb', db, 'score', sc.total, 'intakeCfm', qin, 'exhaustCfm', qout, ...
+                'pressure', fan_pressure_label(qin, qout), 'deadZonePct', 100*obj.deadZoneRatio, ...
+                'nCaseFans', numel(obj.fans), 'steps', obj.iteration);
+        end
+
+        function list = fanStatusList(obj)
+            % 全部风扇的实时状态（界面风扇表用）：名称、转速、实测/自由风量、静压、噪音
+            allF = obj.allFans();
+            list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, 'noiseDb', {});
+            nGpu = 0;
+            mountCN = struct('front', '前', 'rear', '后', 'top', '顶', 'bottom', '底', 'internal', '');
+            for k = 1:numel(allF)
+                f = allF{k};
+                switch f.role
+                    case 'case'
+                        if strcmp(f.type, 'intake'), ty = '进气'; else, ty = '排气'; end
+                        name = sprintf('%s%s %s', mountCN.(f.mount), ty, f.model);
+                    case 'cpu', name = 'CPU 塔扇';
+                    case 'gpu', nGpu = nGpu + 1; name = sprintf('显卡风扇 %d', nGpu);
+                    otherwise,  name = '电源风扇';
+                end
+                list(end+1) = struct('name', name, 'role', f.role, 'rpm', f.getRPM(obj), ...
+                    'cfm', abs(f.lastQ) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
+                    'dp', f.lastDp, 'noiseDb', f.getNoise(obj)); %#ok<AGROW>
+            end
+        end
+
         function [dbTotal, perFan] = totalNoise(obj)
             % 多风扇能量叠加：L = 10·log10(Σ 10^(Li/10))
             allF = obj.allFans();
@@ -1448,7 +1538,7 @@ classdef CFDSolverBase < handle
         function recs = getRecommendations(obj)
             scores = obj.calculateScores();
             recs = {};
-            tnC = obj.thermalNetworks.cpu; tnG = obj.thermalNetworks.gpu;
+            tnC = obj.netOrIdle('cpu'); tnG = obj.netOrIdle('gpu');
             if scores.cpuTemp > tnC.throttling_temp - 5
                 recs{end+1} = struct('title','CPU温度过高','desc',sprintf('当前%d°C，接近降频阈值，建议提高 CPU 风扇/机箱排风',scores.cpuTemp),'level','warning');
             elseif scores.cpuTemp < 60

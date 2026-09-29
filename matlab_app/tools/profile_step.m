@@ -16,11 +16,19 @@ function T = profile_step(nSteps, gridScale, warmup)
     ft = info.FunctionTable;
     names = {ft.FunctionName};
     tot = [ft.TotalTime];
-    if isfield(ft, 'SelfTime')
-        self = [ft.SelfTime];
-    else
-        self = tot;   % MATLAB 旧版无 SelfTime 时退回总时间
+    % 自身时间 = 总时间 − 子函数总时间（MATLAB 的 Children 是含 TotalTime 的 struct，
+    % Octave 的 Children 是函数表下标）
+    self = tot;
+    for i = 1:numel(ft)
+        ch = ft(i).Children;
+        if isempty(ch), continue; end
+        if isstruct(ch)
+            self(i) = tot(i) - sum([ch.TotalTime]);
+        else
+            self(i) = tot(i) - sum(tot(ch));
+        end
     end
+    self = max(self, 0);
     [~, ord] = sort(self, 'descend');
     fprintf('推进 %d 步（网格 %d²）：%.1f s，%.1f ms/步\n', nSteps, s.GRID.W, el, 1000*el/nSteps);
     fprintf('%-60s %10s %10s\n', '函数', '自身(s)', '总计(s)');

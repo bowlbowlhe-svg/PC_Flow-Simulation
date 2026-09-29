@@ -1,9 +1,10 @@
 function allPass = run_all_tests(level)
 %RUN_ALL_TESTS 统一测试入口。
-%   run_all_tests('quick')  快速回归（几分钟）：平流方向、reset 一致性、扩散算子解析解
+%   run_all_tests('quick')  快速回归（约 1 分钟）：平流方向、reset 一致性、扩散算子解析解、
+%                           布局配置工具链（安装位、预设、JSON 往返）
 %   run_all_tests('full')   完整回归（默认）：quick + 方腔自然对流 + 风扇风道工作点
 %                           + 预览档跑到稳态 + 守恒（1200 步）+ 湍流
-%   run_all_tests('ui')     界面烟雾测试（仅 MATLAB）
+%   run_all_tests('ui')     界面测试（MATLAB：真实界面 + 截图；Octave：桩对象）
 %   返回是否全部通过，并打印汇总。
     if nargin < 1 || isempty(level), level = 'full'; end
     setup_paths();
@@ -21,12 +22,8 @@ function allPass = run_all_tests(level)
                 {'守恒（1200 步）',     @() test_conservation(400)}, ...
                 {'湍流模型',            @() test_turbulence(400)}}];
         case 'ui'
-            if isOctave
-                fprintf('界面测试需要 MATLAB（uifigure），Octave 下【跳过】（未执行，不代表通过）。\n');
-                allPass = true;
-                return;
-            end
-            tests = {{'界面烟雾测试', @() test_ui()}};
+            % MATLAB 驱动真实界面；Octave 用 tests/ui_mock 桩对象驱动同一套回调
+            tests = {{'界面测试', @() test_ui()}};
         otherwise
             error('run_all_tests:level', '未知级别：%s（quick | full | ui）', level);
     end
@@ -71,5 +68,6 @@ function tests = quickTests()
     tests = { ...
         {'平流方向性',     @() test_advection()}, ...
         {'reset 一致性',   @() test_reset(20, 0.5)}, ...
-        {'扩散算子解析解', @() test_diffusion()}};
+        {'扩散算子解析解', @() test_diffusion()}, ...
+        {'布局配置工具链', @() test_layout()}};
 end

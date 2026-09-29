@@ -1,16 +1,16 @@
 function generate_snapshots(steadyStateSteps)
 %GENERATE_SNAPSHOTS 无界面跑三场景并输出快照（仅 MATLAB：用到 exportgraphics/streamslice）
-%   每场景推进 steadyStateSteps 步至稳态，输出 4 张场景图 + 文本摘要：
+%   每场景用 runToSteady 推进到稳态（或给定步数），输出 4 张场景图 + 文本摘要：
 %     <scen>_velocity.png  <scen>_temperature.png
 %     <scen>_vorticity.png <scen>_solid.png
 %     <scen>_summary.txt
 %   场景：default (125/250/450 W) / gaming (100/200/500) / heavy (180/320/850)
 %
 %   用法：
-%     generate_snapshots          % 默认 1000 步（约 5 s 物理时间，接近稳态）
-%     generate_snapshots(800)     % 自定义步数
+%     generate_snapshots          % 跑到稳态（runToSteady，精确网格）
+%     generate_snapshots(800)     % 固定推进 800 步
 
-    if nargin < 1, steadyStateSteps = 1000; end
+    if nargin < 1, steadyStateSteps = []; end
 
     scenarios = {...
         struct('name','default','cpu',125,'gpu',250,'psu',450),...
@@ -21,17 +21,23 @@ function generate_snapshots(steadyStateSteps)
     outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
     if ~exist(outDir, 'dir'), mkdir(outDir); end
 
-    fprintf('=== Snapshot generation (steadyState=%d steps) ===\n', steadyStateSteps);
+    fprintf('=== Snapshot generation ===\n');
     for k = 1:numel(scenarios)
         s = scenarios{k};
         fprintf('\n[%d/%d] %s: CPU=%dW GPU=%dW PSU=%dW\n',...
             k, numel(scenarios), s.name, s.cpu, s.gpu, s.psu);
         tic;
         solver = CFDSolverFEM(s.cpu, s.gpu, s.psu, 'atx_balanced');
-        result = solver.stepMultiple(steadyStateSteps);
+        if isempty(steadyStateSteps)
+            info = solver.runToSteady();
+            nSteps = info.steps;
+            result = solver.stepMultiple(1);
+        else
+            nSteps = steadyStateSteps;
+            result = solver.stepMultiple(nSteps);
+        end
         elapsed = toc;
-        fprintf('  steady-state reached in %.1fs (%d steps, %.1f ms/step)\n',...
-            elapsed, steadyStateSteps, 1000*elapsed/steadyStateSteps);
+        fprintf('  %d steps in %.1fs (%.1f ms/step)\n', nSteps, elapsed, 1000*elapsed/nSteps);
 
         renderSnapshot(solver, result, s, outDir);
         writeSummary(solver, result, s, outDir);
@@ -160,8 +166,8 @@ function writeSummary(solver, result, s, outDir)
     fprintf(fid, 'CPU_power=%dW GPU_power=%dW PSU_power=%dW\n', s.cpu, s.gpu, s.psu);
     fprintf(fid, 'Tj_cpu=%.1f Tj_gpu=%.1f Tj_psu=%.1f (deg C)\n',...
         cpuNet.T_junction, gpuNet.T_junction, psuNet.T_junction);
-    fprintf(fid, 'cpu_throttle=%.1f%% gpu_throttle=%.1f%% psu_throttle=%.1f%%\n',...
-        cpuNet.throttling_ratio*100, gpuNet.throttling_ratio*100, psuNet.throttling_ratio*100);
+    fprintf(fid, 'cpu_throttle=%.1f%% gpu_throttle=%.1f%% psu_overTemp=%d\n',...
+        cpuNet.throttling_ratio*100, gpuNet.throttling_ratio*100, psuNet.overTemp);
     fprintf(fid, 'Re=%.0f Gr=%.2e Ra=%.2e Nu=%.1f\n', diag.Re, diag.Gr, diag.Ra, diag.Nu);
     fprintf(fid, 'flowRegime=%s\n', diag.flowRegime);
     fprintf(fid, 'intake=%.1f internalAmbient=%.1f topExhaust=%.1f rearExhaust=%.1f\n',...

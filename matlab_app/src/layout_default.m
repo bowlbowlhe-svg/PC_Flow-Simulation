@@ -89,12 +89,16 @@ function L = layout_default(name)
     % ---- 电源仓挡板：全宽水平隔板，前端留缺口（多数机箱在前部开孔）----
     L.shroud = struct('yMm', 314, 'hMm', 16, 'gaps', struct('x0Mm', 360, 'x1Mm', 398));
 
-    % ---- 机箱风扇（型号见 fan_catalog）----
+    % ---- 机箱风扇（型号见 fan_catalog，安装位见 fan_slots）----
     % mount 为所在壁面，alongMm 为风扇中心沿壁坐标（前/后壁为 y，顶/底壁为 x）。
+    % 默认：前中、前下进气（F2、F3），后部排气（R1），顶后排气（T1）。
+    % 只装一台前进气时，装在前中（正对显卡上半部与 CPU 塔扇进风）GPU 偏热，
+    % 装在前下（正对显卡风扇进风）CPU 偏热（见 README 预设对比）。
     L.caseFans = [ ...
-        caseFan('front', 250, 'intake',  'P12'); ...
+        caseFan('front', 220, 'intake',  'P12'); ...
+        caseFan('front', 338, 'intake',  'P12'); ...
         caseFan('rear',  124, 'exhaust', 'P12'); ...
-        caseFan('top',   160, 'exhaust', 'Stock120')];
+        caseFan('top',   140, 'exhaust', 'Stock120')];
 end
 
 function r = rect(x, y, w, h)

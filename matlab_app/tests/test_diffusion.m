@@ -2,7 +2,7 @@ function pass = test_diffusion(nSteps)
 %TEST_DIFFUSION 扩散算子物理尺度：高斯包二阶矩增长 vs 解析解。
 %   隐式欧拉 + 5 点 Laplacian 下，每步每个方向的方差严格增长 2·α·DT/Δx²（格²），
 %   因此 n 步后 σ² − σ0² = 2·α·t/Δx²（t = n·DT），与物理热方程一致。
-%   分别检验温度（格心，标量 α 与空间场 α 两条装配路径）与速度（MAC u 面）。
+%   分别检验温度（格心，标量 α 与空间场 α 两条装配路径）与速度（MAC u 面、v 面）。
     if nargin < 1, nSteps = 100; end
     s = CFDSolverFEM(0, 0, 0, layout_benchmark('empty'), 1, 0.005);
     W = s.GRID.W; H = s.GRID.H;
@@ -37,6 +37,15 @@ function pass = test_diffusion(nSteps)
     s.vF(:) = 0;
     for k = 1:nSteps, s.diffuseVelocity(nu); end
     pass = checkMoments('速度（u 面，ν）', reshape(s.uF, W, H+1), YU, XU, sigma0, expectU) && pass;
+
+    % 4) 速度（v 面点阵，ν）
+    s.reset();
+    [YV, XV] = ndgrid(0.5:W+0.5, 1:H);
+    vb = 0.01 * exp(-((YV-yc).^2 + (XV-xc).^2) / (2*sigma0^2));
+    s.uF(:) = 0;
+    s.vF = vb(:);
+    for k = 1:nSteps, s.diffuseVelocity(nu); end
+    pass = checkMoments('速度（v 面，ν）', reshape(s.vF, W+1, H), YV, XV, sigma0, expectU) && pass;
 end
 
 function ok = checkMoments(name, f, YY, XX, sigma0, expect)

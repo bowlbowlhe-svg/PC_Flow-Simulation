@@ -4,7 +4,8 @@ classdef DetailedThermalNetwork < handle
     %            R_conv = 1/(h·A·η_overall)，h = 30 + 130·V [W/m²K]，
     %            鳍片效率 η_f = tanh(mL)/(mL)，m = √(2h/(k·t_fin))，k = 200 W/mK。
     %   PSU：    R_total = R_internal + 1/(h·A)，h = 15 + 80·V，A = 0.08 m²。
-    %   V 为散热体（鳍片/电源内部）平均风速，T_amb 为进风温度。
+    %   V 为散热体（鳍片/电源内部）平均风速（2D 流场按机箱深度折算的体积流量口径），
+    %   T_amb 为进风温度。V 不设下限：风扇提速 → V 增大 → h 增大 → 结温下降。
     %   结温一阶惯性：C·dTj/dt = P_actual − (Tj − T_amb)/R_total（τ = tau，
     %   为数值平滑取短时间常数，不代表真实热容）。
     %   节流（canThrottle）：无节流理论稳态温度（同 τ 低通滤波）超过节流阈后，
@@ -48,7 +49,7 @@ classdef DetailedThermalNetwork < handle
         function result = solve(obj, velocity_ambient, T_ambient, dt)
             % 推进一步：velocity_ambient 为散热器处风速 [m/s]，T_ambient 为环境温度 [°C]
             if nargin < 4 || isempty(dt), dt = obj.dt; end
-            effective_velocity = max(0.8, velocity_ambient);
+            effective_velocity = max(0, velocity_ambient);
             if ~isempty(obj.spec)
                 h = 30 + 130 * min(effective_velocity, 6);
                 fin_t_m = max(obj.spec.thermal.fin_thickness_mm, 0.1) / 1000;

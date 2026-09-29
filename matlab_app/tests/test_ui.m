@@ -1,184 +1,283 @@
 function pass = test_ui()
-%TEST_UI 界面烟雾测试（仅 MATLAB）：构造 App，触发场景/视图/推进/重置并截图。
-%   产出 snapshots/ui_*.png；任何回调异常都会被捕获并计为失败。
-
+%TEST_UI 界面测试：构造 App，按用户操作的方式触发各控件回调，检查状态与异常。
+%   MATLAB：驱动真实 uifigure，并在 snapshots/ 下截图 ui_*.png。
+%   Octave：用 tests/ui_mock 的桩对象驱动同一套 App 代码（无截图）。
+%   控件操作通过读取回调属性并直接调用来模拟（ui_press / ui_choose / ui_edit ...），
+%   两种环境走同一条代码路径。
+    isOctave = exist('OCTAVE_VERSION', 'builtin') ~= 0;
+    if isOctave
+        p0 = path();
+        addpath(fullfile(fileparts(mfilename('fullpath')), 'ui_mock'));
+        restore = ui_mock_setup(p0); %#ok<NASGU>   % 测试结束时恢复路径
+    end
     outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
-    if ~exist(outDir, 'dir')
-        mkdir(outDir);
-    end
+    if ~isOctave && ~exist(outDir, 'dir'), mkdir(outDir); end
 
-    errors = {};
-    function logErr(stage, ME)
-        errors{end+1} = sprintf('[%s] %s', stage, ME.message);
-        fprintf(2, '*** ERROR @ %s: %s\n', stage, ME.message);
-        fprintf(2, '%s\n', getReport(ME, 'extended'));
-    end
+    errs = {};
+    fprintf('=== UI test（%s）===\n', ternary(isOctave, 'Octave 桩', 'MATLAB'));
 
-    function checkState(app, stage, minIter)
-        % 推进确实发生、场无 NaN/Inf、回调未吞异常
-        if app.Solver.iteration < minIter
-            errors{end+1} = sprintf('[%s] iteration=%d < %d（推进未发生，可能被回调吞掉异常）', ...
-                stage, app.Solver.iteration, minIter);
-        end
-        if ~all(isfinite(app.Solver.T_fluid)) || ~all(isfinite(app.Solver.uF))
-            errors{end+1} = sprintf('[%s] 场中出现 NaN/Inf', stage);
-        end
-        if ~isempty(app.LastError)
-            errors{end+1} = sprintf('[%s] App 回调异常：%s', stage, app.LastError);
-            app.LastError = '';
-        end
-    end
-
-    function shot(app, name)
-        try
-            fname = fullfile(outDir, sprintf('ui_%s.png', name));
-            exportapp(app.UIFigure, fname);
-            fprintf('  → ui_%s.png\n', name);
-        catch ME
-            logErr(sprintf('shot %s', name), ME);
-        end
-    end
-
-    fprintf('=== UI smoke test ===\n');
-
-    %% 1. 构造 App
-    fprintf('\n[1/8] Construct app...\n');
-    app = [];
+    %% 1. 构造
+    fprintf('[1] 构造 App\n');
     try
         app = PCAirflowSimulatorApp();
-        fprintf('  ok. UIFigure valid=%d\n', isvalid(app.UIFigure));
+        app.SteadyOpts = struct('minSteps', 40, 'maxSteps', 80, 'chunk', 20, 'window', 40);
     catch ME
-        logErr('construct', ME);
-        pass = printReport(errors);
+        errs = logErr(errs, 'construct', ME);
+        pass = printReport(errs);
         return;
     end
-    drawnow;
-    shot(app, '01_initial');
+    errs = expect(errs, numel(app.Solver.fans) == 4, 'construct', '默认布局应有 4 台机箱风扇');
+    errs = expect(errs, ~app.LayoutDirty, 'construct', '初始不应有未应用修改');
+    shot(app, '01_initial', isOctave, outDir);
 
-    %% 2. 切换场景 - gaming
-    fprintf('\n[2/8] setScenario(gaming)...\n');
-    try
-        app.runTestHook('setScenario', 'gaming');
-        drawnow;
-    catch ME
-        logErr('setScenario gaming', ME);
+    %% 2. 功率场景与视图模式
+    fprintf('[2] 场景按钮与视图模式\n');
+    errs = act(errs, 'gaming', @() ui_press(app.GamingBtn));
+    errs = expect(errs, app.Solver.powerW.gpu == 200, 'gaming', 'GPU 功率应为 200 W');
+    modeBtns = {app.ModeTempBtn, app.ModeVorticityBtn, app.ModeSolidBtn, app.ModeDiffBtn, app.ModeVelocityBtn};
+    modeNames = {'temperature', 'vorticity', 'solid', 'diff', 'velocity'};
+    for k = 1:numel(modeBtns)
+        errs = act(errs, ['mode ' modeNames{k}], @() ui_press(modeBtns{k}));
+        errs = expect(errs, strcmp(app.VisMode, modeNames{k}), 'mode', ['视图应为 ' modeNames{k}]);
     end
-    shot(app, '02_gaming');
+    errs = checkState(app, errs, 'modes', 0);
 
-    %% 3. 切换可视化模式 - temperature
-    fprintf('\n[3/8] setMode(temperature)...\n');
-    try
-        app.runTestHook('setMode', 'temperature');
-        drawnow;
-    catch ME
-        logErr('setMode temperature', ME);
-    end
-    shot(app, '03_temperature');
-
-    %% 4. 切换 vorticity
-    fprintf('\n[4/8] setMode(vorticity)...\n');
-    try
-        app.runTestHook('setMode', 'vorticity');
-        drawnow;
-    catch ME
-        logErr('setMode vorticity', ME);
-    end
-    shot(app, '04_vorticity');
-
-    %% 5. 切换 solid
-    fprintf('\n[5/8] setMode(solid)...\n');
-    try
-        app.runTestHook('setMode', 'solid');
-        drawnow;
-    catch ME
-        logErr('setMode solid', ME);
-    end
-    shot(app, '05_solid');
-
-    %% 6. 推进仿真（手动调用 onTimer 模拟 60 帧）
-    fprintf('\n[6/8] advance 60 frames via onTimer()...\n');
-    try
-        app.runTestHook('setMode', 'velocity');
-        drawnow;
-    catch ME
-        logErr('setMode velocity', ME);
-    end
+    %% 3. 推进（手动调用 onTimer）
+    fprintf('[3] 推进 30 帧\n');
     it0 = app.Solver.iteration;
-    for k = 1:60
-        try
-            app.runTestHook('onTimer');
-        catch ME
-            logErr(sprintf('onTimer iter=%d', k), ME);
-            break;
-        end
+    for k = 1:30
+        errs = act(errs, 'onTimer', @() app.runTestHook('onTimer'));
     end
-    drawnow;
-    checkState(app, 'after 60 frames', it0 + 60);
-    shot(app, '06_after_60_frames');
+    errs = checkState(app, errs, 'frames', it0 + 30);
+    errs = act(errs, 'tab fans', @() ui_tab(app.TabGroup, app.TabFans));
+    errs = expect(errs, size(app.FanTable.Data, 1) == numel(app.Solver.allFans()), 'fan table', '风扇表行数应等于风扇数');
+    shot(app, '02_running', isOctave, outDir);
 
-    %% 7. 满载场景
-    fprintf('\n[7/8] setScenario(heavy) + advance 60 frames...\n');
-    try
-        app.runTestHook('setScenario', 'heavy');
-        drawnow;
-    catch ME
-        logErr('setScenario heavy', ME);
-    end
+    %% 4. 风扇布局编辑
+    fprintf('[4] 风扇布局：点击安装位、编辑表格、预设、挡板开孔\n');
+    errs = act(errs, 'tab layout', @() ui_tab(app.TabGroup, app.TabLayout));
+    errs = act(errs, 'click F1', @() ui_click(app.hSlot{1}));
+    errs = expect(errs, strcmp(app.SlotStates(1).type, 'intake'), 'click F1', 'F1 应变为进气');
+    errs = expect(errs, app.LayoutDirty, 'click F1', '应标记为未应用');
+    errs = expect(errs, strcmp(app.SlotTable.Data{1, 3}, '进气'), 'click F1', '表格应同步为 进气');
+    errs = act(errs, 'click F1 again', @() ui_click(app.hSlot{1}));
+    errs = expect(errs, strcmp(app.SlotStates(1).type, 'exhaust'), 'click F1', 'F1 应变为排气');
+    errs = act(errs, 'edit T1 speed', @() ui_edit(app.SlotTable, [4 5], '70%'));
+    errs = expect(errs, strcmp(app.SlotStates(4).speedMode, 'manual') && app.SlotStates(4).manualPct == 70, ...
+        'edit T1', 'T1 应为手动 70%');
+    errs = act(errs, 'edit B1 state', @() ui_edit(app.SlotTable, [7 3], '进气'));
+    errs = act(errs, 'edit B1 model', @() ui_edit(app.SlotTable, [7 4], 'NF_A12'));
+    errs = expect(errs, strcmp(app.SlotStates(7).type, 'intake') && strcmp(app.SlotStates(7).model, 'NF_A12'), ...
+        'edit B1', 'B1 应为进气 NF_A12');
+    errs = act(errs, 'apply custom', @() ui_press(app.ApplyLayoutBtn));
+    errs = expect(errs, numel(app.Solver.fans) == 6 && ~app.LayoutDirty, 'apply custom', '应用后应有 6 台机箱风扇');
+
+    P = fan_presets();
+    ft = P(strcmp({P.name}, 'front_top'));
+    errs = act(errs, 'choose preset', @() ui_choose(app.PresetDrop, ft.label));
+    errs = act(errs, 'load preset', @() ui_press(app.LoadPresetBtn));
+    errs = expect(errs, sum(~strcmp({app.SlotStates.type}, 'none')) == 4, 'preset', '前进顶出应有 4 个安装位');
+    errs = act(errs, 'shroud gap off', @() ui_check(app.ShroudGapCheck, false));
+    errs = act(errs, 'apply preset', @() ui_press(app.ApplyLayoutBtn));
+    errs = expect(errs, numel(app.Solver.fans) == 4, 'apply preset', '应用后应有 4 台机箱风扇');
+    errs = expect(errs, isempty(app.Solver.layout.shroud.gaps), 'apply preset', '挡板开孔应已关闭');
+    errs = expect(errs, strcmp(app.AppliedLabel, ft.label), 'apply preset', '布局名应为预设名');
     it0 = app.Solver.iteration;
-    for k = 1:60
-        try
-            app.runTestHook('onTimer');
-        catch ME
-            logErr(sprintf('onTimer heavy iter=%d', k), ME);
-            break;
-        end
+    for k = 1:10
+        errs = act(errs, 'onTimer', @() app.runTestHook('onTimer'));
     end
-    checkState(app, 'heavy 60 frames', it0 + 60);
-    try
-        app.runTestHook('setMode', 'temperature');
-    catch ME
-        logErr('setMode temperature (heavy)', ME);
-    end
-    drawnow;
-    shot(app, '07_heavy_temp');
+    errs = checkState(app, errs, 'after preset', it0 + 10);
+    shot(app, '03_layout', isOctave, outDir);
 
-    %% 8. 重置
-    fprintf('\n[8/8] resetSim()...\n');
-    try
-        app.runTestHook('resetSim');
-        drawnow;
-    catch ME
-        logErr('resetSim', ME);
-    end
-    if app.Solver.iteration ~= 0
-        errors{end+1} = sprintf('[resetSim] iteration=%d，应为 0', app.Solver.iteration);
-    end
-    shot(app, '08_after_reset');
+    %% 5. 跑到稳态（测试中限制步数）并保存方案 A
+    fprintf('[5] 跑到稳态并保存方案 A\n');
+    it0 = app.Solver.iteration;
+    errs = act(errs, 'steady', @() ui_press(app.SteadyButton));
+    errs = checkState(app, errs, 'steady', it0 + 40);
+    errs = expect(errs, ~app.SteadyRunning && strcmp(app.RunButton.Enable, 'on'), 'steady', '跑完后应恢复按钮');
+    errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
+    errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
+    errs = act(errs, 'save A', @() ui_press(app.SaveScenarioBtn));
+    errs = expect(errs, ~isempty(app.Scenarios{1}), 'save A', '方案 A 应已保存');
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{12, 2}, ft.label), 'save A', '方案表 A 列布局名');
 
-    % App 回调内部捕获的异常（只打印不抛出）也计为失败
+    %% 6. 另一布局 → 方案 B → 温差视图
+    fprintf('[6] 默认布局 → 方案 B → 温差视图\n');
+    errs = act(errs, 'tab layout', @() ui_tab(app.TabGroup, app.TabLayout));
+    errs = act(errs, 'choose balanced', @() ui_choose(app.PresetDrop, P(1).label));
+    errs = act(errs, 'load balanced', @() ui_press(app.LoadPresetBtn));
+    errs = act(errs, 'shroud gap on', @() ui_check(app.ShroudGapCheck, true));
+    errs = act(errs, 'apply+steady', @() ui_press(app.ApplySteadyBtn));
+    errs = expect(errs, numel(app.Solver.fans) == 4, 'apply+steady', '默认布局应有 4 台机箱风扇');
+    errs = expect(errs, ~isempty(app.Solver.layout.shroud.gaps), 'apply+steady', '挡板开孔应已恢复');
+    errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
+    errs = act(errs, 'choose B', @() ui_choose(app.ScenarioDrop, 'B'));
+    errs = act(errs, 'save B', @() ui_press(app.SaveScenarioBtn));
+    errs = act(errs, 'diff ref A', @() ui_choose(app.DiffRefDrop, 'A'));
+    errs = act(errs, 'show diff', @() ui_press(app.ShowDiffBtn));
+    errs = expect(errs, strcmp(app.VisMode, 'diff') && app.DiffRef == 1, 'diff', '应为温差视图、参考 A');
+    cd = app.hImg.CData;
+    errs = expect(errs, all(isfinite(cd(:))) && max(abs(cd(:))) > 0, 'diff', '温差场应有限且非零');
+    errs = checkState(app, errs, 'diff', 0);
+    shot(app, '04_diff', isOctave, outDir);
+
+    %% 7. JSON 存取与方案载入
+    fprintf('[7] JSON 存取、载入方案 A\n');
+    f = [tempname() '.json'];
+    errs = act(errs, 'save json', @() app.runTestHook('saveLayoutFile', f));
+    errs = act(errs, 'click T2', @() ui_click(app.hSlot{5}));
+    errs = act(errs, 'load json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, numel(app.Solver.fans) == 4 && ~app.LayoutDirty, 'load json', '载入后应回到 4 台风扇');
+    errs = expect(errs, strcmp(app.SlotStates(5).type, 'none'), 'load json', 'T2 应为空');
+    if exist(f, 'file'), delete(f); end
+    errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
+    errs = act(errs, 'load A', @() ui_press(app.LoadScenarioBtn));
+    errs = expect(errs, numel(app.Solver.fans) == 4 && isempty(app.Solver.layout.shroud.gaps), 'load A', ...
+        '载入方案 A 后应为 4 台风扇且挡板无开孔');
+    errs = act(errs, 'clear B', @() ui_choose(app.ScenarioDrop, 'B'));
+    errs = act(errs, 'clear B', @() ui_press(app.ClearScenarioBtn));
+    errs = expect(errs, isempty(app.Scenarios{2}), 'clear B', '方案 B 应已清除');
+
+    %% 8. 全局风扇、网格切换、重置
+    fprintf('[8] 全局风扇、网格切换、重置\n');
+    errs = act(errs, 'fan manual', @() ui_slide(app.FanSpeedSlider, 70));
+    errs = expect(errs, ~app.Solver.autoFanEnabled && app.Solver.fanSpeedRatio == 70, 'fan manual', '应为手动 70%');
+    errs = act(errs, 'fan auto', @() ui_press(app.AutoFanButton));
+    errs = expect(errs, app.Solver.autoFanEnabled, 'fan auto', '应恢复自动');
+    errs = act(errs, 'heavy', @() ui_press(app.HeavyBtn));
+    errs = act(errs, 'grid fine', @() ui_choose(app.GridDrop, '精确 280²'));
+    errs = expect(errs, app.GridScale == 1 && app.Solver.GRID.W == 280, 'grid fine', '应为 280² 网格');
+    errs = expect(errs, app.Solver.powerW.gpu == 320 && numel(app.Solver.fans) == 4, 'grid fine', '切换网格应保留功率与布局');
+    errs = act(errs, 'mode diff', @() ui_press(app.ModeDiffBtn));  % 参考方案网格不同：应提示而非报错
+    it0 = app.Solver.iteration;
+    for k = 1:3
+        errs = act(errs, 'onTimer', @() app.runTestHook('onTimer'));
+    end
+    errs = checkState(app, errs, 'fine grid', it0 + 3);
+    errs = act(errs, 'grid preview', @() ui_choose(app.GridDrop, '预览 140²'));
+    errs = act(errs, 'reset', @() ui_press(app.ResetButton));
+    errs = expect(errs, app.Solver.iteration == 0, 'reset', '重置后 iteration 应为 0');
+    shot(app, '05_final', isOctave, outDir);
+
     if ~isempty(app.LastError)
-        errors{end+1} = sprintf('[App 回调异常] %s', app.LastError);
+        errs{end+1} = sprintf('[App 回调异常] %s', app.LastError);
     end
-
-    %% 关闭
     try
         delete(app);
     catch ME
-        logErr('delete app', ME);
+        errs = logErr(errs, 'delete app', ME);
     end
-
-    pass = printReport(errors);
+    pass = printReport(errs);
 end
 
-function pass = printReport(errors)
+% ---------- 模拟用户操作（真实控件与桩对象通用）----------
+function ui_press(b)
+    f = b.ButtonPushedFcn;
+    f(b, []);
+end
+
+function ui_choose(dd, value)
+    old = dd.Value;
+    dd.Value = value;
+    f = dd.ValueChangedFcn;
+    if ~isempty(f), f(dd, struct('Value', value, 'PreviousValue', old)); end
+end
+
+function ui_slide(sl, value)
+    old = sl.Value;
+    sl.Value = value;
+    f = sl.ValueChangedFcn;
+    if ~isempty(f), f(sl, struct('Value', value, 'PreviousValue', old)); end
+end
+
+function ui_check(cb, value)
+    cb.Value = value;
+    f = cb.ValueChangedFcn;
+    if ~isempty(f), f(cb, struct('Value', value)); end
+end
+
+function ui_edit(tbl, rc, value)
+    D = tbl.Data;
+    old = D{rc(1), rc(2)};
+    D{rc(1), rc(2)} = value;
+    tbl.Data = D;
+    f = tbl.CellEditCallback;
+    f(tbl, struct('Indices', rc, 'NewData', value, 'PreviousData', old, 'EditData', value));
+end
+
+function ui_click(h)
+    f = h.ButtonDownFcn;
+    f(h, []);
+end
+
+function ui_tab(tg, tab)
+    tg.SelectedTab = tab;
+    f = tg.SelectionChangedFcn;
+    if ~isempty(f), f(tg, struct('NewValue', tab)); end
+end
+
+% ---------- 检查与报告 ----------
+function errs = act(errs, stage, fcn)
+    try
+        fcn();
+    catch ME
+        errs = logErr(errs, stage, ME);
+    end
+end
+
+function errs = expect(errs, cond, stage, msg)
+    if ~cond
+        errs{end+1} = sprintf('[%s] %s', stage, msg);
+        fprintf(2, '*** FAIL @ %s: %s\n', stage, msg);
+    end
+end
+
+function errs = checkState(app, errs, stage, minIter)
+    % 推进确实发生、场无 NaN/Inf、回调未吞异常
+    if app.Solver.iteration < minIter
+        errs{end+1} = sprintf('[%s] iteration=%d < %d（推进未发生，可能被回调吞掉异常）', ...
+            stage, app.Solver.iteration, minIter);
+    end
+    if ~all(isfinite(app.Solver.T_fluid)) || ~all(isfinite(app.Solver.uF))
+        errs{end+1} = sprintf('[%s] 场中出现 NaN/Inf', stage);
+    end
+    if ~isempty(app.LastError)
+        errs{end+1} = sprintf('[%s] App 回调异常：%s', stage, app.LastError);
+        app.LastError = '';
+    end
+end
+
+function errs = logErr(errs, stage, ME)
+    errs{end+1} = sprintf('[%s] %s', stage, ME.message);
+    fprintf(2, '*** ERROR @ %s: %s\n', stage, ME.message);
+    for s = 1:numel(ME.stack)
+        fprintf(2, '    at %s:%d\n', ME.stack(s).name, ME.stack(s).line);
+    end
+end
+
+function shot(app, name, isOctave, outDir)
+    if isOctave, return; end
+    try
+        exportapp(app.UIFigure, fullfile(outDir, sprintf('ui_%s.png', name)));
+        fprintf('  → ui_%s.png\n', name);
+    catch ME
+        fprintf(2, '截图失败 %s：%s\n', name, ME.message);
+    end
+end
+
+function out = ternary(c, a, b)
+    if c, out = a; else, out = b; end
+end
+
+function pass = printReport(errs)
     fprintf('\n=== UI test report ===\n');
-    pass = isempty(errors);
+    pass = isempty(errs);
     if pass
         fprintf('PASSED: 0 errors\n');
     else
-        fprintf('FAILED: %d errors\n', numel(errors));
-        for k = 1:numel(errors)
-            fprintf('  - %s\n', errors{k});
+        fprintf('FAILED: %d errors\n', numel(errs));
+        for k = 1:numel(errs)
+            fprintf('  - %s\n', errs{k});
         end
     end
 end

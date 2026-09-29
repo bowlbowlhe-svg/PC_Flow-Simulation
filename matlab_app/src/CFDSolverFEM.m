@@ -126,9 +126,10 @@ classdef CFDSolverFEM < CFDSolverBase
             end
             obj.L_temp = Ltemp;
             alpha  = nu / obj.AIR.Pr;
-            A_temp = obj.M_mass/dt - alpha * gs * Ltemp;
+            % 障碍（钉扎）行对角取 1/dt（行列已解耦，取正值避免矩阵不定/奇异）
+            A_temp = obj.M_mass/dt - alpha * gs * Ltemp + alpha * gs * obj.E_obs;
             obj.decomp_temp  = decomposition(A_temp, 'ldl');
-            obj.temp_diag_oi = 1/dt - alpha * gs;
+            obj.temp_diag_oi = 1/dt;
             obj.lastAlphaEff = alpha;
         end
 
@@ -389,25 +390,37 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.vF = vM(:);
         end
 
-        function projectWithDrag(obj)
+        function projectWithDrag(obj, uRef, vRef)
             % 阻力与压力耦合的投影（多孔区、开口格栅）：
-            %   u^{n+1} = β·(u* − G p)，β = 1/(1 + C|u*|)，D(β G p) = D(β u*)。
-            % 稳态下每面阻力恰为 C|u|u（即 ζ·½ρv²），不受阻力与压力分步误差影响。
-            % 算子按参考 β 装配（保证散度严格为零）；阻力面上 β 的相对偏差平均超过 3%
-            % 或超过 10% 的面多于 2% 时重装（两次重装至少间隔 5 步）。
+            %   u^{n+1} = β·(u* − G p)，β = 1/(1 + C|u_ref|)，D(β G p) = D(β u*)。
+            % u_ref 取施加风扇体积力之前的速度（fluidStep 传入）：风扇盘端面与格栅面/
+            % 多孔区端面重合时，u* 含风扇单步冲量（满速约 7 m/s/步），用它算 β 会把
+            % 阻力放大数倍。稳态下 u_ref ≈ u^{n+1}，每面阻力近似为 C|u|u（ζ·½ρv²）。
+            % 算子按参考 β 装配（保证散度严格为零）。重装判据按两组分别统计（多孔区面、
+            % 开口格栅面，只计流体活动面）：任一组 β 相对偏差均值超过 3% 或偏差超过
+            % 10% 的面多于 2% 时重装（两次重装至少间隔 5 步）。
             W = obj.GRID.W; H = obj.GRID.H;
             uM = reshape(obj.uF, W, H+1);
             vM = reshape(obj.vF, W+1, H);
+            if nargin < 3, uRef = obj.uF; vRef = obj.vF; end
             uActM = reshape(obj.uFaceActive, W, H+1);
             vActM = reshape(obj.vFaceActive, W+1, H);
-            bU = 1 ./ (1 + reshape(obj.uDragCoef, W, H+1) .* abs(uM));
-            bV = 1 ./ (1 + reshape(obj.vDragCoef, W+1, H) .* abs(vM));
+            bU = 1 ./ (1 + reshape(obj.uDragCoef .* abs(uRef), W, H+1));
+            bV = 1 ./ (1 + reshape(obj.vDragCoef .* abs(vRef), W+1, H));
             rebuild = isempty(obj.decomp_presDrag);
             if ~rebuild && obj.iteration - obj.betaRefStep >= 5
-                dragU = obj.uDragCoef > 0; dragV = obj.vDragCoef > 0;
-                rel = [abs(bU(dragU) - obj.betaRefU(dragU)) ./ obj.betaRefU(dragU); ...
-                       abs(bV(dragV) - obj.betaRefV(dragV)) ./ obj.betaRefV(dragV)];
-                rebuild = ~isempty(rel) && (mean(rel) > 0.03 || mean(rel > 0.10) > 0.02);
+                actU = obj.uDragCoef > 0 & obj.uFaceActive;
+                actV = obj.vDragCoef > 0 & obj.vFaceActive;
+                relU = abs(bU(:) - obj.betaRefU(:)) ./ obj.betaRefU(:);
+                relV = abs(bV(:) - obj.betaRefV(:)) ./ obj.betaRefV(:);
+                grpU = {actU & ~obj.uGrilleFace, actU & obj.uGrilleFace};
+                grpV = {actV & ~obj.vGrilleFace, actV & obj.vGrilleFace};
+                for g = 1:2
+                    rel = [relU(grpU{g}); relV(grpV{g})];
+                    if ~isempty(rel) && (mean(rel) > 0.03 || mean(rel > 0.10) > 0.02)
+                        rebuild = true;
+                    end
+                end
             end
             if rebuild
                 obj.betaRefU = bU;
@@ -541,14 +554,14 @@ classdef CFDSolverFEM < CFDSolverBase
                 gs = obj.diffScale;
                 if ~isempty(alphaField)
                     [Lw, coupling] = obj.buildWeightedLaplacian(alphaField, false, obj.adiabaticObsIdx);
-                    A_temp = obj.M_mass/dt - gs*Lw - alphaVal*gs*obj.E_obs;
+                    A_temp = obj.M_mass/dt - gs*Lw;       % 钉扎行对角 = 1/dt
                     obj.tempCoupling = coupling;
                 else
-                    A_temp = obj.M_mass/dt - alphaVal * gs * obj.L_temp;
+                    A_temp = obj.M_mass/dt - alphaVal * gs * obj.L_temp + alphaVal * gs * obj.E_obs;
                     obj.tempCoupling = [];
                 end
                 obj.decomp_temp = decomposition(A_temp, 'ldl');
-                obj.temp_diag_oi = 1/dt - alphaVal * gs;
+                obj.temp_diag_oi = 1/dt;
                 obj.lastAlphaEff = alphaVal;
             end
 
@@ -632,10 +645,9 @@ classdef CFDSolverFEM < CFDSolverBase
                     abs(nuTmed - obj.lastNuTKMed) / obj.lastNuTKMed > 0.05
                 LwK = obj.buildWeightedLaplacian(nu + sigK * nuT, true);
                 LwW = obj.buildWeightedLaplacian(nu + sigW * nuT, true);
-                pinK = (nu + sigK * nuTmed) * gs;
-                pinW = (nu + sigW * nuTmed) * gs;
-                obj.decomp_turbK = decomposition(obj.M_mass/dt - gs*LwK - pinK*obj.E_obs, 'ldl');
-                obj.decomp_turbW = decomposition(obj.M_mass/dt - gs*LwW - pinW*obj.E_obs, 'ldl');
+                % 障碍行列已由 buildWeightedLaplacian 清零，钉扎行对角 = 1/dt（RHS 为 0）
+                obj.decomp_turbK = decomposition(obj.M_mass/dt - gs*LwK, 'ldl');
+                obj.decomp_turbW = decomposition(obj.M_mass/dt - gs*LwW, 'ldl');
                 obj.lastNuTKMed = nuTmed;
                 obj.lastTurbDt = dt;
             end
@@ -705,13 +717,15 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.project();
             obj.advectFaces();
             obj.applyBuoyancy();
+            uRef = obj.uF; vRef = obj.vF;          % 阻力 β 用施加风扇力之前的速度
             obj.applyFanForces();
-            obj.projectWithDrag();   % 多孔区/格栅阻力与压力耦合投影
+            obj.projectWithDrag(uRef, vRef);       % 多孔区/格栅阻力与压力耦合投影
             % 远场海绵环速度阻尼（投影之后施加，不破坏刚建立的压力-速度一致性）
             obj.uF(obj.uFaceRing) = obj.uF(obj.uFaceRing) * obj.spongeDamping;
             obj.vF(obj.vFaceRing) = obj.vF(obj.vFaceRing) * obj.spongeDamping;
 
-            % ---- 湍流（用当步速度；ν_eff 下一步生效）----
+            % ---- 湍流（生产项用本步开始时的应变率 S，即动量更新前的速度，滞后一步；
+            %      对稳态无影响，瞬态中 k 局部差异 ≲15%、结温 ≲0.2°C；ν_eff 下一步生效）----
             if strcmp(obj.turbulenceModel, 'komega') && ...
                     mod(obj.iteration, obj.turbUpdateEvery) == 0
                 obj.stepTurbulence(S);
