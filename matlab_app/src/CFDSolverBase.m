@@ -451,7 +451,8 @@ classdef CFDSolverBase < handle
 
         function buildPorousDrag(obj)
             % 二次阻力（Darcy-Forchheimer）系数：每面每步阻力 C·|u|u（网格单位），
-            % 在阻力耦合投影（CFDSolverFEM.projectWithDrag）中以 β = 1/(1+C|u|) 隐式施加。
+            % 在阻力耦合投影（CFDSolverFEM.projectWithDrag）中以 β = 1/(1+C|u_ref|) 隐式施加，
+            % u_ref 为施加风扇力之前的速度。
             %   多孔区：总压降 ζ·½ρv² 分摊到区内各面，C = ζ·VEL_SCALE·DT/(2·L)，
             %          L 为区厚；区边界面半权（控制体一半在区外）。
             %   开口格栅：总压降 ζ·½ρv² 施加在穿壁的内侧面上（L = 1 格）。
@@ -662,7 +663,8 @@ classdef CFDSolverBase < handle
                     n = obj.toCell(cat.(fan.model).size);
                     c = obj.caseOffsetX + obj.toCell(L.gpu.fans.xs(i));
                     c0 = max(c - floor(n/2), prevC1 + 1);             % 相邻风扇盘不重叠
-                    fan.cols = [c0, c0 + n - 1];
+                    c1 = min(c0 + n - 1, hs.x + hs.w - 1);            % 不伸出散热片
+                    fan.cols = [c0, c1];
                     prevC1 = fan.cols(2);
                     fan.rows = [hs.y + hs.h, hs.y + hs.h + t - 1];      % 散热片下方
                     fan.normal = [0 -1];                                 % 向上吹入鳍片
@@ -1506,8 +1508,12 @@ classdef CFDSolverBase < handle
                 f = obj.fans{k};
                 if strcmp(f.type, 'intake'), qin = qin + f.getCFM(obj); else, qout = qout + f.getCFM(obj); end
             end
-            S = struct('cpu', obj.junctionOr('cpu'), 'gpu', obj.junctionOr('gpu'), ...
-                'psu', obj.junctionOr('psu'), 'interior', t.internalAmbient, 'cfm', t.totalCFM, ...
+            tj = nan(1, 3); nm = {'cpu', 'gpu', 'psu'};       % 布局中缺的元件为 NaN
+            for k = 1:3
+                if isfield(obj.thermalNetworks, nm{k}), tj(k) = obj.thermalNetworks.(nm{k}).T_junction; end
+            end
+            S = struct('cpu', tj(1), 'gpu', tj(2), ...
+                'psu', tj(3), 'interior', t.internalAmbient, 'cfm', t.totalCFM, ...
                 'noiseDb', db, 'score', sc.total, 'intakeCfm', qin, 'exhaustCfm', qout, ...
                 'pressure', fan_pressure_label(qin, qout), 'deadZonePct', 100*obj.deadZoneRatio, ...
                 'nCaseFans', numel(obj.fans), 'steps', obj.iteration);

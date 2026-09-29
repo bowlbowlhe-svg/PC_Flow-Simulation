@@ -55,6 +55,25 @@ function pass = test_layout()
     L3.caseFans(end).alongMm = 380;                             % 超出前壁
     R3 = layout_fan_report(L3);
     errs = check(errs, numel(R3.warnings) >= 2, '应报出重叠与超出壁面');
+    for k = 1:numel(P)                                          % 预设都应无安装警告
+        Rk = layout_fan_report(layout_apply_preset(L0, P(k).name));
+        errs = check(errs, isempty(Rk.warnings), sprintf('预设 %s 不应有安装警告', P(k).name));
+    end
+    st = layout_slots('get', L0);                               % 角部相碰：F3 与 B2
+    st(strcmp({st.id}, 'B2')).type = 'intake';
+    Rc = layout_fan_report(layout_slots('set', L0, st));
+    errs = check(errs, any(contains_(Rc.warnings, '角部')), 'F3 与 B2 应报角部相碰');
+
+    % 5) JSON 字段取值检查
+    Lb = L0; Lb.caseFans(1).type = 'Intake';
+    layout_json('save', Lb, f);
+    try
+        layout_json('load', f);
+        errs{end+1} = 'type 拼写错误的 JSON 应报错';
+    catch ME
+        errs = check(errs, strcmp(ME.identifier, 'layout_json:invalid'), ['错误标识应为 layout_json:invalid：' ME.identifier]);
+    end
+    delete(f);
 
     pass = isempty(errs);
     for k = 1:numel(errs), fprintf('  - %s\n', errs{k}); end
@@ -64,6 +83,10 @@ end
 
 function errs = check(errs, cond, msg)
     if ~cond, errs{end+1} = msg; end
+end
+
+function tf = contains_(c, pat)
+    tf = ~cellfun(@isempty, strfind(c, pat));
 end
 
 function F = sortFans(F)

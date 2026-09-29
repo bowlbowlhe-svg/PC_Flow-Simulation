@@ -7,14 +7,24 @@ function pass = test_ui()
     isOctave = exist('OCTAVE_VERSION', 'builtin') ~= 0;
     if isOctave
         p0 = path();
+        restoreEarly = onCleanup(@() path(p0)); %#ok<NASGU>   % ui_mock_setup 之前出错也恢复路径
+        warning('off', 'Octave:shadowed-function');
         addpath(fullfile(fileparts(mfilename('fullpath')), 'ui_mock'));
-        restore = ui_mock_setup(p0); %#ok<NASGU>   % 测试结束时恢复路径
+        restore = ui_mock_setup(p0); %#ok<NASGU>          % 测试结束时恢复路径与警告状态
+        warning('on', 'Octave:shadowed-function');
     end
     outDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'snapshots');
     if ~isOctave && ~exist(outDir, 'dir'), mkdir(outDir); end
 
     errs = {};
     fprintf('=== UI test（%s）===\n', ternary(isOctave, 'Octave 桩', 'MATLAB'));
+    if isOctave            % 桩自检：未知属性必须报错，否则属性名写错会被掩盖
+        try
+            b = MockUI('uibutton'); b.NoSuchProp = 1;
+            errs{end+1} = '[mock] 桩未拒绝未知属性';
+        catch
+        end
+    end
 
     %% 1. 构造
     fprintf('[1] 构造 App\n');
@@ -49,6 +59,12 @@ function pass = test_ui()
         errs = act(errs, 'onTimer', @() app.runTestHook('onTimer'));
     end
     errs = checkState(app, errs, 'frames', it0 + 30);
+    errs = act(errs, 'run on', @() ui_press(app.RunButton));
+    errs = expect(errs, app.IsRunning && strcmp(char(app.SimTimer.Running), 'on'), 'run', '开始仿真后应在运行');
+    errs = act(errs, 'run off', @() ui_press(app.RunButton));
+    errs = expect(errs, ~app.IsRunning, 'run', '暂停后应停止');
+    errs = act(errs, 'cpu slider', @() ui_slide(app.CPUPowerSlider, 150));
+    errs = expect(errs, app.Solver.powerW.cpu == 150, 'cpu slider', 'CPU 功率应为 150 W');
     errs = act(errs, 'tab fans', @() ui_tab(app.TabGroup, app.TabFans));
     errs = expect(errs, size(app.FanTable.Data, 1) == numel(app.Solver.allFans()), 'fan table', '风扇表行数应等于风扇数');
     errs = expect(errs, size(app.FanTable.Data, 2) == 7 && ~isempty(app.NoiseDetailLabel.Text), 'fan table', ...
@@ -71,6 +87,13 @@ function pass = test_ui()
     errs = act(errs, 'edit B1 model', @() ui_edit(app.SlotTable, [7 4], 'NF_A12'));
     errs = expect(errs, strcmp(app.SlotStates(7).type, 'intake') && strcmp(app.SlotStates(7).model, 'NF_A12'), ...
         'edit B1', 'B1 应为进气 NF_A12');
+    errs = act(errs, 'revert', @() ui_press(app.RevertLayoutBtn));
+    errs = expect(errs, ~app.LayoutDirty && strcmp(app.SlotStates(7).type, 'none'), 'revert', '撤销后应回到已应用布局');
+    errs = act(errs, 'edit B1 state', @() ui_edit(app.SlotTable, [7 3], '进气'));
+    errs = act(errs, 'edit B1 model', @() ui_edit(app.SlotTable, [7 4], 'NF_A12'));
+    errs = act(errs, 'click F1', @() ui_click(app.hSlot{1}));
+    errs = act(errs, 'click F1', @() ui_click(app.hSlot{1}));
+    errs = act(errs, 'edit T1 speed', @() ui_edit(app.SlotTable, [4 5], '70%'));
     errs = act(errs, 'apply custom', @() ui_press(app.ApplyLayoutBtn));
     errs = expect(errs, numel(app.Solver.fans) == 6 && ~app.LayoutDirty, 'apply custom', '应用后应有 6 台机箱风扇');
 
@@ -96,12 +119,12 @@ function pass = test_ui()
     it0 = app.Solver.iteration;
     errs = act(errs, 'steady', @() ui_press(app.SteadyButton));
     errs = checkState(app, errs, 'steady', it0 + 40);
-    errs = expect(errs, ~app.SteadyRunning && strcmp(app.RunButton.Enable, 'on'), 'steady', '跑完后应恢复按钮');
+    errs = expect(errs, ~app.SteadyRunning && strcmp(char(app.RunButton.Enable), 'on'), 'steady', '跑完后应恢复按钮');
     errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
     errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
     errs = act(errs, 'save A', @() ui_press(app.SaveScenarioBtn));
     errs = expect(errs, ~isempty(app.Scenarios{1}), 'save A', '方案 A 应已保存');
-    errs = expect(errs, strcmp(app.ScenarioTable.Data{12, 2}, ft.label), 'save A', '方案表 A 列布局名');
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{12, 2}, ft.short), 'save A', '方案表 A 列布局名（简称）');
 
     %% 6. 另一布局 → 方案 B → 温差视图
     fprintf('[6] 默认布局 → 方案 B → 温差视图\n');
@@ -131,6 +154,35 @@ function pass = test_ui()
     errs = act(errs, 'load json', @() app.runTestHook('loadLayoutFile', f));
     errs = expect(errs, numel(app.Solver.fans) == 4 && ~app.LayoutDirty, 'load json', '载入后应回到 4 台风扇');
     errs = expect(errs, strcmp(app.SlotStates(5).type, 'none'), 'load json', 'T2 应为空');
+    % 失败路径：字段取值错误的 JSON → 报错、布局不变
+    nF = numel(app.Solver.fans);
+    Lbad = layout_default(); Lbad.caseFans(1).type = 'Intake';
+    writeJson(f, Lbad);
+    errs = act(errs, 'bad json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, ~isempty(app.LastError) && numel(app.Solver.fans) == nF && ~app.LayoutDirty, ...
+        'bad json', '错误的 JSON 应报错且布局不变');
+    app.LastError = '';
+    % 失败路径：能读入但无法构建的布局（未知显卡风扇型号）→ 回滚到原求解器
+    L0 = app.Solver.layout; it0 = app.Solver.iteration;
+    Lbad = layout_default(); Lbad.gpu.fans.model = 'NoSuchFan';
+    layout_json('save', Lbad, f);
+    errs = act(errs, 'unbuildable json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, ~isempty(app.LastError) && isequal(app.Solver.layout, L0) && ...
+        app.Solver.iteration == it0 && ~app.LayoutDirty, ...
+        'unbuildable json', '无法构建的布局应回滚到原求解器');
+    app.LastError = '';
+    % 缺元件的布局（无显卡）可以载入、推进、显示
+    Lng = rmfield(layout_default(), 'gpu');
+    layout_json('save', Lng, f);
+    errs = act(errs, 'no-gpu json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, ~app.Solver.hasGpu && ~app.LayoutDirty, 'no-gpu json', '应载入无显卡布局');
+    it0 = app.Solver.iteration;
+    for k = 1:5
+        errs = act(errs, 'onTimer', @() app.runTestHook('onTimer'));
+    end
+    errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
+    errs = checkState(app, errs, 'no-gpu', it0 + 5);
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{2, 1}, '—'), 'no-gpu', '无显卡时方案表 GPU 应为 —');
     if exist(f, 'file'), delete(f); end
     errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
     errs = act(errs, 'load A', @() ui_press(app.LoadScenarioBtn));
@@ -216,6 +268,13 @@ function ui_tab(tg, tab)
     tg.SelectedTab = tab;
     f = tg.SelectionChangedFcn;
     if ~isempty(f), f(tg, struct('NewValue', tab)); end
+end
+
+function writeJson(f, L)
+    % 不经 layout_json 校验直接写文件（构造错误输入）
+    fid = fopen(f, 'w');
+    fwrite(fid, jsonencode(L));
+    fclose(fid);
 end
 
 % ---------- 检查与报告 ----------

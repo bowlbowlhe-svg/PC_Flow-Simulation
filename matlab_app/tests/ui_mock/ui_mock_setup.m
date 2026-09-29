@@ -30,15 +30,17 @@ function restore = ui_mock_setup(oldPath)
     fclose(fid);
 
     if nargin < 1, oldPath = path(); end
+    w = warning('query', 'Octave:shadowed-function');
     warning('off', 'Octave:shadowed-function');
     rmpath(appDir);
     addpath(outDir);
     addpath(here);
-    restore = onCleanup(@() restorePath(oldPath, outDir));
+    restore = onCleanup(@() restorePath(oldPath, outDir, w));
 end
 
-function restorePath(p, outDir)
+function restorePath(p, outDir, w)
     path(p);
+    warning(w.state, 'Octave:shadowed-function');
     if exist(fullfile(outDir, 'PCAirflowSimulatorApp.m'), 'file')
         delete(fullfile(outDir, 'PCAirflowSimulatorApp.m'));
     end

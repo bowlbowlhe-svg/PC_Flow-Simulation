@@ -52,8 +52,35 @@ function L = normalize(L)
         end
         L.caseFans = cf(:);
     end
+    validateFans(L);
     % 电源仓挡板缺口：空数组读回为 []
     if isfield(L, 'shroud') && isfield(L.shroud, 'gaps') && isempty(L.shroud.gaps)
         L.shroud.gaps = struct('x0Mm', {}, 'x1Mm', {});
+    end
+end
+
+function validateFans(L)
+    % 机箱风扇字段取值检查（拼写错误等会在这里报出，而不是在求解器里被静默处理）
+    if ~isfield(L, 'caseFans'), return; end
+    cat = fan_catalog();
+    for k = 1:numel(L.caseFans)
+        f = L.caseFans(k);
+        bad = '';
+        if ~any(strcmp(f.mount, {'front', 'rear', 'top', 'bottom'}))
+            bad = sprintf('mount = "%s"（应为 front/rear/top/bottom）', f.mount);
+        elseif ~any(strcmp(f.type, {'intake', 'exhaust'}))
+            bad = sprintf('type = "%s"（应为 intake/exhaust）', f.type);
+        elseif ~isfield(cat, f.model)
+            bad = sprintf('model = "%s"（不在 fan_catalog 中）', f.model);
+        elseif ~any(strcmp(f.speedMode, {'auto', 'manual'}))
+            bad = sprintf('speedMode = "%s"（应为 auto/manual）', f.speedMode);
+        elseif ~isnumeric(f.manualPct) || ~isscalar(f.manualPct) || f.manualPct < 0 || f.manualPct > 100
+            bad = 'manualPct 应为 0–100 的数';
+        elseif ~isnumeric(f.alongMm) || ~isscalar(f.alongMm)
+            bad = 'alongMm 应为数';
+        end
+        if ~isempty(bad)
+            error('layout_json:invalid', '第 %d 台机箱风扇：%s', k, bad);
+        end
     end
 end

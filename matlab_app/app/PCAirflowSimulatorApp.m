@@ -338,7 +338,7 @@ classdef PCAirflowSimulatorApp < handle
                 'Text', '电源仓挡板前部开孔（前下/底部风扇与主舱互通）', 'FontColor', fg, 'FontSize', 10, ...
                 'ValueChangedFcn', @(src,event)app.layoutEdited(false));
 
-            app.LayoutInfoLabel = uilabel(tab, 'Position', [10 262 380 40], 'Text', '', ...
+            app.LayoutInfoLabel = uilabel(tab, 'Position', [10 258 380 46], 'Text', '', ...
                 'FontColor', [0 0.83 1], 'FontSize', 11, 'VerticalAlignment', 'top');
             app.LayoutWarnArea = uitextarea(tab, 'Position', [10 170 378 86], 'Editable', 'off', ...
                 'BackgroundColor', [0.07 0.07 0.12], 'FontColor', [1 0.75 0.3], 'FontSize', 10);
@@ -407,64 +407,71 @@ classdef PCAirflowSimulatorApp < handle
             app.hStream = [];
 
             % ========== 静态几何（仅绘制一次）==========
-            plotRect = @(x,y,w,h,col,lw) plot(ax, [x x+w x+w x x], [y y y+h y+h y], 'Color', col, 'LineWidth', lw, 'HitTest', 'off');
+            plotRect = @(x,y,w,h,col,lw) plot(ax, [x x+w x+w x x], [y y y+h y+h y], 'Color', col, 'LineWidth', lw, 'PickableParts', 'none');
             lb = @(x,y,w,h,t,col,sz) text(ax, x+w/2, y+h/2, t, 'Color', col, 'FontSize', sz, 'FontWeight', 'bold', ...
-                'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'HitTest', 'off');
+                'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'PickableParts', 'none');
 
             % 机箱外框（机箱壁位置，非计算域边界）
             co = s.CASE2D.outer;
             plotRect(co.x, co.y, co.w, co.h, [0.60 0.60 0.72], 2.5);
 
-            % 主板区
-            mb = s.CASE2D.motherboard_tray;
-            plot(ax, [mb.x mb.x+mb.w mb.x+mb.w mb.x mb.x], [mb.y mb.y mb.y+mb.h mb.y+mb.h mb.y], '--', ...
-                'Color', [0.20 0.68 0.28], 'LineWidth', 1.2, 'HitTest', 'off');
-            text(ax, mb.x+5, mb.y+6, '主板区', 'Color', [0.25 0.78 0.35], 'FontSize', 7, 'FontWeight', 'bold', ...
-                'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'none', 'HitTest', 'off');
-
-            % VRM
-            vrm = s.VRM.heatsink;
-            plotRect(vrm.x, vrm.y, vrm.w, vrm.h, [0.85 0.85 0.85], 2.5);
-            lb(vrm.x, vrm.y, vrm.w, vrm.h, 'VRM', [0.95 0.95 0.95], 5);
-
-            % RAM x4
-            for ri = 1:size(s.RAM_SLOTS, 1)
+            % 主板区、VRM、内存、芯片组（布局中可缺省）
+            if isfield(s.CASE2D, 'motherboard_tray')
+                mb = s.CASE2D.motherboard_tray;
+                plot(ax, [mb.x mb.x+mb.w mb.x+mb.w mb.x mb.x], [mb.y mb.y mb.y+mb.h mb.y+mb.h mb.y], '--', ...
+                    'Color', [0.20 0.68 0.28], 'LineWidth', 1.2, 'PickableParts', 'none');
+                text(ax, mb.x+5, mb.y+6, '主板区', 'Color', [0.25 0.78 0.35], 'FontSize', 7, 'FontWeight', 'bold', ...
+                    'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'none', 'PickableParts', 'none');
+            end
+            if ~isempty(s.VRM)
+                vrm = s.VRM.heatsink;
+                plotRect(vrm.x, vrm.y, vrm.w, vrm.h, [0.85 0.85 0.85], 2.5);
+                lb(vrm.x, vrm.y, vrm.w, vrm.h, 'VRM', [0.95 0.95 0.95], 5);
+            end
+            for ri = 1:numel(s.RAM_SLOTS)
                 rm = s.RAM_SLOTS(ri);
                 plotRect(rm.x, rm.y, rm.w, rm.h, [0.72 0.30 1.0], 2.5);
             end
-            r1 = s.RAM_SLOTS(1);
-            text(ax, r1.x+r1.w+2, r1.y+7, 'RAMx4', 'Color', [0.80 0.50 1.0], 'FontSize', 6, 'FontWeight', 'bold', ...
-                'HorizontalAlignment', 'left', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'HitTest', 'off');
-
-            % CPU 底座与塔式散热器
-            cb = s.CPU_HEATSINK.base;
-            plotRect(cb.x, cb.y, cb.w, cb.h, [0.00 0.75 1.0], 2.0);
-            lb(cb.x, cb.y, cb.w, cb.h, 'CPU', [0.40 0.90 1.0], 8);
-            cf = s.CPU_HEATSINK.fin_area;
-            cfW = min(W, cf.x+cf.w-1) - cf.x;
-            plotRect(cf.x, cf.y, cfW, cf.h, [0.00 0.60 1.0], 2.0);
-            text(ax, cf.x+cfW/2, cf.y+cf.h/2, '塔式散热器', 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
-                'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'HitTest', 'off');
-
-            % 芯片组（仅显示）
+            if ~isempty(s.RAM_SLOTS)
+                r1 = s.RAM_SLOTS(1);
+                text(ax, r1.x+r1.w+2, r1.y+7, sprintf('RAMx%d', numel(s.RAM_SLOTS)), 'Color', [0.80 0.50 1.0], ...
+                    'FontSize', 6, 'FontWeight', 'bold', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'middle', ...
+                    'Interpreter', 'none', 'PickableParts', 'none');
+            end
             if ~isempty(s.CHIPSET)
                 chip = s.CHIPSET.heatsink;
                 plotRect(chip.x, chip.y, chip.w, chip.h, [0.80 0.80 0.80], 1.0);
                 lb(chip.x, chip.y, chip.w, chip.h, '芯', [0.90 0.90 0.90], 5);
             end
 
+            % CPU 底座与塔式散热器
+            if s.hasCpu
+                cb = s.CPU_HEATSINK.base;
+                plotRect(cb.x, cb.y, cb.w, cb.h, [0.00 0.75 1.0], 2.0);
+                lb(cb.x, cb.y, cb.w, cb.h, 'CPU', [0.40 0.90 1.0], 8);
+                cf = s.CPU_HEATSINK.fin_area;
+                cfW = min(W, cf.x+cf.w-1) - cf.x;
+                plotRect(cf.x, cf.y, cfW, cf.h, [0.00 0.60 1.0], 2.0);
+                text(ax, cf.x+cfW/2, cf.y+cf.h/2, '塔式散热器', 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
+                    'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'PickableParts', 'none');
+            end
+
             % GPU 散热片与 PCB
-            gh = s.GPU_HEATSINK.heatsink;
-            ghW = min(W, gh.x+gh.w-1) - gh.x;
-            plotRect(gh.x, gh.y, ghW, gh.h, [0.85 0.28 0.05], 1.5);
-            gp = s.GPU_HEATSINK.pcb;
-            plotRect(gp.x, gp.y, gp.w, gp.h, [1.0 0.38 0.00], 2.0);
-            lb(gp.x, gp.y, gp.w, gp.h, 'GPU', [1.0 0.75 0.40], 9);
+            if s.hasGpu
+                gh = s.GPU_HEATSINK.heatsink;
+                ghW = min(W, gh.x+gh.w-1) - gh.x;
+                plotRect(gh.x, gh.y, ghW, gh.h, [0.85 0.28 0.05], 1.5);
+                gp = s.GPU_HEATSINK.pcb;
+                plotRect(gp.x, gp.y, gp.w, gp.h, [1.0 0.38 0.00], 2.0);
+                lb(gp.x, gp.y, gp.w, gp.h, 'GPU', [1.0 0.75 0.40], 9);
+            end
 
             % PSU
-            psu = s.PSU2D.body;
-            plotRect(psu.x, psu.y, psu.w, psu.h, [0.88 0.80 0.00], 2.0);
-            lb(psu.x, psu.y, psu.w, psu.h, 'PSU', [1.0 0.95 0.30], 8);
+            if s.hasPsu
+                psu = s.PSU2D.body;
+                plotRect(psu.x, psu.y, psu.w, psu.h, [0.88 0.80 0.00], 2.0);
+                lb(psu.x, psu.y, psu.w, psu.h, 'PSU', [1.0 0.95 0.30], 8);
+            end
 
             % 风扇：执行盘矩形 + 送风方向箭头（机箱进气绿、排气红，内置风扇青/橙/黄）
             allF = s.allFans();
@@ -482,25 +489,25 @@ classdef PCAirflowSimulatorApp < handle
                 cx = bnd.x + (bnd.w - 1)/2; cy = bnd.y + (bnd.h - 1)/2;
                 len = 0.35 * max(bnd.w, bnd.h);
                 quiver(ax, cx - f.normal(1)*len/2, cy - f.normal(2)*len/2, f.normal(1)*len, f.normal(2)*len, ...
-                    'AutoScale', 'off', 'Color', col, 'MaxHeadSize', 2, 'LineWidth', 1.4, 'HitTest', 'off');
+                    'AutoScale', 'off', 'Color', col, 'MaxHeadSize', 2, 'LineWidth', 1.4, 'PickableParts', 'none');
             end
 
             % 方位标注（YDir='reverse'：y=1 在顶，y=H 在底）
             text(ax, W/2, 3, '▲ 顶部', 'Color', [0.55 0.55 0.65], 'FontSize', 6, 'HorizontalAlignment', 'center', ...
-                'VerticalAlignment', 'top', 'Interpreter', 'none', 'HitTest', 'off');
+                'VerticalAlignment', 'top', 'Interpreter', 'none', 'PickableParts', 'none');
             text(ax, 3, H-3, '← 后部', 'Color', [0.55 0.55 0.65], 'FontSize', 7, 'HorizontalAlignment', 'left', ...
-                'VerticalAlignment', 'bottom', 'Interpreter', 'none', 'HitTest', 'off');
+                'VerticalAlignment', 'bottom', 'Interpreter', 'none', 'PickableParts', 'none');
             text(ax, W-3, H-3, '前面板 →', 'Color', [0.55 0.55 0.65], 'FontSize', 7, 'HorizontalAlignment', 'right', ...
-                'VerticalAlignment', 'bottom', 'Interpreter', 'none', 'HitTest', 'off');
+                'VerticalAlignment', 'bottom', 'Interpreter', 'none', 'PickableParts', 'none');
 
             % 尺度条（100 mm）
             L100 = 100 / s.GRID.cell_size_mm;
             x0 = 5; y0 = H - 8;
-            plot(ax, [x0 x0+L100], [y0 y0], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 2.5, 'HitTest', 'off');
-            plot(ax, [x0 x0], [y0-2 y0+2], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 1.5, 'HitTest', 'off');
-            plot(ax, [x0+L100 x0+L100], [y0-2 y0+2], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 1.5, 'HitTest', 'off');
+            plot(ax, [x0 x0+L100], [y0 y0], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 2.5, 'PickableParts', 'none');
+            plot(ax, [x0 x0], [y0-2 y0+2], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 1.5, 'PickableParts', 'none');
+            plot(ax, [x0+L100 x0+L100], [y0-2 y0+2], '-', 'Color', [0.90 0.90 0.90], 'LineWidth', 1.5, 'PickableParts', 'none');
             text(ax, x0 + L100/2, y0 + 4, '100 mm', 'Color', [0.90 0.90 0.90], 'FontSize', 7, ...
-                'HorizontalAlignment', 'center', 'Interpreter', 'none', 'HitTest', 'off');
+                'HorizontalAlignment', 'center', 'Interpreter', 'none', 'PickableParts', 'none');
 
             % 安装位标记最后绘制，位于最上层以接收点击
             app.drawSlotMarkers();
@@ -550,7 +557,7 @@ classdef PCAirflowSimulatorApp < handle
                     'FaceAlpha', 0.10, 'EdgeColor', [0.55 0.55 0.60], 'LineStyle', '--', 'LineWidth', 1, ...
                     'PickableParts', 'all', 'ButtonDownFcn', @(src,event)app.onSlotClick(k));
                 app.hSlotText{k} = text(ax, tx, ty, sl.id, 'Color', [0.75 0.75 0.8], 'FontSize', 7, ...
-                    'HorizontalAlignment', ha, 'VerticalAlignment', va, 'Interpreter', 'none', 'HitTest', 'off');
+                    'HorizontalAlignment', ha, 'VerticalAlignment', va, 'Interpreter', 'none', 'PickableParts', 'none');
             end
             app.updateSlotMarkers();
         end
@@ -710,7 +717,7 @@ classdef PCAirflowSimulatorApp < handle
                 app.hContour = [];
                 if ~isempty(contourLevels) && (max(field(:)) - min(field(:))) > 0.5
                     [~, hc] = contour(ax, 1:W, 1:H, field, contourLevels, 'LineColor', contourColor, 'LineWidth', 1.2);
-                    set(hc, 'HitTest', 'off');
+                    set(hc, 'PickableParts', 'none');
                     app.hContour = hc;
                 end
 
@@ -729,7 +736,7 @@ classdef PCAirflowSimulatorApp < handle
                     % density=1.5，单标量避免被误判为 3D 调用
                     hs = streamslice(ax, 1:W, 1:H, umat, vmat, 1.5);
                     if ~isempty(hs)
-                        set(hs, 'Color', [1 1 1], 'LineWidth', 0.8, 'HitTest', 'off');
+                        set(hs, 'Color', [1 1 1], 'LineWidth', 0.8, 'PickableParts', 'none');
                         app.hStream = hs;
                     end
                 end
@@ -747,8 +754,8 @@ classdef PCAirflowSimulatorApp < handle
             try
                 % iteration 是累计总步数，物理时间 = 步数 × 固定步长 DT
                 t = app.Solver.iteration * app.Solver.DT;
-                cpuT = app.Solver.thermalNetworks.cpu.T_junction;
-                gpuT = app.Solver.thermalNetworks.gpu.T_junction;
+                cpuT = app.junctionOrNaN('cpu');
+                gpuT = app.junctionOrNaN('gpu');
                 if ~isempty(app.Solver.lastTemps)
                     rearT = app.Solver.lastTemps.rearExhaust;
                 else
@@ -843,6 +850,15 @@ classdef PCAirflowSimulatorApp < handle
             if app.isTabSelected(app.TabScenario), app.refreshScenarioTable(); end
         end
 
+        function T = junctionOrNaN(app, name)
+            % 元件结温；布局中缺该元件时为 NaN（曲线不画）
+            if isfield(app.Solver.thermalNetworks, name)
+                T = app.Solver.thermalNetworks.(name).T_junction;
+            else
+                T = NaN;
+            end
+        end
+
         function tf = isTabSelected(app, tab)
             sel = app.TabGroup.SelectedTab;
             tf = ~isempty(sel) && sel == tab;
@@ -879,18 +895,27 @@ classdef PCAirflowSimulatorApp < handle
             val = round(app.CPUPowerSlider.Value);
             app.Solver.setComponentPower('cpu', val);
             app.CPUPowerLbl.Text = sprintf('%dW', val);
+            app.stateChanged();
         end
 
         function GPUPowerSliderValueChanged(app, ~)
             val = round(app.GPUPowerSlider.Value);
             app.Solver.setComponentPower('gpu', val);
             app.GPUPowerLbl.Text = sprintf('%dW', val);
+            app.stateChanged();
         end
 
         function PSUPowerSliderValueChanged(app, ~)
             val = round(app.PSUPowerSlider.Value);
             app.Solver.setComponentPower('psu', val);
             app.PSUPowerLbl.Text = sprintf('%dW', val);
+            app.stateChanged();
+        end
+
+        function stateChanged(app)
+            % 功率或风扇设置改变：当前流场不再是稳态结果
+            app.SteadyIter = -1;
+            app.StatusMsg = '';
         end
 
         function setPowers(app, p)
@@ -918,6 +943,9 @@ classdef PCAirflowSimulatorApp < handle
 
         function setGlobalFan(app, auto, pct)
             % 全局风扇模式（自动温控 / 手动转速），作用于转速设为"自动"的风扇
+            if app.Solver.autoFanEnabled ~= auto || app.Solver.fanSpeedRatio ~= pct
+                app.stateChanged();
+            end
             app.Solver.autoFanEnabled = auto;
             app.Solver.fanSpeedRatio = pct;
             app.FanSpeedSlider.Value = pct;
@@ -1092,14 +1120,32 @@ classdef PCAirflowSimulatorApp < handle
             catch ME
                 ok = false;
             end
+            if ok
+                % 换上新求解器并重画；任何一步出错都整体回滚到原求解器
+                s.autoFanEnabled = old.autoFanEnabled;
+                s.fanSpeedRatio = old.fanSpeedRatio;
+                oldTurb = old.turbUpdateEvery;
+                oldSteady = app.SteadyIter; oldMsg = app.StatusMsg;
+                try
+                    app.installSolver(s);
+                catch ME
+                    ok = false;
+                    app.installSolver(old);
+                    old.turbUpdateEvery = oldTurb;
+                    app.SteadyIter = oldSteady; app.StatusMsg = oldMsg;
+                end
+            end
             if ~isempty(dlg), close(dlg); end
             if ~ok
-                app.reportError('重建求解器失败', ME);
-                return;
+                app.reportError('重建失败，已保留原布局', ME);
             end
+        end
+
+        function installSolver(app, s)
+            % 设为当前求解器并重画全部图层与数值显示；重画中被捕获的异常转为抛出
+            prevErr = app.LastError;
+            app.LastError = '';
             app.Solver = s;
-            app.Solver.autoFanEnabled = old.autoFanEnabled;
-            app.Solver.fanSpeedRatio = old.fanSpeedRatio;
             app.applyGridMode();
             app.SteadyIter = -1;
             app.StatusMsg = '';
@@ -1111,6 +1157,12 @@ classdef PCAirflowSimulatorApp < handle
             app.clearHistory();
             app.updateVisualizations();
             app.updateUI();
+            if ~isempty(app.LastError)
+                err = app.LastError;
+                app.LastError = prevErr;
+                error('PCAirflowSimulatorApp:redraw', '%s', err);
+            end
+            app.LastError = prevErr;
         end
 
         function clearHistory(app)
@@ -1183,13 +1235,13 @@ classdef PCAirflowSimulatorApp < handle
             app.updateSlotMarkers();
             R = layout_fan_report(app.pendingLayout());
             if app.LayoutDirty
-                st = sprintf('待应用：%s（点"应用布局"生效）', app.LayoutLabel);
+                st = sprintf('待应用：%s', app.LayoutLabel);
                 app.ApplyLayoutBtn.BackgroundColor = [0.75 0.45 0.05];
             else
-                st = sprintf('当前布局：%s', app.AppliedLabel);
+                st = sprintf('当前：%s', app.AppliedLabel);
                 app.ApplyLayoutBtn.BackgroundColor = [0 0.4 0.6];
             end
-            app.LayoutInfoLabel.Text = sprintf('%s\n标称进/排：满速 %.0f/%.0f CFM %s，低速 %.0f/%.0f %s', ...
+            app.LayoutInfoLabel.Text = sprintf('%s\n标称进/排 满速 %.0f / %.0f CFM（%s）\n低速 %.0f / %.0f CFM（%s）', ...
                 st, R.intakeCfm, R.exhaustCfm, R.pressure, R.intakeCfmIdle, R.exhaustCfmIdle, R.pressureIdle);
             if isempty(R.warnings)
                 app.LayoutWarnArea.Value = {'安装检查：无冲突'};
@@ -1355,11 +1407,20 @@ classdef PCAirflowSimulatorApp < handle
             if nargin < 2, idx = app.selectedScenario(); end
             snap = app.Scenarios{idx};
             if isempty(snap), return; end
+            s0 = app.Solver;
+            p0 = s0.powerW; auto0 = s0.autoFanEnabled; pct0 = s0.fanSpeedRatio;
             app.setPendingFromLayout(snap.layout);
             app.setPowers(snap.powers);
             app.setGlobalFan(snap.autoFan, snap.fanSpeedRatio);
             app.LayoutLabel = snap.label;
-            app.applyLayout(false);
+            if ~app.applyLayout(false)          % 失败：恢复原布局、功率与风扇设置
+                app.setPendingFromLayout(s0.layout);
+                app.setPowers([p0.cpu p0.gpu p0.psu]);
+                app.setGlobalFan(auto0, pct0);
+                app.LayoutLabel = app.AppliedLabel;
+                app.LayoutDirty = false;
+                app.refreshLayoutPanel();
+            end
         end
 
         function clearScenario(app, idx)
