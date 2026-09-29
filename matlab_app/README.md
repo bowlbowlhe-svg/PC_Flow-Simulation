@@ -12,6 +12,8 @@ k-ω 湍流 + 共轭传热，配交互式 MATLAB App。版本见 `src/pcflow_ver
 - 可选 Image Processing Toolbox（`bwdist`）；缺失时自动用内置慢速实现，初始化变慢。
 - 求解器与数值测试也可在 GNU Octave 8+ 下无界面运行（`setup_paths` 自动加载
   `compat/octave/` 兼容层与 image 包）；App 仅支持 MATLAB。
+- 请用 `setup_paths`（`run_simulator`/`run_all_tests` 会自动调用）加路径，不要
+  `addpath(genpath(...))`——那会把 Octave 兼容层加进 MATLAB 路径（兼容层在 MATLAB 下会报错提示）。
 
 ## 快速开始
 
@@ -60,7 +62,7 @@ matlab_app/
 
 `layout_default()` 返回一个只含数据的 struct：计算域与机箱尺寸、CPU/GPU/电源/内存等
 元件矩形（mm，相对机箱原点，x 向前面板、y 向下）、多孔区参数、热阻参数、机箱风扇与
-内置风扇。求解器按 `格 = round(mm / 格距)` 换算，因此同一配置可用于任意网格细化倍数。
+内置风扇。求解器按 `格 = round(mm / 格距)` 换算，同一配置可用于不同网格细化倍数（常用 0.5 / 1 / 2）。
 `CFDSolverFEM(cpu, gpu, psu, layout, gridScale, dt)` 的 `layout` 可传布局名或配置 struct。
 
 ## 模型概要

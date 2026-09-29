@@ -32,7 +32,7 @@ classdef RealFan < handle
         x, y              % 挂载点（格坐标）
         type              % 'intake' | 'exhaust'
         model
-        mount             % 'front' | 'top' | 'rear' | 'bottom'（'left'/'right' 为 rear/front 别名）
+        mount             % 'front' | 'top' | 'rear' | 'bottom'
         size
         drawSize = 30
         thickness = 6     % 盘厚 [格]

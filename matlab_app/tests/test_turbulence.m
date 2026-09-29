@@ -34,7 +34,8 @@ function pass = test_turbulence(nSteps)
     end
 
     % 判据 2：射流区 ν_t/ν 达 O(10^2)，且全场中位数不超保险帽
-    p95 = prctile(nuTratio(fluidIdx), 95);
+    srt = sort(nuTratio(fluidIdx));
+    p95 = srt(max(1, round(0.95 * numel(srt))));   % 95 分位（不依赖统计工具箱）
     med = median(nuTratio(fluidIdx));
     if p95 >= 100 && med <= 2000
         fprintf('[2] ν_t/ν：中位数 %.0f，p95 %.0f（≥100 达 O(10^2)）：PASS\n', med, p95);

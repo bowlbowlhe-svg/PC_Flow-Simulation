@@ -16,6 +16,10 @@ classdef griddedInterpolant < handle
 
     methods
         function obj = griddedInterpolant(varargin)
+            if ~exist('OCTAVE_VERSION', 'builtin')
+                error('compat:octaveOnly', ['compat/octave 兼容层只供 Octave 使用；MATLAB 下请勿把它加入路径' ...
+                    '（不要 addpath(genpath(...))，用 setup_paths）。']);
+            end
             isStr = cellfun(@ischar, varargin);
             strs = varargin(isStr);
             nums = varargin(~isStr);

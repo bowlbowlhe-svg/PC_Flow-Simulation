@@ -81,6 +81,9 @@ classdef PCAirflowSimulatorApp < handle
         gpuTempHistory = []
         rearExhaustTempHistory = []
         maxHistoryPoints = 300
+
+        % 最近一次被回调捕获的异常（test_ui 检查；正常运行只打印不中断）
+        LastError = ''
     end
     
     methods (Access = private)
@@ -447,6 +450,7 @@ classdef PCAirflowSimulatorApp < handle
                 if ~isempty(app.SimTimer) && isvalid(app.SimTimer)
                     stop(app.SimTimer);
                 end
+                app.LastError = ME.message;
                 fprintf('Timer error: %s\n', ME.message);
                 disp(getReport(ME));
             end
@@ -517,7 +521,7 @@ classdef PCAirflowSimulatorApp < handle
                     delete(app.hContour);
                 end
                 app.hContour = gobjects(0);
-                if ~isempty(contourLevels) && range(field(:)) > 0.5
+                if ~isempty(contourLevels) && (max(field(:)) - min(field(:))) > 0.5
                     [~, hc] = contour(ax, 1:W, 1:H, field, contourLevels, 'LineColor', contourColor, 'LineWidth', 1.2);
                     app.hContour = hc;
                 end
@@ -548,6 +552,7 @@ classdef PCAirflowSimulatorApp < handle
                 
                 drawnow limitrate;
             catch ME
+                app.LastError = ME.message;
                 fprintf('updateVisualizations error: %s\n', ME.message);
             end
             app.updateSideView();
@@ -590,6 +595,7 @@ classdef PCAirflowSimulatorApp < handle
                 title(app.SideAxes, '温度曲线', 'Color', [0.8 0.8 1]);
                 drawnow limitrate;
             catch ME
+                app.LastError = ME.message;
                 fprintf('updateSideView error: %s\n', ME.message);
             end
         end
@@ -598,7 +604,8 @@ classdef PCAirflowSimulatorApp < handle
             if ~isvalid(app.UIFigure), return; end
             try
                 scores = app.Solver.calculateScores();
-            catch
+            catch ME
+                app.LastError = ME.message;
                 scores = struct('intake',25,'topExhaust',25,'rearExhaust',25,'internalAmbient',25,...
                     'noiseDb',0,'performance',0,'cpuTemp',25,'gpuTemp',25,'total',0,...
                     'cooling',0,'balance',0,'margin',0,'noise',0,'value',0);

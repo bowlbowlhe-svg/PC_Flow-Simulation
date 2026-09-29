@@ -15,6 +15,10 @@ classdef decomposition < handle
 
     methods
         function obj = decomposition(A, type)
+            if ~exist('OCTAVE_VERSION', 'builtin')
+                error('compat:octaveOnly', ['compat/octave 兼容层只供 Octave 使用；MATLAB 下请勿把它加入路径' ...
+                    '（不要 addpath(genpath(...))，用 setup_paths）。']);
+            end
             if nargin >= 2, obj.Type = type; end
             A = sparse(A);
             obj.n = size(A, 1);

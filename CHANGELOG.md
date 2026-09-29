@@ -7,9 +7,11 @@
 
 - **目录整理**：`src/`（求解器）、`app/`（界面）、`tests/`、`tools/`、`compat/octave/`；
   `run_simulator` / `run_all_tests` 自动加路径（`setup_paths`）。
-- **布局配置化**：新增 `layout_default()`，机箱、元件、风扇的几何（mm，相对机箱原点）
-  与热参数全部由配置描述，求解器从配置构建（`CFDSolverFEM(cpu,gpu,psu,layout,...)`，
-  `layout` 可传布局名或配置 struct）。换算规则 `格 = round(mm/格距)`，与旧的整数格坐标逐位一致。
+- **布局配置化**：新增 `layout_default()`，机箱、元件矩形、多孔区、热阻参数与风扇位置
+  由配置（mm，相对机箱原点）描述，求解器从配置构建（`CFDSolverFEM(cpu,gpu,psu,layout,...)`，
+  `layout` 可传布局名、string 或配置 struct）。换算规则 `格 = round(mm/格距)`，在
+  gridScale = 0.5 / 1 / 2 下与旧的整数格坐标逐位一致（其它倍数可能在 .5 取整处差 1 格）。
+  尚未配置化（仍为代码常量，阶段 2 处理）：内置风扇盘尺寸、注热核中心与半径、风速采样窗。
 - **求解器 API**：新增 `reset()`（与新建求解器逐位一致）与 `setComponentPower(name, W)`；
   App 的重置与功率滑块改走这两个接口。
 - **修复**：旧 `resetSim` 只复位机箱风扇的 `lastFlowFactor`，漏了内置顶排风扇；
@@ -24,7 +26,11 @@
   结论已记录在下方历史条目）。
 - **注释**：代码注释只描述当前行为，版本流水账移入本文件。
 - **测试**：新增 `run_all_tests('quick'|'full'|'ui')` 统一入口与 `test_reset`；
-  各测试函数返回 pass。
+  各测试函数返回 pass。`test_ui` 检查推进是否真的发生、场是否有限、App 回调是否吞掉异常
+  （新增 `LastError` 属性）。`prctile`/`range` 改为基础 MATLAB 实现，不再依赖统计工具箱。
+- **接口变化**：`computeConservationCheck` 返回值去掉恒为 0 的 `Q_pin`、`Q_R_heat` 与已停用的
+  `flowGain`；`CHASSIS_DEPTH_M` 改为实例属性（取自布局 `chassis.depthM`）；`reset()` 同时清零
+  能量计账基准。
 - **Octave 兼容**：抽象方法声明改为报错的具体方法、属性缺省值不再引用本类常量
   （Octave 会无限递归）；`compat/octave/` 提供 `decomposition` 与 `griddedInterpolant` 替代。
 - **验证**：Octave 下默认场景 400 步（280²）与 140² 网格 400 步，全部场

@@ -18,7 +18,7 @@ function allPass = run_all_tests(level)
                 {'湍流模型',        @() test_turbulence(400)}}];
         case 'ui'
             if isOctave
-                fprintf('界面测试需要 MATLAB（uifigure），Octave 下跳过。\n');
+                fprintf('界面测试需要 MATLAB（uifigure），Octave 下【跳过】（未执行，不代表通过）。\n');
                 allPass = true;
                 return;
             end
@@ -38,6 +38,13 @@ function allPass = run_all_tests(level)
             results(k) = logical(tests{k}{2}());
         catch err
             fprintf(2, '*** %s 抛出异常：%s\n', name, err.message);
+            if isOctave
+                for s = 1:numel(err.stack)
+                    fprintf(2, '    at %s:%d\n', err.stack(s).name, err.stack(s).line);
+                end
+            else
+                fprintf(2, '%s\n', getReport(err, 'extended'));
+            end
             results(k) = false;
         end
         elapsed(k) = toc(t0);

@@ -14,6 +14,21 @@ function pass = test_ui()
         fprintf(2, '%s\n', getReport(ME, 'extended'));
     end
 
+    function checkState(app, stage, minIter)
+        % 推进确实发生、场无 NaN/Inf、回调未吞异常
+        if app.Solver.iteration < minIter
+            errors{end+1} = sprintf('[%s] iteration=%d < %d（推进未发生，可能被回调吞掉异常）', ...
+                stage, app.Solver.iteration, minIter);
+        end
+        if ~all(isfinite(app.Solver.T_fluid)) || ~all(isfinite(app.Solver.uF))
+            errors{end+1} = sprintf('[%s] 场中出现 NaN/Inf', stage);
+        end
+        if ~isempty(app.LastError)
+            errors{end+1} = sprintf('[%s] App 回调异常：%s', stage, app.LastError);
+            app.LastError = '';
+        end
+    end
+
     function shot(app, name)
         try
             fname = fullfile(outDir, sprintf('ui_%s.png', name));
@@ -88,6 +103,7 @@ function pass = test_ui()
     catch ME
         logErr('setMode velocity', ME);
     end
+    it0 = app.Solver.iteration;
     for k = 1:60
         try
             app.runTestHook('onTimer');
@@ -97,6 +113,7 @@ function pass = test_ui()
         end
     end
     drawnow;
+    checkState(app, 'after 60 frames', it0 + 60);
     shot(app, '06_after_60_frames');
 
     %% 7. 满载场景
@@ -107,6 +124,7 @@ function pass = test_ui()
     catch ME
         logErr('setScenario heavy', ME);
     end
+    it0 = app.Solver.iteration;
     for k = 1:60
         try
             app.runTestHook('onTimer');
@@ -115,6 +133,7 @@ function pass = test_ui()
             break;
         end
     end
+    checkState(app, 'heavy 60 frames', it0 + 60);
     try
         app.runTestHook('setMode', 'temperature');
     catch ME
@@ -131,7 +150,15 @@ function pass = test_ui()
     catch ME
         logErr('resetSim', ME);
     end
+    if app.Solver.iteration ~= 0
+        errors{end+1} = sprintf('[resetSim] iteration=%d，应为 0', app.Solver.iteration);
+    end
     shot(app, '08_after_reset');
+
+    % App 回调内部捕获的异常（只打印不抛出）也计为失败
+    if ~isempty(app.LastError)
+        errors{end+1} = sprintf('[App 回调异常] %s', app.LastError);
+    end
 
     %% 关闭
     try

@@ -45,7 +45,8 @@ classdef BuiltInFan < handle
         end
 
         function rpm = getRPM(obj, solver)
-            % 自动模式按 CPU/GPU 最高结温连续插值（同 RealFan）；手动按全局百分比
+            % 自动模式按 CPU/GPU 最高结温连续插值（曲线同 RealFan，但不含电源温度）；
+            % 手动按全局百分比
             if solver.autoFanEnabled
                 cpuT = 25; gpuT = 25;
                 if isfield(solver.thermalNetworks, 'cpu'), cpuT = solver.thermalNetworks.cpu.T_junction; end

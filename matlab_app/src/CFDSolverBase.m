@@ -21,7 +21,6 @@ classdef CFDSolverBase < handle
         % 格栅/滤网阻力系数 ζ（Δp = ζ·½ρv²，Idelchik 手册近似）
         GRILLE_ZETA_INTAKE = 2.0   % 前面板开孔 + 防尘网
         GRILLE_ZETA_EXHAUST = 0.8  % 排气格栅
-        CHASSIS_DEPTH_M = 0.15     % 机箱 Z 向有效深度（2D 换算用）
     end
 
     properties
@@ -35,6 +34,7 @@ classdef CFDSolverBase < handle
         GRID = struct('W',280,'H',280,'cell_size_mm',2,'TOTAL',78400)
         caseOffsetX = 40
         caseOffsetY = 40
+        CHASSIS_DEPTH_M = 0.15   % 机箱 Z 向有效深度 [m]（2D 换算用，取自布局）
         AIR
 
         % ===== 场 =====
@@ -126,6 +126,7 @@ classdef CFDSolverBase < handle
             %CFDSOLVERBASE 构造求解器。
             %   layout 可为布局名（char）或布局配置 struct；功率参数为空时取布局默认值。
             if nargin < 4 || isempty(layout), layout = 'atx_balanced'; end
+            if isstring(layout), layout = char(layout); end
             if ischar(layout), layout = layout_default(layout); end
             if nargin < 1 || isempty(cpuPower), cpuPower = layout.power.cpu; end
             if nargin < 2 || isempty(gpuPower), gpuPower = layout.power.gpu; end
@@ -143,6 +144,7 @@ classdef CFDSolverBase < handle
             obj.GRID = struct('W',Wg,'H',Wg,'cell_size_mm',cellMm,'TOTAL',Wg*Wg);
             obj.caseOffsetX = round(layout.chassis.originMm / cellMm);
             obj.caseOffsetY = round(layout.chassis.originMm / cellMm);
+            obj.CHASSIS_DEPTH_M = layout.chassis.depthM;
             obj.VEL_SCALE = (obj.GRID.W-2) * (obj.GRID.cell_size_mm/1000);
             obj.AIR = struct('rho',1.184,'mu',1.81e-5,'nu',1.56e-5,...
                              'k',0.026,'cp',1005,'alpha',2.2e-5,'Pr',0.71,...
@@ -151,8 +153,9 @@ classdef CFDSolverBase < handle
         end
 
         function reset(obj)
-            %RESET 回到初始状态（场、几何、风扇、热网络），保留当前功率与风扇控制设置。
-            %   结果与用相同参数新建求解器逐位一致。
+            %RESET 回到初始状态（场、几何、风扇、热网络、能量计账）。
+            %   保留当前功率、风扇控制设置与各可调参数（DT、湍流模型、flowEfficiency 等），
+            %   之后的推进与用相同参数新建的求解器一致。
             obj.buildModel();
             obj.lastDiag = [];
             obj.lastTemps = [];
@@ -934,6 +937,7 @@ classdef CFDSolverBase < handle
             obj.accClampCap = 0;   obj.accClampFloor = 0;
             obj.accAdvectCase = 0; obj.accDiffuseCase = 0; obj.accClampCase = 0;
             obj.accBoundaryCase = 0; obj.accInjectCase = 0;
+            obj.accE0 = 0; obj.accE0_case = 0;
         end
 
         function resetEnergyAccounting(obj)

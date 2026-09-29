@@ -124,7 +124,7 @@ function plotField(field, cmap, clim, ttl, cbLabel, fname, umat, vmat, showStrea
     cb.Label.String = cbLabel;
     cb.Color = [0.8 0.8 0.8];
 
-    if ~isempty(contourLevels) && range(field(:),'all') > 0.5
+    if ~isempty(contourLevels) && (max(field(:)) - min(field(:))) > 0.5
         contour(ax, 1:W, 1:H, field, contourLevels,...
             'LineColor', contourColor, 'LineWidth', 1.2);
     end
