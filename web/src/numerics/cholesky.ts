@@ -91,6 +91,9 @@ export interface CholSymbolic {
   parent: Int32Array;
   Lp: Int32Array; // 列指针（每列第一项为对角元）
   nnzA: number;
+  /** 分析时 A 的稀疏结构（复用前逐项核对） */
+  rowPtr: Int32Array;
+  colIdx: Int32Array;
 }
 
 /** 消去树（下三角按行：行 k 的非对角项 i < k） */
@@ -148,7 +151,7 @@ export function cholAnalyze(A: CSR, perm: Int32Array): CholSymbolic {
   }
   const Lp = new Int32Array(n + 1);
   for (let j = 0; j < n; j++) Lp[j + 1] = Lp[j] + cnt[j];
-  return { n, perm, pinv, parent, Lp, nnzA: A.rowPtr[n] };
+  return { n, perm, pinv, parent, Lp, nnzA: A.rowPtr[n], rowPtr: A.rowPtr.slice(), colIdx: A.colIdx.slice(0, A.rowPtr[n]) };
 }
 
 export class SparseCholesky {
@@ -162,7 +165,7 @@ export class SparseCholesky {
     readonly sym: CholSymbolic,
   ) {
     const { n, perm, pinv, parent, Lp } = sym;
-    if (A.nRows !== n || A.rowPtr[n] !== sym.nnzA) throw new Error('SparseCholesky: 结构与符号分析不符');
+    if (A.nRows !== n || A.rowPtr[n] !== sym.nnzA || !samePattern(A, sym)) throw new Error('SparseCholesky: 稀疏结构与符号分析不符');
     const C = permutedLower(A, perm, pinv);
     const nnz = Lp[n];
     const Li = new Int32Array(nnz);
@@ -229,4 +232,12 @@ export class SparseCholesky {
     for (let k = 0; k < n; k++) x[perm[k]] = y[k];
     return x;
   }
+}
+
+function samePattern(A: CSR, sym: CholSymbolic): boolean {
+  const n = sym.n;
+  for (let i = 0; i <= n; i++) if (A.rowPtr[i] !== sym.rowPtr[i]) return false;
+  const nnz = sym.nnzA;
+  for (let p = 0; p < nnz; p++) if (A.colIdx[p] !== sym.colIdx[p]) return false;
+  return true;
 }

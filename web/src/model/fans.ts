@@ -1,5 +1,6 @@
 // 风扇型号库、机箱安装位、布局预设（移植自 fan_catalog.m、fan_slots.m、fan_presets.m、
 // layout_slots.m、layout_apply_preset.m）。
+import { cloneLayout } from './types';
 import type { CaseFan, FanType, Layout, Mount, SpeedMode } from './types';
 
 export interface FanSpec {
@@ -127,7 +128,8 @@ export function getSlotStates(L: Layout): SlotState[] {
 }
 
 /** 按安装位状态重写 caseFans：先保留不在安装位上的风扇，再按安装位顺序追加 */
-export function setSlotStates(L: Layout, states: SlotState[]): Layout {
+export function setSlotStates(L0: Layout, states: SlotState[]): Layout {
+  const L = cloneLayout(L0); // 值语义（同 MATLAB）：返回的新布局与输入不共享嵌套对象
   const keep: CaseFan[] = [];
   for (const cf of L.caseFans ?? []) {
     if (findSlot(cf.mount, cf.alongMm) < 0) keep.push({ ...cf });
@@ -137,7 +139,8 @@ export function setSlotStates(L: Layout, states: SlotState[]): Layout {
     if (st.type === 'none') return;
     keep.push({ mount: slot.mount, alongMm: slot.alongMm, type: st.type, model: st.model, speedMode: st.speedMode, manualPct: st.manualPct });
   });
-  return { ...L, caseFans: keep };
+  L.caseFans = keep;
+  return L;
 }
 
 /** 按预设名重写全部机箱风扇（清空不在安装位上的风扇） */

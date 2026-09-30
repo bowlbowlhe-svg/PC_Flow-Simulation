@@ -39,6 +39,11 @@ export function normalizeLayout(raw: Raw): Layout {
     L.psu.effCurve.eff = asArray(L.psu.effCurve.eff).map(Number);
   }
   if (L.ram !== undefined) L.ram = asArray(L.ram);
+  // 节流温度为空（null 或 []，MATLAB isempty）时按 tjmax − 15
+  for (const c of ['cpu', 'gpu']) {
+    const t = L[c]?.throttleTemp;
+    if (L[c] && (t === null || (Array.isArray(t) && t.length === 0))) delete L[c].throttleTemp;
+  }
   // 机箱风扇：缺转速字段的补默认值
   if (L.caseFans !== undefined) {
     L.caseFans = asArray<Raw>(L.caseFans).map(
@@ -47,8 +52,9 @@ export function normalizeLayout(raw: Raw): Layout {
         alongMm: f.alongMm,
         type: f.type,
         model: f.model,
-        speedMode: f.speedMode ?? 'auto',
-        manualPct: f.manualPct ?? 60,
+        // 缺字段补默认值；显式的 null（MATLAB 读为 []）不补，由校验报错（同 layout_json）
+        speedMode: f.speedMode === undefined ? 'auto' : f.speedMode,
+        manualPct: f.manualPct === undefined ? 60 : f.manualPct,
       }),
     );
   }

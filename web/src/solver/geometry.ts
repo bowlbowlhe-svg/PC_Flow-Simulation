@@ -5,7 +5,7 @@
 // 约定：格坐标沿用 MATLAB 的 1 基（x 为列 1..H、y 为行 1..W）；所有数组与索引列表为 0 基线性索引
 // idx = (x−1)·W + (y−1)，列优先。索引列表的顺序与 MATLAB 一致（find/setdiff 为升序，rectCells 为 x 外层、y 内层）。
 import type { Acoustics, Layout, Mount, Porous, Rect, ThruDir } from '../model/types';
-import { FAN_CATALOG, type FanSpec } from '../model/fans';
+import { FAN_CATALOG, FAN_SLOTS, type FanSpec } from '../model/fans';
 import { mround } from '../model/mround';
 import { mergeAcoustics } from '../model/layoutJson';
 import { edtNearest } from '../numerics/edtNearest';
@@ -88,6 +88,8 @@ export interface Geometry {
   obstacle: Uint8Array;
   porousZones: PorousZone[];
   fans: FanGeom[]; // 机箱风扇在前、内置风扇在后（同 allFans()）
+  /** 机箱风扇安装位（FAN_SLOTS 顺序）按 120 mm 风扇的执行盘格范围（界面安装位标记用，同 wallFanSpan） */
+  slotSpans: { id: string; mount: Mount; cols: [number, number]; rows: [number, number] }[];
   nCaseFans: number;
   openings: Opening[];
   obsIdx: Int32Array;
@@ -365,6 +367,8 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     openings.push({ mount: m, idx: wallSpanCells(m, span[0], span[1]), kind: 'fan', fan: k + 1, zeta: z });
   }
   for (const v of L.vents ?? []) {
+    // MATLAB 对未知安装位报错（wallSpanCells 无匹配分支）
+    if (!['front', 'rear', 'top', 'bottom'].includes(v.mount)) throw new GeometryError(`未知通风口安装位：${String(v.mount)}`);
     const n = toCell(v.lengthMm);
     const c = toCell(v.alongMm);
     const a0 = Math.max(2, c - floor(n / 2));
@@ -642,6 +646,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     liveOutsideMask,
     wallDistanceM,
     nearestFluidIdx,
+    slotSpans: FAN_SLOTS.map((sl) => ({ id: sl.id, mount: sl.mount, ...wallFanSpan(sl.mount, sl.alongMm, 120) })),
     cpuFinIdx,
     cpuInletIdx,
     gpuFinIdx,

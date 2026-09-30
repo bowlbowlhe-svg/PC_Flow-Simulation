@@ -34,7 +34,7 @@ export function layoutBenchmark(kind: 'empty' | 'cavity' | 'duct', arg?: number)
       const g = 9.81;
       const beta = 3.4e-3;
       const Pr = 0.71;
-      const nu = Math.sqrt((Pr * g * beta * dT * Lc ** 3) / Ra);
+      const nu = Math.sqrt((Pr * g * beta * dT * cubeRounded(Lc)) / Ra);
       return {
         ...base,
         domain: { sizeMm: 160, baseCellMm: 2 },
@@ -74,4 +74,15 @@ export function layoutBenchmark(kind: 'empty' | 'cavity' | 'duct', arg?: number)
       };
     }
   }
+}
+
+/**
+ * x³ 的正确舍入值（同 MATLAB/Octave 的 x^3；JavaScript 的 x ** 3 = x·x·x 两次舍入，可能差 1 ulp）。
+ * 把 x 拆成整数尾数 m 与 2 的幂，用 BigInt 精确求 m³，Number() 按就近舍入，再乘 2 的幂（精确）。
+ */
+export function cubeRounded(x: number): number {
+  if (!Number.isFinite(x) || x === 0) return x * x * x;
+  const e = Math.floor(Math.log2(Math.abs(x))) - 53; // 多留 1 位余量：log2 的舍入误差不致丢位
+  const m = BigInt(Math.round(x / 2 ** e)); // |m| < 2^55 且为整数，x = m·2^e 精确
+  return Number(m * m * m) * 2 ** (3 * e);
 }

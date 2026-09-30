@@ -1,6 +1,6 @@
 // 线性系统矩阵的直接装配（5 点模板，直接生成 CSR，行内列号递增）。
 // 与 MATLAB CFDSolverFEM 的 assembleFaceDiffusion / buildWeightedLaplacian / buildPressureOperator
-// 数学上相同（规格 §3.2、§3.3、§3.8、§3.9）；矩阵均为对称正定，用 PCG 求解。
+// 数学上相同（规格 §3.2、§3.3、§3.8、§3.9）；矩阵均为对称正定（扩散用 PCG、压力用稀疏 Cholesky 求解）。
 import type { CSR } from '../numerics/sparse';
 
 /** 按行收集 (列, 值) 后生成 CSR；每行列号需递增 */

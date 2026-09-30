@@ -1,5 +1,5 @@
 // 显卡厚度（扩展槽数）：移植自 gpu_fin_area.m、layout_gpu_slots.m、layout_set_gpu_slots.m。
-import type { Layout } from './types';
+import { cloneLayout, type Layout } from './types';
 import { mround } from './mround';
 
 /** 显卡鳍片总面积 [m²]，随散热片高度线性缩放：3.5 槽（散热片 47 mm）为 0.5 m² */
@@ -45,5 +45,7 @@ export function layoutSetGpuSlots(L: Layout, slots: number): Layout {
       );
     }
   }
-  return { ...L, gpu: g };
+  const out = cloneLayout(L); // 值语义：不与输入共享嵌套对象
+  out.gpu = g;
+  return out;
 }

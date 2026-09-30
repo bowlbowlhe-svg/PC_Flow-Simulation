@@ -1,7 +1,5 @@
 import { render } from 'preact';
-
-function App() {
-  return <p>PC 风道仿真器（网页版，开发中）</p>;
-}
+import { App } from './ui/App';
+import './ui/styles.css';
 
 render(<App />, document.getElementById('app')!);

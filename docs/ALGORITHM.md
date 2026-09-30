@@ -584,7 +584,11 @@ cpu/gpu/psu 可整体缺省（该元件不存在）。
 - **平台差异**：`grid_interp2`、`edt_nearest`、`pchip_eval` 为自带实现，MATLAB 与 Octave 同一代码，不要换成
   `griddedInterpolant`、`interp2`、`bwdist`、`interp1(…,'pchip')`；剩余差异来自线性求解器与浮点求和顺序。
   参考数据以生成环境为准（文件内记录 `generator.platform/version/simulator`）。
-- 其它约定：MATLAB `sign(0) = 0`；`std` 为 N−1 归一；`mean` 为算术平均；粒子示踪（§12）用随机数，不需要逐位一致。
+- 其它约定：MATLAB `sign(0) = 0`；`std` 为 N−1 归一；`mean` 为算术平均（空集为 NaN）；粒子示踪（§12）用随机数，不需要逐位一致。
+- **NaN 语义**：MATLAB 的二元 `max`/`min` 忽略 NaN（`max(0, NaN) = 0`，`min(NaN, 200) = 200`），JavaScript 的
+  `Math.max/min` 则传播 NaN。所有钳位与下限（速度上限、温度 [T_amb, 200]、k/ω 下限、ν_t 上限、风扇转速与流量比、
+  热网络的风速）都要按 MATLAB 语义实现。例：散热体区域全被固体覆盖时散热体风速是空集均值 NaN，MATLAB 经
+  `max(0, V)` 取 0 继续计算；若按 JS 语义，NaN 会经结温 → 温控 → 风扇转速扩散到整个流场（网页版 W0/W1 审计）。
 
 ## 12. 粒子示踪（可视化，不参与计算）
 

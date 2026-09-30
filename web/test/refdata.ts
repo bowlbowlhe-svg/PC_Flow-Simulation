@@ -30,3 +30,13 @@ export function close6(a: number, b: number): boolean {
   if (Number.isNaN(a) && Number.isNaN(b)) return true;
   return Math.abs(a - b) <= 5e-6 * Math.max(Math.abs(a), Math.abs(b)) + 1e-300;
 }
+
+/** 分段推进并让出事件循环（长时间同步计算会让 vitest 的进程间通信超时） */
+export async function stepYielding(s: { stepMultiple(n: number): unknown }, n: number, chunk = 10): Promise<void> {
+  for (let done = 0; done < n; ) {
+    const k = Math.min(chunk, n - done);
+    s.stepMultiple(k);
+    done += k;
+    await new Promise((r) => setImmediate(r));
+  }
+}

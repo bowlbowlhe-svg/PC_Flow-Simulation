@@ -151,6 +151,13 @@ describe('SparseCholesky', () => {
     for (let i = 0; i < xa.length; i++) expect(xb[i]).toBeCloseTo(xa[i] / 2, 12);
     const C = randomGridMatrix(W + 1, H, 11);
     expect(() => new SparseCholesky(C, sym)).toThrow();
+    // 非零个数相同但结构不同：同样报结构不符（而不是误导性的"主元非正"）
+    const Dp = randomGridMatrix(W, H, 12);
+    if (Dp.rowPtr[Dp.nRows] === A.rowPtr[A.nRows]) expect(() => new SparseCholesky(Dp, sym)).toThrow(/结构/);
+    const swapped: CSR = { ...A, colIdx: A.colIdx.slice() };
+    const r = A.rowPtr.findIndex((v, i) => i < A.nRows && A.rowPtr[i + 1] - v >= 2);
+    [swapped.colIdx[A.rowPtr[r]], swapped.colIdx[A.rowPtr[r] + 1]] = [swapped.colIdx[A.rowPtr[r] + 1], swapped.colIdx[A.rowPtr[r]]];
+    expect(() => new SparseCholesky(swapped, sym)).toThrow(/结构/);
     const D: CSR = { ...A, values: A.values.slice() };
     // 把一个非钉扎行的对角改成负数
     for (let i = 0; i < A.nRows; i++) {

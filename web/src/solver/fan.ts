@@ -1,4 +1,5 @@
 // 风扇运行状态（移植自 Fan.m、fan_noise_terms.m；规格 §3.6、§5）。
+import { mmax, mmin } from '../numerics/mathx';
 import type { Acoustics } from '../model/types';
 import { pchipEval1 } from '../numerics/pchipEval';
 import type { FanGeom } from './geometry';
@@ -23,10 +24,10 @@ export interface NoiseParts {
 
 /** 单扇听音位置声压级分项（fan_noise_terms） */
 export function fanNoiseTerms(base: number, qRatio: number, zeta: number, posDb: number, ac: Acoustics): NoiseParts {
-  const q = Math.min(Math.max(qRatio, 0), 2);
+  const q = mmin(mmax(qRatio, 0), 2);
   let op = 0;
   if (q < ac.stallQ) op = ac.stallDb * ((ac.stallQ - q) / ac.stallQ) ** 2;
-  const grille = 10 * Math.log10(1 + Math.max(zeta, 0) / ac.grilleRefZeta);
+  const grille = 10 * Math.log10(1 + mmax(zeta, 0) / ac.grilleRefZeta);
   return { base, op, grille, pos: posDb, total: base + op + grille + posDb };
 }
 
@@ -69,9 +70,9 @@ export class FanState {
       // 连续温控曲线：55/70/80 °C → 20/50/80%，85 °C 满速，最低 20%
       const T = c.sensorTemp(this.g.sensor);
       const r = interpLinearExtrap([25, 55, 70, 80, 85], [0.2, 0.2, 0.5, 0.8, 1.0], T);
-      f = Math.min(1.0, Math.max(0.2, r));
+      f = mmin(1.0, mmax(0.2, r));
     } else f = c.fanSpeedRatio / 100;
-    return Math.min(1, Math.max(0, f));
+    return mmin(1, mmax(0, f));
   }
 
   getRPM(c: FanControl): number {
@@ -86,7 +87,7 @@ export class FanState {
 
   baseNoise(c: FanControl): number {
     const s = this.spec;
-    const f = (this.getRPM(c) - s.rpm_min) / Math.max(s.rpm_max - s.rpm_min, Number.EPSILON);
+    const f = (this.getRPM(c) - s.rpm_min) / mmax(s.rpm_max - s.rpm_min, Number.EPSILON);
     return s.noise_idle + (s.noise_max - s.noise_idle) * f ** 3;
   }
 
@@ -100,7 +101,7 @@ export class FanState {
     const rpm = this.getRPM(c);
     const qFree = (s.cfm_max * (rpm / s.rpm_max)) / CFM_PER_M3S;
     let qRatio = 0;
-    if (qFree > 0) qRatio = Math.min(2, Math.max(0, Q / qFree));
+    if (qFree > 0) qRatio = mmin(2, mmax(0, Q / qFree));
     const pq = s.pq_curve;
     let f: number;
     if (qRatio <= 1) f = pchipEval1(PQ_QGRID, pq, qRatio);
@@ -109,13 +110,13 @@ export class FanState {
       f = pq[n - 1] + ((pq[n - 1] - pq[n - 2]) / (PQ_QGRID[n - 1] - PQ_QGRID[n - 2])) * (qRatio - 1);
     }
     let dp = s.pmax_pa * (rpm / s.rpm_max) ** 2 * f;
-    dp = Math.max(-s.pmax_pa, Math.min(s.pmax_pa, dp));
+    dp = mmax(-s.pmax_pa, mmin(s.pmax_pa, dp));
     this.lastQ = Q;
     this.lastDp = dp;
     this.lastQRatio = qRatio;
-    const aFF = Math.min(1, DT / 0.15);
-    this.lastFlowFactor = this.lastFlowFactor + aFF * (Math.min(1, Math.max(0.2, qRatio)) - this.lastFlowFactor);
-    const aN = Math.min(1, DT / 0.5);
+    const aFF = mmin(1, DT / 0.15);
+    this.lastFlowFactor = this.lastFlowFactor + aFF * (mmin(1, mmax(0.2, qRatio)) - this.lastFlowFactor);
+    const aN = mmin(1, DT / 0.5);
     this.noiseQRatio = this.noiseQRatio + aN * (qRatio - this.noiseQRatio);
     return dp;
   }

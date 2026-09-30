@@ -1,6 +1,7 @@
 // 时间推进求解器（规格 §3–§4；移植自 CFDSolverFEM.m 与 CFDSolverBase.m 的推进部分）。
-// 线性系统用 PCG（相对残差 1e−12）解冻结的矩阵；冻结与重装策略与 MATLAB 完全相同（§3.10），
+// 线性系统：压力泊松用稀疏 Cholesky 直接解，扩散系统用修正 IC(0) 预条件 PCG（相对残差 1e−12）；冻结与重装策略与 MATLAB 完全相同（§3.10），
 // 因而与标准答案只差线性求解的舍入。
+import { mmax, mmin } from '../numerics/mathx';
 import type { Layout } from '../model/types';
 import { gridInterp2 } from '../numerics/gridInterp2';
 import { SPDSolver } from '../numerics/pcg';
@@ -11,9 +12,10 @@ import { FanState, type FanControl } from './fan';
 import { ThermalNetwork } from './thermal';
 import { cellDiffusionMatrix, faceDiffusionMatrix, pressureMatrix } from './operators';
 
-export const AIR_DENSITY = 1.184;
-export const AIR_CP = 1005;
-export const CFM_TO_M3S = 0.0004719;
+import { AIR_CP, AIR_DENSITY } from './constants';
+import { calculateCFDDiagnostics, computeAirflowTemperatures, computeVorticity, deadZoneRatio, type AirflowTemps, type CFDDiag } from './diagnostics';
+
+export { AIR_CP, AIR_DENSITY, CFM_TO_M3S } from './constants';
 
 export interface Air {
   rho: number;
@@ -32,6 +34,12 @@ export interface SolverOptions {
   powers?: { cpu?: number; gpu?: number; psu?: number }; // psu 为电源输出负载
   /** 压力泊松的解法：'direct'（稀疏 Cholesky，默认）或 'pcg'（IC(0) 预条件，相对残差 1e−12） */
   pressureSolver?: 'direct' | 'pcg';
+  /**
+   * 扩散系统（速度、温度、k、ω）PCG 的预条件器与相对残差（默认 'mic0'、1e−12）。流场发展后 ν_t 增大、系统变难解：
+   * 140² 第 400 步后 IC(0) 平均 24 次迭代，修正 IC(0) 16 次（W0/W1 审计与对比实验）；从静止起的前几十步两者都约 3 次。
+   */
+  diffusionPrecond?: 'ic0' | 'mic0';
+  diffusionTol?: number;
 }
 
 const TOL = 1e-12;
@@ -48,7 +56,8 @@ class DirectSolver implements LinSolver {
     this.chol = new SparseCholesky(A, sym);
   }
   solve(b: Float64Array): { x: Float64Array; converged: boolean } {
-    return { x: this.chol.solve(b), converged: true };
+    const x = this.chol.solve(b);
+    return { x, converged: x.every(Number.isFinite) };
   }
 }
 
@@ -102,6 +111,11 @@ export class Solver implements FanControl {
   nuFieldStep: Float64Array = new Float64Array(0);
 
   fans: FanState[] = [];
+  // ---- 诊断（每次 stepMultiple 结束时更新，同 MATLAB）----
+  deadZoneRatio = 0;
+  latestVorticity: Float64Array | null = null;
+  lastDiag: CFDDiag | null = null;
+  lastTemps: AirflowTemps | null = null;
   thermalNetworks: { cpu?: ThermalNetwork; gpu?: ThermalNetwork; psu?: ThermalNetwork } = {};
 
   // ---- 冻结算子 ----
@@ -123,6 +137,7 @@ export class Solver implements FanControl {
   private pres0: LinSolver;
   private presDrag: LinSolver | null = null;
   private readonly presSym: CholSymbolic | null;
+  private readonly diffOpts: { tol: number; precond: 'ic0' | 'mic0' };
   betaRefU: Float64Array | null = null;
   betaRefV: Float64Array | null = null;
   betaRefStep = -Infinity;
@@ -206,6 +221,7 @@ export class Solver implements FanControl {
         if ((buoyM[x * W + yf - 1] || buoyM[x * W + yf]) && g.vFaceActive[k]) this.buoyV[k] = 1;
       }
     }
+    this.diffOpts = { tol: opts.diffusionTol ?? TOL, precond: opts.diffusionPrecond ?? 'mic0' };
     const P0 = pressureMatrix(W, H, g.uFaceActive, g.vFaceActive, null, null, this.isPin);
     this.presSym = (opts.pressureSolver ?? 'direct') === 'direct' ? cholAnalyze(P0, nestedDissectionGrid(W, H)) : null;
     this.pres0 = this.pressureSolverFor(P0);
@@ -246,6 +262,10 @@ export class Solver implements FanControl {
     this.betaRefStep = -Infinity;
     this.fans = this.geo.fans.map((f) => new FanState(f));
     this.initHeatSources();
+    this.latestVorticity = new Float64Array(N);
+    this.deadZoneRatio = 0;
+    this.lastDiag = null;
+    this.lastTemps = null;
   }
 
   private initHeatSources(): void {
@@ -271,7 +291,7 @@ export class Solver implements FanControl {
     const P = this.layout.psu!;
     const ld = P.effCurve.load;
     const ef = P.effCurve.eff;
-    const f = Math.min(Math.max(loadW / P.ratedW, ld[0]), ld[ld.length - 1]);
+    const f = mmin(mmax(loadW / P.ratedW, ld[0]), ld[ld.length - 1]);
     let i = 0;
     while (i < ld.length - 2 && f > ld[i + 1]) i++;
     const eta = ef[i] + ((f - ld[i]) / (ld[i + 1] - ld[i])) * (ef[i + 1] - ef[i]);
@@ -299,7 +319,7 @@ export class Solver implements FanControl {
       case 'psu':
         return this.junctionOr(sensor);
       default:
-        return Math.max(this.junctionOr('cpu'), this.junctionOr('gpu'));
+        return mmax(this.junctionOr('cpu'), this.junctionOr('gpu'));
     }
   }
 
@@ -377,18 +397,18 @@ export class Solver implements FanControl {
     if (this.turbulenceModel === 'komega') {
       const a1 = 0.31;
       for (let i = 0; i < N; i++) {
-        let nt = (a1 * this.turbK[i]) / Math.max(a1 * this.turbOmega[i], r.S[i]);
-        nt = Math.min(nt, 2000 * nu);
+        let nt = (a1 * this.turbK[i]) / mmax(a1 * this.turbOmega[i], r.S[i]);
+        nt = mmin(nt, 2000 * nu);
         out[i] = nu + nt;
       }
     } else {
       // LVEL 零方程
       for (let i = 0; i < N; i++) {
-        const yp = Math.max((r.yW[i] * r.V[i]) / nu, 0);
+        const yp = mmax((r.yW[i] * r.V[i]) / nu, 0);
         const D = 1 - Math.exp(-yp / 26);
         const lm = 0.4 * r.yW[i] * D;
-        const nt = Math.min(lm * lm * r.S[i], this.nuTCapFactor * nu);
-        out[i] = Math.min(nu + nt, 30 * nu);
+        const nt = mmin(lm * lm * r.S[i], this.nuTCapFactor * nu);
+        out[i] = mmin(nu + nt, 30 * nu);
       }
     }
     for (const i of this.geo.obsIdx) out[i] = nu;
@@ -432,27 +452,32 @@ export class Solver implements FanControl {
     this.setDisplayObstacleTemps();
     for (const i of this.geo.spongeRingIdx) this.T_fluid[i] = this.T_amb;
     this.solveConjugateHeatTransfer();
-    for (let i = 0; i < this.N; i++) {
-      if (this.T_fluid[i] > 200) this.T_fluid[i] = 200;
-      if (this.T_fluid[i] < this.T_amb) this.T_fluid[i] = this.T_amb;
-    }
+    // min(T, 200) 再 max(T, T_amb)（MATLAB 语义：NaN 先变为 200）
+    for (let i = 0; i < this.N; i++) this.T_fluid[i] = mmax(mmin(this.T_fluid[i], 200), this.T_amb);
     for (const i of this.geo.spongeRingIdx) this.T_fluid[i] = this.T_amb;
     this.iteration++;
   }
 
-  stepMultiple(n: number): void {
+  /** 推进 n 步并更新诊断（死区、涡量、无量纲数、温度汇总） */
+  stepMultiple(n: number): { deadRatio: number; diag: CFDDiag; temps: AirflowTemps } {
     for (let s = 0; s < n; s++) this.fluidStep();
+    this.latestVorticity = computeVorticity(this);
+    this.deadZoneRatio = deadZoneRatio(this);
+    this.lastDiag = calculateCFDDiagnostics(this);
+    this.lastTemps = computeAirflowTemperatures(this);
+    return { deadRatio: this.deadZoneRatio, diag: this.lastDiag, temps: this.lastTemps };
   }
 
+  /** a = max(a, v)（MATLAB 语义：NaN 取 v） */
   private clampMin(a: Float64Array, v: number): void {
-    for (let i = 0; i < a.length; i++) if (a[i] < v) a[i] = v;
+    for (let i = 0; i < a.length; i++) if (!(a[i] >= v)) a[i] = v;
   }
 
   // ---- 速度扩散（§3.2）----
   private diffuseVelocity(nuEff: Float64Array): void {
     const nu = this.AIR.nu;
     const nuField = new Float64Array(this.N);
-    for (let i = 0; i < this.N; i++) nuField[i] = Math.max(nuEff[i], nu);
+    for (let i = 0; i < this.N; i++) nuField[i] = mmax(nuEff[i], nu);
     this.nuFieldStep = nuField;
     const g = this.geo;
     if (
@@ -462,8 +487,8 @@ export class Solver implements FanControl {
     ) {
       const U = faceDiffusionMatrix(nuField, true, this.W, this.H, g.uFaceActive, this.DT, this.diffScale);
       const V = faceDiffusionMatrix(nuField, false, this.W, this.H, g.vFaceActive, this.DT, this.diffScale);
-      this.velU = new SPDSolver(U.A, { tol: TOL });
-      this.velV = new SPDSolver(V.A, { tol: TOL });
+      this.velU = new SPDSolver(U.A, this.diffOpts);
+      this.velV = new SPDSolver(V.A, this.diffOpts);
       this.velUAct = U.actIdx;
       this.velVAct = V.actIdx;
       this.nuFieldAssembled = nuField;
@@ -484,12 +509,14 @@ export class Solver implements FanControl {
       b[a] = f[act[a]] / this.DT;
     }
     const r = sol.solve(b, x0);
-    this.checkSolve(r.converged, 'velocity');
+    this.checkSolve(r.converged, 'velocity', r.x);
     for (let a = 0; a < n; a++) f[act[a]] = r.x[a];
   }
 
-  private checkSolve(ok: boolean, what: string): void {
-    if (!ok) throw new Error(`线性求解未收敛：${what}（第 ${this.iteration + 1} 步）`);
+  private checkSolve(ok: boolean, what: string, x?: Float64Array): void {
+    if (ok) return;
+    if (x && !x.every(Number.isFinite)) throw new Error(`计算发散：${what} 求解出现非有限值（第 ${this.iteration + 1} 步）`);
+    throw new Error(`线性求解未收敛：${what}（第 ${this.iteration + 1} 步）`);
   }
 
   // ---- 第一次投影（§3.3）----
@@ -511,7 +538,7 @@ export class Solver implements FanControl {
       }
     }
     const r = this.pres0.solve(rhs, this.pProj1);
-    this.checkSolve(r.converged, 'pressure');
+    this.checkSolve(r.converged, 'pressure', r.x);
     const p = r.x;
     for (const i of g.obsIdx) p[i] = 0;
     for (const i of g.farFieldPresIdx) p[i] = 0;
@@ -524,7 +551,7 @@ export class Solver implements FanControl {
         let u = this.uF[k];
         if (xf >= 1 && xf <= H - 1) u = u - 1.0 * (p[xf * W + y] - p[(xf - 1) * W + y]) * uA[k];
         if (!uA[k]) u = 0;
-        this.uF[k] = Math.max(-velCap, Math.min(velCap, u));
+        this.uF[k] = mmax(-velCap, mmin(velCap, u));
       }
     }
     for (let x = 0; x < H; x++) {
@@ -533,7 +560,7 @@ export class Solver implements FanControl {
         let v = this.vF[k];
         if (yf >= 1 && yf <= W - 1) v = v - 1.0 * (p[x * W + yf] - p[x * W + yf - 1]) * vA[k];
         if (!vA[k]) v = 0;
-        this.vF[k] = Math.max(-velCap, Math.min(velCap, v));
+        this.vF[k] = mmax(-velCap, mmin(velCap, v));
       }
     }
   }
@@ -563,8 +590,8 @@ export class Solver implements FanControl {
         const k = xf * W + y;
         const xq = xf + 0.5 - dt0 * uM[k]; // XuG = xf0 + 0.5（1 基 0.5:H+0.5）
         const yq = y + 1 - dt0 * va;
-        XqU[k] = Math.max(1.0, Math.min(H, xq));
-        YqU[k] = Math.max(1.5, Math.min(W - 0.5, yq));
+        XqU[k] = mmax(1.0, mmin(H, xq));
+        YqU[k] = mmax(1.5, mmin(W - 0.5, yq));
       }
     }
     const uNew = gridInterp2(uM, W, H + 1, YqU, XqU, 'cubic', 1, 0.5);
@@ -579,8 +606,8 @@ export class Solver implements FanControl {
         const k = x * (W + 1) + yf;
         const xq = x + 1 - dt0 * ua;
         const yq = yf + 0.5 - dt0 * vM[k];
-        XqV[k] = Math.max(1.5, Math.min(H - 0.5, xq));
-        YqV[k] = Math.max(1.0, Math.min(W, yq));
+        XqV[k] = mmax(1.5, mmin(H - 0.5, xq));
+        YqV[k] = mmax(1.0, mmin(W, yq));
       }
     }
     const vNew = gridInterp2(vM, W + 1, H, YqV, XqV, 'cubic', 0.5, 1);
@@ -603,8 +630,8 @@ export class Solver implements FanControl {
         const xq = x + 1 - dt0 * uvel[i];
         const yq = y + 1 - dt0 * vvel[i];
         out[i] = xq < 1.5 || xq > W - 0.5 || yq < 1.5 || yq > H - 0.5 ? 1 : 0;
-        Xq[i] = Math.max(1.5, Math.min(W - 0.5, xq));
-        Yq[i] = Math.max(1.5, Math.min(H - 0.5, yq));
+        Xq[i] = mmax(1.5, mmin(W - 0.5, xq));
+        Yq[i] = mmax(1.5, mmin(H - 0.5, yq));
       }
     }
     const d = d0.slice();
@@ -719,7 +746,7 @@ export class Solver implements FanControl {
       }
     }
     const r = this.presDrag!.solve(rhs, this.p);
-    this.checkSolve(r.converged, 'drag pressure');
+    this.checkSolve(r.converged, 'drag pressure', r.x);
     const p = r.x;
     for (const i of g.obsIdx) p[i] = 0;
     for (const i of g.farFieldPresIdx) p[i] = 0;
@@ -731,7 +758,7 @@ export class Solver implements FanControl {
         let u = us[k];
         if (xf >= 1 && xf <= H - 1) u = us[k] - BU[k] * (p[xf * W + y] - p[(xf - 1) * W + y]) * g.uFaceActive[k];
         if (!g.uFaceActive[k]) u = 0;
-        this.uF[k] = Math.max(-velCap, Math.min(velCap, u));
+        this.uF[k] = mmax(-velCap, mmin(velCap, u));
       }
     }
     for (let x = 0; x < H; x++) {
@@ -740,7 +767,7 @@ export class Solver implements FanControl {
         let v = vs[k];
         if (yf >= 1 && yf <= W - 1) v = vs[k] - BV[k] * (p[x * W + yf] - p[x * W + yf - 1]) * g.vFaceActive[k];
         if (!g.vFaceActive[k]) v = 0;
-        this.vF[k] = Math.max(-velCap, Math.min(velCap, v));
+        this.vF[k] = mmax(-velCap, mmin(velCap, v));
       }
     }
   }
@@ -760,16 +787,16 @@ export class Solver implements FanControl {
     const a1 = 0.31;
     const nuT = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      let v = (a1 * this.turbK[i]) / Math.max(a1 * this.turbOmega[i], Svec[i]);
-      nuT[i] = Math.min(v, 2000 * nu);
+      let v = (a1 * this.turbK[i]) / mmax(a1 * this.turbOmega[i], Svec[i]);
+      nuT[i] = mmin(v, 2000 * nu);
     }
     for (const i of this.geo.obsIdx) nuT[i] = 0;
     const { uC, vC } = this.getCellVelocity();
     const kA = this.advectScalar(this.turbK, uC, vC, kIn, dt);
     const wA = this.advectScalar(this.turbOmega, uC, vC, wIn, dt);
     for (let i = 0; i < N; i++) {
-      kA[i] = Math.max(kA[i], this.nuTFloor);
-      wA[i] = Math.max(wA[i], 1e-6);
+      kA[i] = mmax(kA[i], this.nuTFloor);
+      wA[i] = mmax(wA[i], 1e-6);
     }
     if (
       this.forceReassemble ||
@@ -783,8 +810,8 @@ export class Solver implements FanControl {
         wK[i] = nu + sigK * nuT[i];
         wW[i] = nu + sigW * nuT[i];
       }
-      this.turbKSolver = new SPDSolver(cellDiffusionMatrix(wK, this.W, this.H, this.isObs, null, dt, gs), { tol: TOL });
-      this.turbWSolver = new SPDSolver(cellDiffusionMatrix(wW, this.W, this.H, this.isObs, null, dt, gs), { tol: TOL });
+      this.turbKSolver = new SPDSolver(cellDiffusionMatrix(wK, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
+      this.turbWSolver = new SPDSolver(cellDiffusionMatrix(wW, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
       this.nuTAssembled = nuT;
       this.nuTAsmStep = this.iteration;
       this.lastTurbDt = dt;
@@ -798,22 +825,23 @@ export class Solver implements FanControl {
     }
     const rk = this.turbKSolver!.solve(rhsK, this.turbK);
     const rw = this.turbWSolver!.solve(rhsW, this.turbOmega);
-    this.checkSolve(rk.converged && rw.converged, 'k-ω');
+    this.checkSolve(rk.converged, 'k', rk.x);
+    this.checkSolve(rw.converged, 'ω', rw.x);
     const kD = rk.x;
     const wD = rw.x;
     const kNew = new Float64Array(N);
     const wNew = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      const k = Math.max(kD[i], this.nuTFloor);
-      const w = Math.max(wD[i], 1e-6);
+      const k = mmax(kD[i], this.nuTFloor);
+      const w = mmax(wD[i], 1e-6);
       let Pk = nuT[i] * Svec[i] * Svec[i];
-      Pk = Math.min(Pk, 20 * betaS * k * Math.max(w, 1e-6));
-      const wFl = Math.max(w, 1e-6);
+      Pk = mmin(Pk, 20 * betaS * k * mmax(w, 1e-6));
+      const wFl = mmax(w, 1e-6);
       const kEq = Pk / (betaS * wFl);
       const kn = kEq + (k - kEq) * Math.exp(-betaS * wFl * dt);
       const wn = (w + dt * alphaW * (w / k) * Pk) / (1 + dt * beta1 * w);
-      kNew[i] = Math.max(kn, this.nuTFloor);
-      wNew[i] = Math.min(Math.max(wn, 1e-6), 1e8);
+      kNew[i] = mmax(kn, this.nuTFloor);
+      wNew[i] = mmin(mmax(wn, 1e-6), 1e8);
     }
     for (const i of this.geo.obsIdx) {
       kNew[i] = this.nuTFloor;
@@ -821,7 +849,7 @@ export class Solver implements FanControl {
     }
     const cellM = this.geo.cellMm / 1000;
     for (const i of this.wallAdjFluidIdx) {
-      const yW = Math.max(this.geo.wallDistanceM[i], 0.5 * cellM);
+      const yW = mmax(this.geo.wallDistanceM[i], 0.5 * cellM);
       wNew[i] = (6 * nu) / (beta1 * yW * yW);
     }
     for (const i of this.wallAdjCaseIdx) kNew[i] = this.nuTFloor;
@@ -839,13 +867,13 @@ export class Solver implements FanControl {
     const g = this.geo;
     const aMol = this.AIR.nu / this.AIR.Pr;
     const alphaField = new Float64Array(N);
-    for (let i = 0; i < N; i++) alphaField[i] = Math.max(alphaEff[i], aMol);
+    for (let i = 0; i < N; i++) alphaField[i] = mmax(alphaEff[i], aMol);
     const alphaVal = median(alphaField);
     const stale =
       !this.alphaFieldAssembled ||
       (this.iteration - this.alphaAsmStep >= this.reassembleEvery && !arraysEqual(alphaField, this.alphaFieldAssembled));
     if (this.forceReassemble || stale) {
-      this.tempSolver = new SPDSolver(cellDiffusionMatrix(alphaField, this.W, this.H, this.isObs, this.isDir, this.DT, this.diffScale), { tol: TOL });
+      this.tempSolver = new SPDSolver(cellDiffusionMatrix(alphaField, this.W, this.H, this.isObs, this.isDir, this.DT, this.diffScale), this.diffOpts);
       this.alphaFieldAssembled = alphaField;
       this.alphaAsmStep = this.iteration;
       this.lastAlphaEff = alphaVal;
@@ -873,7 +901,7 @@ export class Solver implements FanControl {
       rhs[i] = r + gs * corr;
     }
     const res = this.tempSolver!.solve(rhs, T);
-    this.checkSolve(res.converged, 'temperature');
+    this.checkSolve(res.converged, 'temperature', res.x);
     this.T_fluid = res.x;
     this.clampMin(this.T_fluid, this.T_amb);
     void g;
@@ -930,8 +958,8 @@ export class Solver implements FanControl {
     const W = this.W;
     const rectCells = (r: { x: number; y: number; w: number; h: number }) => {
       const out: number[] = [];
-      for (let x = Math.max(1, r.x); x <= Math.min(this.H, r.x + r.w - 1); x++)
-        for (let y = Math.max(1, r.y); y <= Math.min(W, r.y + r.h - 1); y++) out.push((x - 1) * W + (y - 1));
+      for (let x = mmax(1, r.x); x <= mmin(this.H, r.x + r.w - 1); x++)
+        for (let y = mmax(1, r.y); y <= mmin(W, r.y + r.h - 1); y++) out.push((x - 1) * W + (y - 1));
       return out;
     };
     const nets = this.thermalNetworks;
@@ -962,7 +990,7 @@ export class Solver implements FanControl {
     const w = new Float64Array(body.length);
     let sw = 0;
     body.forEach((i, k) => {
-      w[k] = 0.25 + 0.75 * Math.min(1, speed[i] / 1.5);
+      w[k] = 0.25 + 0.75 * mmin(1, speed[i] / 1.5);
       sw += w[k];
     });
     body.forEach((i, k) => {
