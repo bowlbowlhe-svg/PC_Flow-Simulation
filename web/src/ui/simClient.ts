@@ -18,6 +18,8 @@ export class SimClient {
   private worker: Worker;
   state: SimState = { info: null, fields: null, status: null, error: null, frameNo: 0, buildNo: 0 };
   private listeners = new Set<(s: SimState) => void>();
+  private seq = 0;
+  private pendingBuilds = new Map<number, (r: { ok: boolean; message?: string }) => void>();
 
   constructor() {
     this.worker = new SimWorker();
@@ -32,6 +34,11 @@ export class SimClient {
     switch (m.type) {
       case 'static':
         this.state = { ...this.state, info: m.info, buildNo: this.state.buildNo + 1, error: null };
+        if (m.id !== undefined) this.settle(m.id, { ok: true });
+        break;
+      case 'buildFailed':
+        this.state = { ...this.state, error: `重建失败，已保留原布局：${m.message}` };
+        if (m.id !== undefined) this.settle(m.id, { ok: false, message: m.message });
         break;
       case 'frame':
         this.state = { ...this.state, fields: m.fields, status: m.status, frameNo: this.state.frameNo + 1 };
@@ -45,6 +52,23 @@ export class SimClient {
 
   send(cmd: Command): void {
     this.worker.postMessage(cmd);
+  }
+
+  /** 重建求解器；成功（新求解器已装上）返回 ok = true，失败时原求解器保留 */
+  init(cmd: Omit<Extract<Command, { type: 'init' }>, 'type' | 'id'>): Promise<{ ok: boolean; message?: string }> {
+    const id = ++this.seq;
+    return new Promise((resolve) => {
+      this.pendingBuilds.set(id, resolve);
+      this.worker.postMessage({ type: 'init', id, ...cmd } satisfies Command);
+    });
+  }
+
+  private settle(id: number, r: { ok: boolean; message?: string }): void {
+    const f = this.pendingBuilds.get(id);
+    if (f) {
+      this.pendingBuilds.delete(id);
+      f(r);
+    }
   }
 
   clearError(): void {

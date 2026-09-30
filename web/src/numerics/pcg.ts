@@ -18,9 +18,10 @@ import { type CSR, diag as csrDiag, matvec } from './sparse';
 export type PrecondKind = 'mic0' | 'ic0' | 'jacobi' | 'none';
 
 /**
- * 默认预条件：ic0（IC(0) 出现非正主元时退回 jacobi，再失败退回 none，见 makePreconditioner）。
- * 隐式扩散矩阵（强对角占优）上 IC(0) 约 3 次迭代即达 1e−12，mic0 并不更快；
- * 对泊松类矩阵可显式传 precond: 'mic0'（140² 五点泊松迭代次数约为 IC(0) 的一半：85 vs 179）。
+ * 本函数库的默认预条件：ic0（IC(0) 出现非正主元时退回 jacobi，再失败退回 none，见 makePreconditioner）。
+ * 求解器的扩散系统另有选择：从静止起的前几十步 IC(0) 约 3 次迭代，但流场发展后 ν_t 增大，IC(0) 要约 24 次、
+ * 修正 IC(0) 约 16 次，所以求解器默认用 mic0（模板存储版 stencil.ts，与这里的 mic0 逐位相同）。
+ * 泊松类矩阵上 mic0 的迭代次数约为 IC(0) 的一半（140² 五点泊松：85 vs 179）；求解器的压力系统用直接法。
  */
 export const DEFAULT_PRECOND: PrecondKind = 'ic0';
 

@@ -59,6 +59,11 @@ export const FAN_CATALOG: Readonly<Record<string, FanSpec>> = Object.freeze({
   PSU120: spec(120, 500, 1800, 50, 15, 30, 20.0, generic, 0, '电源 120mm 风扇'),
 });
 
+/** 型号是否在型号库中（只认自有属性：'constructor'、'toString' 等原型链上的键不算，同 MATLAB isfield） */
+export function hasModel(model: unknown): model is string {
+  return typeof model === 'string' && Object.prototype.hasOwnProperty.call(FAN_CATALOG, model);
+}
+
 export interface FanSlot {
   id: string;
   label: string;

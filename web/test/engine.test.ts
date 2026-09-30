@@ -101,3 +101,49 @@ describe('SimEngine', () => {
     expect(msgs.some((m) => m.type === 'error' && m.message.includes('未收敛'))).toBe(true);
   });
 });
+
+describe('SimEngine（W2–W4 审计）', () => {
+  it('重建失败：原求解器保留、回复 buildFailed（带请求号），之后仍可推进', () => {
+    const { e, msgs } = setup();
+    const old = e.solver;
+    const bad = layoutDefault();
+    bad.caseFans![0].model = 'constructor'; // 原型链上的键，不是型号
+    e.handle({ type: 'init', id: 7, layout: bad, gridScale: 0.5, powers: { cpu: 125, gpu: 250, psu: 450 }, autoFan: true, fanPct: 40 });
+    expect(e.solver).toBe(old);
+    const f = msgs.find((m) => m.type === 'buildFailed');
+    expect(f && f.type === 'buildFailed' && f.id).toBe(7);
+    const n0 = msgs.length;
+    e.handle({ type: 'step', n: 2 });
+    expect(e.solver!.iteration).toBe(2);
+    expect(msgs.length).toBeGreaterThan(n0);
+    // 成功的重建回复 static（同一请求号）
+    e.handle({ type: 'init', id: 8, layout: layoutBenchmark('duct', 20), gridScale: 0.5, powers: { cpu: 0, gpu: 0, psu: 0 }, autoFan: true, fanPct: 40 });
+    const st = msgs.filter((m) => m.type === 'static').at(-1)!;
+    expect(st.type === 'static' && st.id).toBe(8);
+    expect(e.solver).not.toBe(old);
+  });
+  it('判稳后 atSteady = true；推进、重置或重建后清除，新一轮跑稳态途中不误报', () => {
+    const { e, msgs } = setup();
+    const opts = { maxSteps: 40, chunk: 5, window: 10, minSteps: 5, tolT: 1e9, tolFlow: 1e9 };
+    e.handle({ type: 'steady', opts });
+    while (e.tick());
+    let last = frames(msgs).at(-1)!.status;
+    expect(last.steady!.converged).toBe(true);
+    expect(last.atSteady).toBe(true);
+    expect(last.steady!.message).toBe('已稳态（20 步）');
+    e.handle({ type: 'reset' });
+    expect(frames(msgs).at(-1)!.status.atSteady).toBe(false);
+    // 重新跑稳态：到第 20 步（上次判稳的步数）时尚未判稳
+    e.handle({ type: 'steady', opts: { ...opts, tolT: -1 } });
+    while (e.solver!.iteration < 20) e.tick();
+    last = frames(msgs).at(-1)!.status;
+    expect(last.atSteady).toBe(false);
+    e.handle({ type: 'stopSteady' });
+    // 重建也清除
+    e.handle({ type: 'steady', opts });
+    while (e.tick());
+    expect(frames(msgs).at(-1)!.status.atSteady).toBe(true);
+    e.handle({ type: 'init', layout: layoutBenchmark('duct', 20), gridScale: 0.5, powers: { cpu: 0, gpu: 0, psu: 0 }, autoFan: true, fanPct: 40 });
+    expect(frames(msgs).at(-1)!.status.atSteady).toBe(false);
+  });
+});

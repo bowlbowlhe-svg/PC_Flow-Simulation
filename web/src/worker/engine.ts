@@ -48,7 +48,7 @@ export class SimEngine {
   handle(cmd: Command): void {
     switch (cmd.type) {
       case 'init':
-        this.build(cmd.layout, cmd.gridScale, cmd.powers, cmd.autoFan, cmd.fanPct);
+        this.build(cmd.layout, cmd.gridScale, cmd.powers, cmd.autoFan, cmd.fanPct, cmd.id);
         return;
       case 'run':
         if (this.solver && !this.steady) this.running = true;
@@ -82,6 +82,7 @@ export class SimEngine {
         this.running = false;
         this.steady = null;
         this.steadyStatus = null;
+        this.steadyIter = -1;
         this.solver.initState();
         this.postFrame();
         return;
@@ -100,6 +101,7 @@ export class SimEngine {
         return;
       case 'setForceReassemble':
         if (this.solver) this.solver.forceReassemble = cmd.on;
+        this.postFrame();
         return;
     }
   }
@@ -110,21 +112,41 @@ export class SimEngine {
     this.steadyIter = -1;
   }
 
-  private build(layout: Layout, gridScale: number, powers: Record<ComponentName, number>, autoFan: boolean, fanPct: number): void {
+  /**
+   * 按布局重建求解器（同 MATLAB rebuildSolver）：先停止推进；构造、静态信息与首帧状态全部成功后才替换原求解器，
+   * 任何一步出错都保留原求解器（已暂停）并回复 buildFailed，界面据此回滚。
+   */
+  private build(layout: Layout, gridScale: number, powers: Record<ComponentName, number>, autoFan: boolean, fanPct: number, id?: number): void {
     this.running = false;
-    this.steady = null;
-    this.steadyStatus = null;
-    const s = new Solver(layout, { gridScale, powers });
-    s.turbUpdateEvery = turbUpdateEveryFor(gridScale);
-    s.autoFanEnabled = autoFan;
-    s.fanSpeedRatio = fanPct;
+    if (this.steady) {
+      this.steady.abort();
+      this.steady = null;
+      this.steadyStatus = null;
+    }
+    let s: Solver;
+    let info: StaticInfo;
+    try {
+      s = new Solver(layout, { gridScale, powers });
+      s.turbUpdateEvery = turbUpdateEveryFor(gridScale);
+      s.autoFanEnabled = autoFan;
+      s.fanSpeedRatio = fanPct;
+      info = this.staticInfo(s);
+      this.status(s); // 状态量（噪音、评分等）也要能算出，否则不装上
+    } catch (e) {
+      this.post({ type: 'buildFailed', id, message: e instanceof Error ? e.message : String(e) });
+      this.postFrame();
+      return;
+    }
     this.solver = s;
-    this.post({ type: 'static', info: this.staticInfo() });
+    this.steadyStatus = null;
+    this.steadyIter = -1;
+    this.msPerStep = 50;
+    this.post({ type: 'static', info, id });
     this.postFrame();
   }
 
-  staticInfo(): StaticInfo {
-    const s = this.solver!;
+  staticInfo(solver?: Solver): StaticInfo {
+    const s = solver ?? this.solver!;
     const g = s.geo;
     const ring = new Uint8Array(s.N);
     for (const i of g.spongeRingIdx) ring[i] = 1;
@@ -254,8 +276,8 @@ export class SimEngine {
     };
   }
 
-  status(): Status {
-    const s = this.solver!;
+  status(solver?: Solver): Status {
+    const s = solver ?? this.solver!;
     const nets = s.thermalNetworks;
     const tj: Status['tj'] = {};
     const throttle: Status['throttle'] = {};
@@ -295,13 +317,12 @@ export class SimEngine {
       summary: scenarioSummary(s),
       atSteady: this.steadyIter >= 0 && this.steadyIter === s.iteration,
       forceReassemble: s.forceReassemble,
-      pq: this.pqCurves(),
+      pq: this.pqCurves(s),
     };
   }
 
   /** 机箱风扇与 CPU 塔扇：当前转速下的 P-Q 曲线与实测工作点（同 MATLAB updatePQ） */
-  private pqCurves(): Status['pq'] {
-    const s = this.solver!;
+  private pqCurves(s: Solver): Status['pq'] {
     const list = fanStatusList(s);
     const out: Status['pq'] = [];
     const q = Array.from({ length: 21 }, (_, k) => k / 20);
@@ -325,9 +346,23 @@ export class SimEngine {
 
   postFrame(): void {
     if (!this.solver) return;
-    const fields = this.frameFields();
+    let fields: FrameFields;
+    let status: Status;
+    try {
+      fields = this.frameFields();
+      status = this.status();
+    } catch (e) {
+      // 帧内容算不出（例如状态出现非有限值）：停止推进并报告，不让异常中断 Worker 的调度
+      this.running = false;
+      if (this.steady) {
+        this.steady.abort();
+        this.steady = null;
+      }
+      this.post({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+      return;
+    }
     this.lastFrameAt = this.now();
-    this.post({ type: 'frame', fields, status: this.status() }, [
+    this.post({ type: 'frame', fields, status }, [
       fields.T.buffer,
       fields.Tsolid.buffer,
       fields.uC.buffer,

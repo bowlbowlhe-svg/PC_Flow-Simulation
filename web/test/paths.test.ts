@@ -1,7 +1,8 @@
 // 求解器分支路径的回归对照（fixtures/paths.json，由 test/gen/gen_paths_fixtures.m 在 Octave 下生成）：
 // 方腔、LVEL、层流、湍流隔 3 步、手动转速、环境/壁温/物性覆盖/节流/超温/中途改功率/精确模式、只有电源、无电源、
 // 散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域。比较各场指纹（和、绝对值和、平方和、极值、抽样点）
-// 与装配步、热网络、风扇状态；状态与 Octave 只差线性求解舍入（约 1e−10 相对），容差取 1e−8。
+// 与装配步、热网络、风扇状态；状态与 Octave 只差线性求解舍入（约 1e−10 相对）。容差：抽样点与极值相对场最大值 1e−8，
+// 和、绝对值和、平方和与固定权重加权和相对 1e−10（场的整体改变都能发现；单个格子的局部改变只有落在抽样点上才能发现）。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -13,6 +14,8 @@ import type { Ref } from './refdata';
 const here = dirname(fileURLToPath(import.meta.url));
 const FX: Ref = JSON.parse(readFileSync(join(here, 'fixtures', 'paths.json'), 'utf8'));
 const TOL = 1e-8;
+/** 和、加权和的容差相对 TOL 的倍数：TOL·TOL_SUM_SCALE = 1e−10 */
+const TOL_SUM_SCALE = 1e-2;
 const list = <T,>(v: T | T[] | undefined | null): T[] => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
 
 function fields(s: Solver): Record<string, Float64Array | null> {
@@ -47,9 +50,11 @@ function checkFingerprint(name: string, x: Float64Array | null, fp: Ref, bad: st
   let sum = 0;
   let sumAbs = 0;
   let sumSq = 0;
+  let proj = 0;
   let mx = -Infinity;
   let mn = Infinity;
-  for (const v of x) {
+  for (let k = 0; k < x.length; k++) {
+    const v = x[k];
     if (Number.isNaN(v)) {
       nNaN++;
       continue;
@@ -61,6 +66,7 @@ function checkFingerprint(name: string, x: Float64Array | null, fp: Ref, bad: st
     sum += v;
     sumAbs += Math.abs(v);
     sumSq += v * v;
+    proj += (((7919 * (k + 1)) % 997) / 997 - 0.5) * v; // 同生成脚本的固定权重
     if (v > mx) mx = v;
     if (v < mn) mn = v;
   }
@@ -72,9 +78,11 @@ function checkFingerprint(name: string, x: Float64Array | null, fp: Ref, bad: st
   const chk = (what: string, a: number, b: number, ref: number, abs: number) => {
     if (!(Math.abs(a - b) <= TOL * ref + abs)) bad.push(`${name}.${what}: ${a} vs ${b}（相对 ${(Math.abs(a - b) / ref).toExponential(2)}）`);
   };
-  chk('sum', sum, fp.sum, Math.max(fp.sumAbs, 1e-300), ABS * fp.n);
-  chk('sumAbs', sumAbs, fp.sumAbs, Math.max(fp.sumAbs, 1e-300), ABS * fp.n);
-  chk('sumSq', sumSq, fp.sumSq, Math.max(fp.sumSq, 1e-300), ABS * ABS * fp.n);
+  // 和类指标用更严的 TOL_SUM：两边逐点差约 1e−10 相对且符号随机，整体和的相对差远小于此
+  chk('sum', sum, fp.sum, TOL_SUM_SCALE * Math.max(fp.sumAbs, 1e-300), ABS * fp.n);
+  chk('sumAbs', sumAbs, fp.sumAbs, TOL_SUM_SCALE * Math.max(fp.sumAbs, 1e-300), ABS * fp.n);
+  chk('sumSq', sumSq, fp.sumSq, TOL_SUM_SCALE * Math.max(fp.sumSq, 1e-300), ABS * ABS * fp.n);
+  chk('proj', proj, fp.proj, TOL_SUM_SCALE * Math.max(fp.projAbs, 1e-300), ABS * fp.n);
   chk('max', mx, fp.max, scale, ABS);
   chk('min', mn, fp.min, scale, ABS);
   list<number>(fp.idx).forEach((i, k) => {
@@ -151,4 +159,38 @@ describe('求解器分支路径与 Octave 一致', () => {
       expect(bad.slice(0, 20)).toEqual([]);
     });
   }
+});
+
+describe('指纹对照的灵敏度（自检）', () => {
+  it('单个非抽样格的温度改 1e−5（相对）、面速度改 1e−5、k 改 1e−4 都能发现', () => {
+    const c = (FX.cases as Ref[]).find((q) => q.name === 'lvel')!;
+    const snap = list<Ref>(c.snaps).at(-1)!;
+    const [cpu, gpu, psu] = c.powers as number[];
+    const s = new Solver(normalizeLayout(c.layout), { gridScale: c.gridScale, DT: c.DT, powers: { cpu, gpu, psu } });
+    s.stepMultiple(snap.iteration);
+    const F = fields(s);
+    const clean: string[] = [];
+    for (const name of ['T', 'uF', 'k']) checkFingerprint(name, F[name], snap.fields[name], clean);
+    expect(clean).toEqual([]);
+    const pick = (name: string) => {
+      const sampled = new Set(list<number>(snap.fields[name].idx));
+      const x = F[name]!;
+      // 机箱内某个非抽样、非零的点
+      let i = Math.floor(x.length * 0.45);
+      while (sampled.has(i + 1) || x[i] === 0) i++;
+      return i;
+    };
+    for (const [name, rel] of [
+      ['T', 1e-5],
+      ['uF', 1e-5],
+      ['k', 1e-4],
+    ] as [string, number][]) {
+      const x = Float64Array.from(F[name]!);
+      const i = pick(name);
+      x[i] *= 1 + rel;
+      const bad: string[] = [];
+      checkFingerprint(name, x, snap.fields[name], bad);
+      expect(bad.length, `${name}[${i}] 改 ${rel} 未被发现`).toBeGreaterThan(0);
+    }
+  });
 });

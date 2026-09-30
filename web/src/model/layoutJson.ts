@@ -1,7 +1,7 @@
 // 布局 JSON 存取与规整（移植自 layout_json.m、acoustics_validate.m）。
 // JSON 里 NaN 存为 null；读取时补齐缺省字段、把单个对象规整为数组、并做取值检查。
 import type { Acoustics, CaseFan, Layout } from './types';
-import { FAN_CATALOG } from './fans';
+import { hasModel } from './fans';
 import { acousticsDefault } from './layoutDefault';
 import { LayoutError } from './gpuSlots';
 
@@ -82,7 +82,7 @@ function validateFans(L: Raw): void {
     let bad = '';
     if (!['front', 'rear', 'top', 'bottom'].includes(f.mount)) bad = `mount = "${f.mount}"（应为 front/rear/top/bottom）`;
     else if (!['intake', 'exhaust'].includes(f.type)) bad = `type = "${f.type}"（应为 intake/exhaust）`;
-    else if (!(f.model in FAN_CATALOG)) bad = `model = "${f.model}"（不在 fan_catalog 中）`;
+    else if (!hasModel(f.model)) bad = `model = "${f.model}"（不在 fan_catalog 中）`;
     else if (!['auto', 'manual'].includes(f.speedMode)) bad = `speedMode = "${f.speedMode}"（应为 auto/manual）`;
     else if (typeof f.manualPct !== 'number' || !(f.manualPct >= 0 && f.manualPct <= 100)) bad = 'manualPct 应为 0–100 的数';
     else if (typeof f.alongMm !== 'number') bad = 'alongMm 应为数';

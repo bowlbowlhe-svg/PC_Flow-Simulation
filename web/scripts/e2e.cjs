@@ -1,116 +1,194 @@
-// 界面端到端检查（Playwright + Chromium）：逐项操作并截图，打印关键文字与控制台错误。
-// 用法：先 npm run build 并 npx vite preview（或 npm run build:single 后用 file:// 打开），然后
+// 界面端到端检查（Playwright + Chromium）：逐项操作、断言结果并截图；任一断言失败则以非零状态退出。
+// 用法：先 npm run build 并 npx vite preview（或 npm run release 后用 file:// 打开单文件版），然后
 //   PW=$(npm root -g)/playwright OUT=/tmp/shots URL=http://localhost:4173/ node scripts/e2e.cjs
 // Playwright 不在本项目依赖里：用全局安装的（PW 指向其目录）。
 const { chromium } = require(process.env.PW);
 const fs = require('fs');
-const OUT = process.env.OUT;
+const path = require('path');
+const OUT = process.env.OUT || '/tmp/pcflow-e2e';
+fs.mkdirSync(OUT, { recursive: true });
+
+let failures = 0;
+function check(cond, msg) {
+  if (cond) console.log(`  ✓ ${msg}`);
+  else {
+    failures++;
+    console.log(`  ✗ ${msg}`);
+  }
+}
+
 (async () => {
   const b = await chromium.launch();
   const ctx = await b.newContext({ viewport: { width: 1360, height: 1150 }, acceptDownloads: true });
   const p = await ctx.newPage();
   const logs = [];
-  p.on('console', (m) => { if (m.type() !== 'log') logs.push(`[${m.type()}] ${m.text()}`); });
+  p.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') logs.push(`[${m.type()}] ${m.text()}`);
+  });
   p.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
   const shot = (n) => p.screenshot({ path: `${OUT}/${n}.png` });
   const t0 = Date.now();
   const log = (s) => console.log(`${((Date.now() - t0) / 1000).toFixed(1)}s ${s}`);
+  const text = (sel) => p.innerText(sel);
+  const download = async (clickSel) => {
+    const [dl] = await Promise.all([p.waitForEvent('download', { timeout: 60000 }), p.click(clickSel)]);
+    const f = path.join(OUT, dl.suggestedFilename());
+    await dl.saveAs(f);
+    return f;
+  };
+  const writeJson = (name, obj) => {
+    const f = path.join(OUT, name);
+    fs.writeFileSync(f, JSON.stringify(obj));
+    return f;
+  };
+
   await p.goto(process.env.URL || 'http://localhost:4173/', { waitUntil: 'load' });
   await p.waitForSelector('canvas.field-canvas', { timeout: 30000 });
-  log('loaded');
+  log('页面载入');
+
   // 1. 运行几秒
   await p.click('text=▶ 开始仿真');
-  await p.waitForTimeout(8000);
+  await p.waitForTimeout(6000);
+  check((await text('.right .muted.small')).includes('运行中'), '运行中状态');
   await p.click('text=⏸ 暂停仿真');
-  log('ran: ' + (await p.innerText('.right .muted.small')));
-  // 2. 布局页：点击主视图 B1 安装位（底中）→ 进气；表格改前上为排气
+  const it1 = Number((await text('.right')).match(/（(\d+) 步）/)?.[1] ?? 0);
+  check(it1 > 5, `推进了若干步（${it1}）`);
+
+  // 2. 布局页：点击主视图 B1 安装位（底中）→ 进气；表格把 F1 改为排气
   await p.click('.tabs >> text=风扇布局');
-  const cv = await p.$('canvas.field-canvas');
-  const box = await cv.boundingBox();
+  const box = await (await p.$('canvas.field-canvas')).boundingBox();
   const cell = box.width / 140;
   // B1 底中：机箱外框为第 21–120 格，风扇盘在底壁内侧，点击区域向壁外延伸几格
   await p.mouse.click(box.x + (20 + 230 / 4) * cell, box.y + 121.5 * cell);
+  await p.$$eval('.slot-table tbody tr:nth-child(1) select', (els) => {
+    els[0].value = 'exhaust';
+    els[0].dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await p.waitForTimeout(300);
-  const selects = await p.$$('.slot-table tbody tr:nth-child(1) select');
-  await selects[0].selectOption('exhaust');
-  await p.waitForTimeout(300);
-  log('layout info: ' + (await p.innerText('.layout-info')).replace(/\n/g, ' | '));
-  log('warnings: ' + (await p.innerText('.warnings')).replace(/\n/g, ' | '));
+  check((await text('.layout-info')).includes('待应用：自定义'), '编辑后显示"待应用：自定义"');
+  check((await text('.tabs')).includes('风扇布局 •'), '标签页显示未应用标记');
   await shot('e2e_layout_edit');
-  // 3. 保存方案 A（当前、未应用）→ 应用布局 → 运行 → 保存 B
+
+  // 3. 保存方案 A → 应用布局 → 运行 → 保存 B
   await p.click('.tabs >> text=方案对比');
   await p.click('text=保存当前');
   await p.click('.tabs >> text=风扇布局');
   await p.click('text=应用布局');
-  await p.waitForTimeout(1500);
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：自定义'), null, { timeout: 30000 });
+  check(true, '应用布局后显示"当前：自定义"');
   await p.click('text=▶ 开始仿真');
-  await p.waitForTimeout(6000);
+  await p.waitForTimeout(4000);
   await p.click('text=⏸ 暂停仿真');
   await p.click('.tabs >> text=方案对比');
   await p.selectOption('.tab-body .row select >> nth=0', '1');
   await p.click('text=保存当前');
-  await p.waitForTimeout(300);
-  log('scenario table:\n' + (await p.innerText('.scenario-table')));
+  const rows = await p.$$eval('.scenario-table tbody tr', (r) => r.length);
+  check(rows === 17, `方案表 17 行（${rows}）`);
+  const fansRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('机箱风扇数')).textContent);
+  check(/机箱风扇数\s*6\s*4\s*6/.test(fansRow.replace(/\s+/g, ' ')), `风扇数：当前 6、A 4、B 6（${fansRow.replace(/\s+/g, ' ')}）`);
   await shot('e2e_scenarios');
-  // 4. 温差视图（当前 − A）
+
+  // 4. 温差视图；重存参考方案后温差归零（W2–W4 审计：暂停中重存要立即重画）
   await p.click('text=显示温差');
-  await p.waitForTimeout(1000);
-  log('diff title: ' + (await p.innerText('.view-title')));
-  await shot('e2e_diff');
-  // 5. 风扇工作点图
-  await p.selectOption('.toolbar select', 'pq');
   await p.waitForTimeout(800);
+  check((await text('.view-title')).includes('温差：当前 − 方案 A'), '温差视图标题');
+  await p.selectOption('.tab-body .row select >> nth=0', '0');
+  await p.click('text=保存当前');
+  await p.waitForTimeout(800);
+  const nonGray = await p.evaluate(() => {
+    const c = document.querySelector('canvas.field-canvas');
+    const d = c.getContext('2d').getImageData(Math.floor(c.width * 0.5), Math.floor(c.height * 0.5), 1, 1).data;
+    return Math.abs(d[0] - d[1]) + Math.abs(d[1] - d[2]);
+  });
+  check(nonGray < 20, `重存 A 后温差视图归零（中心像素色差 ${nonGray}）`);
+  await shot('e2e_diff');
+
+  // 5. 风扇工作点图、导出 PNG、保存 JSON
+  await p.selectOption('.toolbar select', 'pq');
+  await p.waitForTimeout(500);
   await shot('e2e_pq');
-  // 6. 导出 PNG、保存 JSON
-  const [dl1] = await Promise.all([p.waitForEvent('download'), p.click('text=导出 PNG')]);
-  const png = `${OUT}/${dl1.suggestedFilename()}`;
-  await dl1.saveAs(png);
-  log('png ' + fs.statSync(png).size + ' bytes');
+  const png = await download('text=导出 PNG');
+  check(fs.statSync(png).size > 50000, `PNG ${fs.statSync(png).size} 字节`);
   await p.click('.tabs >> text=风扇布局');
-  const [dl2] = await Promise.all([p.waitForEvent('download'), p.click('text=保存配置（JSON）')]);
-  const js = `${OUT}/${dl2.suggestedFilename()}`;
-  await dl2.saveAs(js);
+  const js = await download('text=保存配置（JSON）');
   const L = JSON.parse(fs.readFileSync(js, 'utf8'));
-  log('json caseFans ' + L.caseFans.map((f) => `${f.mount}${f.alongMm}:${f.type}`).join(' '));
-  // 7. 载入预设并载入 JSON
+  const fanStr = L.caseFans.map((f) => `${f.mount}${f.alongMm}:${f.type}`).join(' ');
+  check(fanStr.includes('bottom230:intake') && fanStr.includes('front100:exhaust'), `保存的 JSON 含点击与表格的修改（${fanStr}）`);
+
+  // 6. 载入预设再载入 JSON
   await p.selectOption('.tab-body .row select >> nth=0', 'positive');
   await p.click('text=载入预设');
-  log('after preset: ' + (await p.innerText('.layout-info')).replace(/\n/g, ' | '));
+  check((await text('.layout-info')).includes('待应用：正压'), '载入预设');
   await p.setInputFiles('input[type=file]', js);
-  await p.waitForTimeout(1500);
-  log('after json load: ' + (await p.innerText('.layout-info')).replace(/\n/g, ' | '));
-  // 8. GIF 录制 2 秒
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：配置'), null, { timeout: 30000 });
+  check(true, '载入 JSON 后显示"当前：配置 …"');
+
+  // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）
+  const Lgap = JSON.parse(fs.readFileSync(js, 'utf8'));
+  Lgap.shroud.gaps = [{ x0Mm: 300, x1Mm: 340 }];
+  await p.setInputFiles('input[type=file]', writeJson('customgap.json', Lgap));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('customgap.json'), null, { timeout: 30000 });
+  await p.$$eval('.slot-table tbody tr:nth-child(8) select', (els) => {
+    els[0].value = 'intake';
+    els[0].dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const js2 = await download('text=保存配置（JSON）');
+  const L2 = JSON.parse(fs.readFileSync(js2, 'utf8'));
+  check(JSON.stringify(L2.shroud.gaps) === JSON.stringify([{ x0Mm: 300, x1Mm: 340 }]), `自定义缺口保留（${JSON.stringify(L2.shroud.gaps)}）`);
+  await p.click('text=撤销未应用的修改');
+
+  // 8. 重建失败回滚（W2–W4 审计）：噪音参数无效的配置 → 报"重建失败"，布局名与网格不变，之后不在旧求解器上跑稳态
+  const before = await text('.layout-info');
+  const Lbad = JSON.parse(fs.readFileSync(js, 'utf8'));
+  Lbad.acoustics = { stallQ: 2, stallDb: 6, grilleRefZeta: 2, positionDb: { front: 0, top: -1.5, bottom: -3, rear: -4.5, cpu: -2, gpu: -1, psu: -3 } };
+  await p.setInputFiles('input[type=file]', writeJson('bad_acoustics.json', Lbad));
+  await p.waitForSelector('.error', { timeout: 30000 });
+  check((await text('.error')).includes('重建失败'), `报错：${(await text('.error')).slice(0, 60)}`);
+  check((await text('.layout-info')).split('\n')[0] === before.split('\n')[0], '布局名未被改写');
+  await p.click('.error');
+
+  // 9. GIF 录制约 2 秒
   await p.click('text=▶ 开始仿真');
   await p.click('text=● 录制 GIF');
   await p.waitForTimeout(2500);
-  const [dl3] = await Promise.all([p.waitForEvent('download'), p.click('.toolbar >> text=停止录制')]);
-  const gifPath = `${OUT}/${dl3.suggestedFilename()}`;
-  await dl3.saveAs(gifPath);
-  log('gif ' + fs.statSync(gifPath).size + ' bytes');
+  const gif = await download('.toolbar >> text=停止录制');
+  check(fs.statSync(gif).size > 10000, `GIF ${fs.statSync(gif).size} 字节`);
   await p.click('text=⏸ 暂停仿真');
-  // 9. 精确模式、网格 280²、重置
-  await p.check('text=精确模式');
+
+  // 10. 精确模式、网格 280²、重置、切回 140²
+  await p.check('.grid-row input[type=checkbox]');
   await p.selectOption('.grid-row select', '1');
-  await p.waitForTimeout(4000);
-  log('grid: ' + (await p.innerText('.view-title')));
+  await p.waitForFunction(() => document.querySelector('.view-title')?.textContent?.includes('280²'), null, { timeout: 60000 });
+  check((await text('.view-title')).includes('精确模式'), '280² 精确模式');
   await p.click('text=重置');
   await p.selectOption('.grid-row select', '0.5');
-  await p.waitForTimeout(2000);
-  // 10. 跑到稳态几秒后停止
+  await p.waitForFunction(() => document.querySelector('.view-title')?.textContent?.includes('140²'), null, { timeout: 60000 });
+  await p.uncheck('.grid-row input[type=checkbox]');
+
+  // 11. 跑到稳态几秒后停止
   await p.click('text=⏩ 跑到稳态');
-  await p.waitForTimeout(5000);
-  log('steady: ' + (await p.innerText('.run-btns')).replace(/\n/g, ' | '));
+  await p.waitForTimeout(4000);
+  check((await text('.run-btns')).includes('停止'), '跑到稳态中');
   await p.click('.run-btns >> text=停止');
   await p.waitForTimeout(800);
-  log('after stop: ' + (await p.innerText('.right .muted.small')));
+  const stopMsg = await text('.right .muted.small');
+  const m = stopMsg.match(/已停止（(\d+) 步）/);
+  check(m && Number(m[1]) > 0, `停止消息：${stopMsg}`);
   await p.click('.tabs >> text=状态');
   await shot('e2e_final');
-  // 窄屏
+
+  // 12. 窄屏
   await p.setViewportSize({ width: 390, height: 900 });
   await p.waitForTimeout(800);
-  await p.screenshot({ path: `${OUT}/e2e_mobile.png`, fullPage: false });
+  await p.screenshot({ path: `${OUT}/e2e_mobile.png` });
   const overflow = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  log('mobile horizontal overflow px: ' + overflow);
-  console.log(logs.join('\n') || '(no console errors)');
+  check(overflow <= 0, `窄屏无横向溢出（${overflow}px）`);
+
+  check(logs.length === 0, `控制台无错误${logs.length ? '：\n' + logs.join('\n') : ''}`);
   await b.close();
-})().catch((e) => { console.error('E2E FAILED', e); process.exit(1); });
+  log(failures ? `${failures} 项失败` : '全部通过');
+  process.exit(failures ? 1 : 0);
+})().catch((e) => {
+  console.error('E2E 异常', e);
+  process.exit(2);
+});

@@ -5,7 +5,7 @@
 // 约定：格坐标沿用 MATLAB 的 1 基（x 为列 1..H、y 为行 1..W）；所有数组与索引列表为 0 基线性索引
 // idx = (x−1)·W + (y−1)，列优先。索引列表的顺序与 MATLAB 一致（find/setdiff 为升序，rectCells 为 x 外层、y 内层）。
 import type { Acoustics, Layout, Mount, Porous, Rect, ThruDir } from '../model/types';
-import { FAN_CATALOG, FAN_SLOTS, type FanSpec } from '../model/fans';
+import { FAN_CATALOG, FAN_SLOTS, hasModel, type FanSpec } from '../model/fans';
 import { mround } from '../model/mround';
 import { mergeAcoustics } from '../model/layoutJson';
 import { edtNearest } from '../numerics/edtNearest';
@@ -241,8 +241,8 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const thickM = (t * cellMm) / 1000;
   const fans: FanGeom[] = [];
   const specOf = (model: string): FanSpec => {
+    if (!hasModel(model)) throw new GeometryError(`未知风扇型号：${model}`);
     const sp = FAN_CATALOG[model];
-    if (!sp) throw new GeometryError(`未知风扇型号：${model}`);
     return sp;
   };
   const wallFanSpan = (mount: Mount, alongMm: number, sizeMm: number): { cols: [number, number]; rows: [number, number] } => {

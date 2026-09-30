@@ -82,18 +82,34 @@ export class GifRecorder {
     readonly delayMs = 150,
   ) {}
 
-  addFrame(img: HTMLCanvasElement): boolean {
+  private pending: { index: Uint8Array; palette: number[][]; w: number; h: number; t: number } | null = null;
+
+  /**
+   * 加一帧。帧的延时按实际取帧间隔写（浏览器忙时定时器会变慢，固定写 150 ms 回放会偏快）：
+   * 上一帧在拿到下一帧的时间戳后才写出。
+   */
+  addFrame(img: HTMLCanvasElement, now = performance.now()): boolean {
     if (this.frames >= this.maxFrames) return false;
     const ctx = img.getContext('2d')!;
     const { data } = ctx.getImageData(0, 0, img.width, img.height);
     const palette = quantize(data, 256);
     const index = applyPalette(data, palette);
-    this.enc.writeFrame(index, img.width, img.height, { palette, delay: this.delayMs });
+    this.flush(now);
+    this.pending = { index, palette, w: img.width, h: img.height, t: now };
     this.frames++;
     return this.frames < this.maxFrames;
   }
 
+  private flush(now: number): void {
+    const p = this.pending;
+    if (!p) return;
+    const delay = Math.max(20, Math.round((now - p.t) / 10) * 10);
+    this.enc.writeFrame(p.index, p.w, p.h, { palette: p.palette, delay });
+    this.pending = null;
+  }
+
   finish(): Blob {
+    this.flush((this.pending?.t ?? 0) + this.delayMs);
     this.enc.finish();
     return new Blob([this.enc.bytes() as BlobPart], { type: 'image/gif' });
   }

@@ -5,7 +5,8 @@ function gen_paths_fixtures(outFile)
 %   标准答案数据集只覆盖默认布局与风道（k-ω、湍流逐步更新、自动温控）。这里补充其余分支的小算例（≤ 20 步）：
 %   方腔（层流、DT 0.02、压力参考点）、LVEL、层流、湍流每 3 步更新、手动转速与全局转速、环境温度/定温壁/物性覆盖/
 %   节流/超温/中途改功率/精确模式、只有电源、无电源、散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域。
-%   每个快照记录各场的指纹（和、绝对值和、平方和、最大、最小、若干抽样点，全精度）、装配步、热网络与风扇状态。
+%   每个快照记录各场的指纹（和、绝对值和、平方和、极值、固定权重的加权和、均匀抽样点与机箱内 200 个抽样点，全精度）、
+%   装配步、热网络与风扇状态。
 %   场景定义取自 W0/W1 审计脚本（audit_run.m）。
     if nargin < 1
         here = fileparts(mfilename('fullpath'));
@@ -94,8 +95,10 @@ function S = snapshot(s)
     if ~isempty(s.betaRefU), F.betaRefU = s.betaRefU(:); F.betaRefV = s.betaRefV(:); end
     fn = fieldnames(F);
     fp = struct();
+    ins = sort(s.insideMask(:));
+    inIdx = ins(unique(max(1, round(linspace(1, numel(ins), 200)))));
     for k = 1:numel(fn)
-        fp.(fn{k}) = fingerprint(F.(fn{k}));
+        fp.(fn{k}) = fingerprint(F.(fn{k}), s.GRID.TOTAL, inIdx);
     end
     S.fields = fp;
     tn = s.thermalNetworks; nm = fieldnames(tn);
@@ -115,13 +118,19 @@ function S = snapshot(s)
     S.fans = fans;
 end
 
-function fp = fingerprint(x)
+function fp = fingerprint(x, nCells, inIdx)
+    % 指纹：和、绝对值和、平方和、极值、加权和 Σ wᵢxᵢ（wᵢ = mod(7919·i, 997)/997 − 0.5，整数运算、两边逐位相同），
+    % 抽样点：均匀 23 点，格心场另加机箱内均匀 200 点
     x = double(x(:));
     n = numel(x);
     idx = unique(max(1, round(linspace(1, n, 23))));
-    fin = x(isfinite(x));
-    fp = struct('n', n, 'nNaN', sum(isnan(x)), 'sum', sum(fin), 'sumAbs', sum(abs(fin)), 'sumSq', sum(fin.^2), ...
-        'max', max(fin), 'min', min(fin), 'idx', idx, 'sample', x(idx).');
+    if n == nCells, idx = unique([idx(:); inIdx(:)])'; end
+    fin = isfinite(x);
+    w = mod(7919 * (1:n)', 997) / 997 - 0.5;
+    xf = x(fin); wf = w(fin);
+    fp = struct('n', n, 'nNaN', sum(isnan(x)), 'sum', sum(xf), 'sumAbs', sum(abs(xf)), 'sumSq', sum(xf.^2), ...
+        'max', max(xf), 'min', min(xf), 'proj', sum(wf .* xf), 'projAbs', sum(abs(wf .* xf)), ...
+        'idx', idx, 'sample', x(idx).');
 end
 
 function L = listifyLayout(L)

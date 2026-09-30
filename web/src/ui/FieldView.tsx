@@ -14,6 +14,7 @@ export interface DiffRef {
   name: string;
   T: Float32Array | null; // null = 方案未保存
   W: number;
+  version: number; // 方案每次保存递增
 }
 
 export interface ViewSpec {
@@ -117,6 +118,7 @@ export function FieldView(p: Props) {
     raf: 0,
     sizePx: 0,
     dirty: true,
+    acc: 0, // 粒子推进的时间累积 [s]
   });
 
   // 画布尺寸跟随容器（正方形）
@@ -146,16 +148,20 @@ export function FieldView(p: Props) {
       const dtReal = s.lastT ? Math.min(0.1, (t - s.lastT) / 1000) : 0;
       s.lastT = t;
       const { info, fields } = P;
-      const key = `${P.buildNo}:${P.frameNo}:${P.mode}:${P.mode === 'diff' ? P.diff.name + (P.diff.T ? P.diff.T.length : 0) : ''}:${P.slotTypes.join(',')}:${P.labels}`;
+      const key = `${P.buildNo}:${P.frameNo}:${P.mode}:${P.mode === 'diff' ? `${P.diff.name}#${P.diff.version}` : ''}:${P.slotTypes.join(',')}:${P.labels}`;
       let changed = s.dirty || key !== s.imgKey;
       if (P.particles) {
         if (s.tracerBuild !== P.buildNo || s.tracer.n === 0) {
           s.tracer.reset({ W: info.W, H: info.H, obstacle: info.obstacle, fluidIdx: info.fluidIdx, insideIdx: info.insideIdx }, Math.round(1500 * Math.max(1, info.gridScale)));
           s.tracerBuild = P.buildNo;
         }
-        // 粒子按 0.4 倍实时推进（同 MATLAB：每 0.05 s 推进 0.02 s 物理时间）
-        if (dtReal > 0) s.tracer.step(fields.uC, fields.vC, info.VEL_SCALE, info.cellMm / 1000, 0.4 * dtReal);
-        changed = true;
+        // 同 MATLAB：每 0.05 s 推进一帧（0.02 s 物理时间）；寿命、尾迹、静止判据都按这个帧率计，与屏幕刷新率无关
+        s.acc = Math.min(s.acc + dtReal, 0.2);
+        while (s.acc >= 0.05) {
+          s.tracer.step(fields.uC, fields.vC, info.VEL_SCALE, info.cellMm / 1000, 0.02);
+          s.acc -= 0.05;
+          changed = true;
+        }
       } else if (s.tracer.n) {
         s.tracer.n = 0;
         s.tracerBuild = -1;
@@ -190,10 +196,12 @@ export function FieldView(p: Props) {
     const c = cellAt(e);
     if (!c) return -1;
     const P = props.current;
-    return P.info.slots.findIndex((sl) => {
-      const b = slotBox(sl, P.info.fanDiskCells);
-      return c[0] >= b.c0 && c[0] <= b.c1 && c[1] >= b.r0 && c[1] <= b.r1;
-    });
+    // 角部重叠处取后画的安装位（同 MATLAB：后画的 patch 在上层接收点击）
+    for (let k = P.info.slots.length - 1; k >= 0; k--) {
+      const b = slotBox(P.info.slots[k], P.info.fanDiskCells);
+      if (c[0] >= b.c0 && c[0] <= b.c1 && c[1] >= b.r0 && c[1] <= b.r1) return k;
+    }
+    return -1;
   };
   const onMove = (e: MouseEvent) => {
     canvasRef.current!.style.cursor = slotAt(e) >= 0 ? 'pointer' : 'crosshair';
@@ -382,9 +390,8 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     ctx.font = `bold ${Math.max(9, Math.round(sc * 3))}px system-ui, sans-serif`;
     ctx.fillStyle = 'rgba(64,199,89,0.9)';
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    const mt = info.motherboardTray;
-    ctx.fillText('主板区', E(mt.x) + 2 * sc, E(mt.y + mt.h) - 2 * sc);
+    ctx.textBaseline = 'top';
+    ctx.fillText('主板区', E(info.motherboardTray.x) + 5 * sc, E(info.motherboardTray.y) + 5 * sc); // 同 MATLAB：左上角
   }
   if (info.vrm) {
     rect(info.vrm, 'rgba(217,217,217,0.9)', base);

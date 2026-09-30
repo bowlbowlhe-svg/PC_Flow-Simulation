@@ -121,10 +121,12 @@ export function LayoutTab(p: LayoutTabProps) {
         <span class="grow" />
         <span>显卡厚度</span>
         <select
-          value={p.gpuSlots === null ? '' : String(GPU_SLOT_VALUES[nearest(GPU_SLOT_VALUES, p.gpuSlots)])}
+          value={p.gpuSlots === null ? '' : String(p.gpuSlots)}
           disabled={p.gpuSlots === null}
           onChange={(e) => p.onGpuSlots(Number((e.target as HTMLSelectElement).value))}
         >
+          {/* 载入的布局槽数不在列表中（如 2 或 4.5 槽）时照实显示为额外一项，不悄悄改成最近的档 */}
+          {p.gpuSlots !== null && !GPU_SLOT_VALUES.includes(p.gpuSlots) && <option value={String(p.gpuSlots)}>{`${p.gpuSlots} 槽（载入值）`}</option>}
           {GPU_SLOT_VALUES.map((v, k) => (
             <option key={v} value={String(v)}>
               {GPU_SLOT_ITEMS[k]}
@@ -176,11 +178,6 @@ export function LayoutTab(p: LayoutTabProps) {
   );
 }
 
-function nearest(values: number[], v: number): number {
-  let k = 0;
-  for (let i = 1; i < values.length; i++) if (Math.abs(values[i] - v) < Math.abs(values[k] - v)) k = i;
-  return k;
-}
 
 interface ScenarioTabProps {
   current: ScenarioSnap | null;

@@ -6,7 +6,7 @@ import type { SteadyOptions } from '../solver/steady';
 export type ComponentName = 'cpu' | 'gpu' | 'psu';
 
 export type Command =
-  | { type: 'init'; layout: Layout; gridScale: number; powers: Record<ComponentName, number>; autoFan: boolean; fanPct: number }
+  | { type: 'init'; id?: number; layout: Layout; gridScale: number; powers: Record<ComponentName, number>; autoFan: boolean; fanPct: number }
   | { type: 'run' }
   | { type: 'pause' }
   | { type: 'step'; n: number }
@@ -95,6 +95,8 @@ export interface FrameFields {
 }
 
 export type WorkerMessage =
-  | { type: 'static'; info: StaticInfo }
+  | { type: 'static'; info: StaticInfo; id?: number }
+  /** 重建失败：原求解器保留（已暂停），界面应回滚 */
+  | { type: 'buildFailed'; id?: number; message: string }
   | { type: 'frame'; fields: FrameFields; status: Status }
   | { type: 'error'; message: string };

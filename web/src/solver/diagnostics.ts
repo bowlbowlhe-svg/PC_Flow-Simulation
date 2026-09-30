@@ -1,6 +1,7 @@
 // 诊断量（移植自 CFDSolverBase：openingFlux / computeAirflowTemperatures / computeVorticity /
 // calculateCFDDiagnostics / totalNoise / fanStatusList / calculateScores / scenarioSummary /
 // pressureFieldPa / openingMarkers / cellReadout / getRecommendations）。只读求解器状态，不改变推进结果。
+import { mmax, mmin } from '../numerics/mathx';
 import type { Mount } from '../model/types';
 import type { NoiseParts } from './fan';
 import { CFM_PER_M3S } from './fan';
@@ -57,8 +58,8 @@ export function openingFlux(s: Solver, idx: Int32Array, mount: Mount): OpeningFl
     const v = vn * s.VEL_SCALE;
     const Tf = v < 0 ? s.T_fluid[outIdx] : s.T_fluid[i];
     vol += v;
-    volOut += Math.max(0, v);
-    volIn += Math.max(0, -v);
+    volOut += mmax(0, v);
+    volIn += mmax(0, -v);
     Q += (Tf - amb) * v;
   }
   vol *= dA;
@@ -66,7 +67,7 @@ export function openingFlux(s: Solver, idx: Int32Array, mount: Mount): OpeningFl
   volIn *= dA;
   Q = rhoCp * Q * dA;
   let Tmean = amb;
-  if (vol > 1e-6) Tmean = Math.min(Math.max(amb + Q / (rhoCp * vol), amb), 150);
+  if (vol > 1e-6) Tmean = mmin(mmax(amb + Q / (rhoCp * vol), amb), 150);
   return { volM3s: vol, heatW: Q, cfm: vol / CFM_TO_M3S, Tmean, cfmOut: volOut / CFM_TO_M3S, cfmIn: volIn / CFM_TO_M3S };
 }
 
@@ -108,7 +109,7 @@ export function computeAirflowTemperatures(s: Solver): AirflowTemps {
     }
   });
   const rhoCp = AIR_DENSITY * AIR_CP;
-  const mixT = (hv: number[]) => amb + (hv[0] / Math.max(rhoCp * hv[1], Number.EPSILON)) * (hv[1] > 1e-6 ? 1 : 0);
+  const mixT = (hv: number[]) => amb + (hv[0] / mmax(rhoCp * hv[1], Number.EPSILON)) * (hv[1] > 1e-6 ? 1 : 0);
   const inside = s.geo.insideMask;
   let Tin = amb;
   if (inside.length) {
@@ -189,12 +190,12 @@ export function calculateCFDDiagnostics(s: Solver): CFDDiag {
     }
   }
   const V = (sum / n) * s.VEL_SCALE;
-  const deltaT = Math.max(5, s.sensorTemp('max') - s.T_amb);
+  const deltaT = mmax(5, s.sensorTemp('max') - s.T_amb);
   const Re = (A.rho * V * L) / A.mu;
   const Gr = (A.g * A.beta * deltaT * L ** 3) / A.nu ** 2;
   const Ra = Gr * A.Pr;
-  const NuFree = 0.59 * Math.max(Ra, 1e-6) ** 0.25;
-  const NuForced = 0.023 * Math.max(Re, 1) ** 0.8 * A.Pr ** 0.4;
+  const NuFree = 0.59 * mmax(Ra, 1e-6) ** 0.25;
+  const NuForced = 0.023 * mmax(Re, 1) ** 0.8 * A.Pr ** 0.4;
   const Nu = Math.cbrt(NuFree ** 3 + NuForced ** 3);
   let flowRegime = Re < 2300 ? '层流' : Re < 4000 ? '过渡' : '湍流';
   const Ri = Gr / (Re * Re + 1);
@@ -202,8 +203,8 @@ export function calculateCFDDiagnostics(s: Solver): CFDDiag {
   else if (Ri > 0.1) flowRegime += ' | 混合对流';
   else flowRegime += ' | 强制对流主导';
   let maxT = -Infinity;
-  if (inside.length) for (const i of inside) maxT = Math.max(maxT, s.T_fluid[i]);
-  else for (let i = 0; i < s.N; i++) maxT = Math.max(maxT, s.T_fluid[i]);
+  if (inside.length) for (const i of inside) maxT = mmax(maxT, s.T_fluid[i]);
+  else for (let i = 0; i < s.N; i++) maxT = mmax(maxT, s.T_fluid[i]);
   const maxDeltaT = maxT - s.T_amb;
   const boussinesqValid = maxDeltaT <= 30;
   if (!boussinesqValid) flowRegime += ' | ⚠ΔT>30K Boussinesq超限';
@@ -233,7 +234,7 @@ export function totalNoise(s: Solver): NoiseTotal {
   if (perFan.some((v) => !Number.isFinite(v))) throw new Error('风扇噪音出现非有限值，检查布局 acoustics 参数');
   let e = 0;
   for (const v of perFan) e += 10 ** (v / 10);
-  return { dbTotal: 10 * Math.log10(Math.max(e, 1)), perFan, parts };
+  return { dbTotal: 10 * Math.log10(mmax(e, 1)), perFan, parts };
 }
 
 export interface FanStatus {
@@ -284,7 +285,7 @@ export function fanStatusList(s: Solver): FanStatus[] {
       qRatio: f.noiseQRatio,
       noiseDb: perFan[k],
       noise: parts[k],
-      sharePct: (100 * 10 ** (perFan[k] / 10)) / Math.max(eSum, Number.EPSILON),
+      sharePct: (100 * 10 ** (perFan[k] / 10)) / mmax(eSum, Number.EPSILON),
     };
   });
 }
@@ -335,19 +336,19 @@ export function calculateScores(s: Solver): Scores {
   const { dbTotal } = totalNoise(s);
   let totalPrice = 0;
   for (const f of caseFans(s)) totalPrice += f.spec.price;
-  const clamp = (v: number) => Math.max(0, Math.min(100, v));
+  const clamp = (v: number) => mmax(0, mmin(100, v));
   const cpuCool = clamp(((tnC.throttlingTemp - cpuT) / (tnC.throttlingTemp - 60)) * 100);
   const gpuCool = clamp(((tnG.throttlingTemp - gpuT) / (tnG.throttlingTemp - 70)) * 100);
   const cooling = 0.5 * cpuCool + 0.5 * gpuCool;
   const pNom = tnC.power + tnG.power;
   const pAct = tnC.actualPower + tnG.actualPower;
-  const performance = clamp(((pAct / Math.max(pNom, Number.EPSILON) - 0.65) / 0.35) * 100);
-  const balance = Math.max(0, 100 - Math.abs(cpuT - gpuT) * 2);
-  const cpuHead = Math.max(0, (tnC.throttlingTemp - cpuT) / (tnC.throttlingTemp - s.T_amb));
-  const gpuHead = Math.max(0, (tnG.throttlingTemp - gpuT) / (tnG.throttlingTemp - s.T_amb));
+  const performance = clamp(((pAct / mmax(pNom, Number.EPSILON) - 0.65) / 0.35) * 100);
+  const balance = mmax(0, 100 - Math.abs(cpuT - gpuT) * 2);
+  const cpuHead = mmax(0, (tnC.throttlingTemp - cpuT) / (tnC.throttlingTemp - s.T_amb));
+  const gpuHead = mmax(0, (tnG.throttlingTemp - gpuT) / (tnG.throttlingTemp - s.T_amb));
   const margin = 100 * (0.5 * cpuHead + 0.5 * gpuHead);
   const noise = clamp(100 - (dbTotal - 20) * 3);
-  const value = Math.max(0, 100 - totalPrice / 15);
+  const value = mmax(0, 100 - totalPrice / 15);
   const total = mr(cooling * 0.25 + performance * 0.2 + balance * 0.1 + margin * 0.15 + noise * 0.2 + value * 0.1);
   return {
     total,
@@ -460,10 +461,10 @@ export function openingMarkers(s: Solver): OpeningMarker[] {
       const xx = Math.floor(i / W) + 1;
       sx += xx;
       sy += yy;
-      xMin = Math.min(xMin, xx);
-      xMax = Math.max(xMax, xx);
-      yMin = Math.min(yMin, yy);
-      yMax = Math.max(yMax, yy);
+      xMin = mmin(xMin, xx);
+      xMax = mmax(xMax, xx);
+      yMin = mmin(yMin, yy);
+      yMax = mmax(yMax, yy);
     }
     let x = sx / op.idx.length;
     let y = sy / op.idx.length;

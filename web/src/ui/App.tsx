@@ -1,8 +1,9 @@
 // 主界面：左侧主视图 + 工具栏 + 温度曲线/风扇工作点，右侧视图与操作 + 标签页（状态、功率与风扇、风扇布局、方案对比）。
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { FAN_PRESETS, applyPreset, getSlotStates, setSlotStates, type SlotState } from '../model/fans';
+import { FAN_PRESETS, applyPreset, getSlotStates, type SlotState } from '../model/fans';
+import { buildPending, pendingFromLayout, type Gaps } from './layoutEdit';
 import { layoutFanReport, type FanReport } from '../model/fanReport';
-import { layoutGpuSlots, layoutSetGpuSlots } from '../model/gpuSlots';
+import { layoutGpuSlots } from '../model/gpuSlots';
 import { layoutDefault } from '../model/layoutDefault';
 import { layoutFromJson, layoutToJson } from '../model/layoutJson';
 import type { ScenarioSnap } from '../model/scenarioTable';
@@ -17,7 +18,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '0.5.0';
+export const APP_VERSION = '0.9.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -36,18 +37,10 @@ interface Scenario extends ScenarioSnap {
   fanPct: number;
   T: Float32Array;
   W: number;
+  version: number; // 每次保存递增（温差视图据此重画）
 }
 
 /** 待应用布局：基底 + 安装位状态 + 挡板开孔 + 显卡厚度 + 当前功率（同 MATLAB pendingLayout） */
-type Gaps = { x0Mm: number; x1Mm: number }[];
-
-function buildPending(base: Layout, slots: SlotState[], gap: boolean, gpuSlots: number | null, defaultGaps: Gaps, powers: Record<ComponentName, number>): Layout {
-  let L = setSlotStates(base, slots);
-  if (L.shroud) L = { ...L, shroud: { ...L.shroud, gaps: gap ? structuredClone(defaultGaps) : [] } };
-  if (L.gpu && gpuSlots !== null && gpuSlots !== layoutGpuSlots(L)) L = layoutSetGpuSlots(L, gpuSlots);
-  return { ...L, power: { cpu: powers.cpu, gpu: powers.gpu, psu: powers.psu } };
-}
-
 export function App() {
   const client = useMemo(() => new SimClient(), []);
   const [sim, setSim] = useState<SimState>(client.state);
@@ -58,7 +51,10 @@ export function App() {
   const [tab, setTab] = useState<Tab>('status');
   const [gridScale, setGridScale] = useState(0.5);
   const initial = useMemo(() => layoutDefault(), []);
-  const defaultGaps = useMemo(() => structuredClone(initial.shroud!.gaps), [initial]);
+  // 挡板"前部开孔"勾选时使用的缺口：载入的布局带非空缺口时随之更新（同 MATLAB setPendingFromLayout）
+  const [defaultGaps, setDefaultGaps] = useState<Gaps>(() => structuredClone(initial.shroud!.gaps));
+  const [building, setBuilding] = useState(false);
+  const scenarioSeq = useRef(0);
   const [powers, setPowers] = useState<Record<ComponentName, number>>(() => ({ ...initial.power }));
   const [autoFan, setAutoFan] = useState(true);
   const [fanPct, setFanPct] = useState(40);
@@ -111,7 +107,7 @@ export function App() {
   const running = !!st?.running;
   const steady = st?.steady ?? null;
   const steadyActive = !!steady?.active;
-  const busy = steadyActive || !sim.info;
+  const busy = steadyActive || !sim.info || building;
 
   // 待应用布局与安装检查
   let pending: Layout | null = null;
@@ -134,29 +130,42 @@ export function App() {
     setFanPct(pct);
     client.send({ type: 'setFan', auto, pct });
   };
-  const rebuild = (L: Layout, gs: number, p = powers, auto = autoFan, pct = fanPct) => {
-    client.send({ type: 'init', layout: L, gridScale: gs, powers: p, autoFan: auto, fanPct: pct });
-    if (precise) client.send({ type: 'setForceReassemble', on: true });
+  /**
+   * 重建求解器，成功后才返回 true（同 MATLAB rebuildSolver：失败时原求解器保留、界面状态不变，Worker 报"重建失败"）。
+   * 调用方只在成功后提交界面状态（已应用布局、标签、网格、功率），也只在成功后才发"跑到稳态"。
+   */
+  const rebuild = async (L: Layout, gs: number, p = powers, auto = autoFan, pct = fanPct): Promise<boolean> => {
+    setBuilding(true);
+    const r = await client.init({ layout: L, gridScale: gs, powers: p, autoFan: auto, fanPct: pct });
+    setBuilding(false);
+    if (r.ok && precise) client.send({ type: 'setForceReassemble', on: true });
+    return r.ok;
   };
   const setPendingFromLayout = (L: Layout) => {
+    const st = pendingFromLayout(L, defaultGaps);
     setPendingBase(L);
-    setSlots(getSlotStates(L));
-    setGpuSlots(L.gpu ? layoutGpuSlots(L) : null);
-    if (L.shroud) setShroudGap(L.shroud.gaps.length > 0);
+    setSlots(st.slots);
+    setGpuSlots(st.gpuSlots);
+    setDefaultGaps(st.defaultGaps);
+    if (st.shroudGap !== null) setShroudGap(st.shroudGap);
   };
   const edited = (fansChanged = true) => {
     setDirty(true);
     if (fansChanged) setLayoutLabel('自定义');
   };
-  const applyLayout = (runSteady: boolean, L = pending, label = layoutLabel, p = powers, auto = autoFan, pct = fanPct) => {
-    if (!L || busy) return;
-    rebuild(L, gridScale, p, auto, pct);
+  const applyLayout = async (runSteady: boolean, L = pending, label = layoutLabel, p = powers, auto = autoFan, pct = fanPct): Promise<boolean> => {
+    if (!L || busy) return false;
+    if (!(await rebuild(L, gridScale, p, auto, pct))) return false;
     setApplied(L);
     setPendingBase(L);
     setDirty(false);
     setAppliedLabel(label);
     setLayoutLabel(label);
+    setPowers(p);
+    setAutoFan(auto);
+    setFanPct(pct);
     if (runSteady) client.send({ type: 'steady', opts: gridScale >= 1 ? { chunk: 25 } : {} });
+    return true;
   };
   const onSlotClick = (k: number) => {
     const order: SlotState['type'][] = ['none', 'intake', 'exhaust'];
@@ -164,17 +173,19 @@ export function App() {
     edited();
   };
   const onLoadFile = async (f: File) => {
+    let L: Layout;
     try {
-      const L = layoutFromJson(await f.text());
-      const p = { cpu: L.power.cpu, gpu: L.power.gpu, psu: L.power.psu };
-      for (const n of ['cpu', 'gpu', 'psu'] as const) p[n] = Math.min(POWER_LIMITS[n][1], Math.max(POWER_LIMITS[n][0], p[n]));
-      setPowers(p);
-      setPendingFromLayout(L);
-      applyLayout(false, { ...L, power: p }, `配置 ${f.name}`, p);
+      L = layoutFromJson(await f.text());
     } catch (e) {
       client.state.error = `读取配置失败：${e instanceof Error ? e.message : String(e)}`;
       setSim({ ...client.state });
+      return;
     }
+    // 功率同 MATLAB 经滑块：夹在滑块范围内并取整
+    const p = { cpu: L.power.cpu, gpu: L.power.gpu, psu: L.power.psu };
+    for (const n of ['cpu', 'gpu', 'psu'] as const) p[n] = Math.round(Math.min(POWER_LIMITS[n][1], Math.max(POWER_LIMITS[n][0], p[n])));
+    const L2 = { ...L, power: p };
+    if (await applyLayout(false, L2, `配置 ${f.name}`, p)) setPendingFromLayout(L2);
   };
   const currentSnap = (): Scenario | null => {
     if (!st || !sim.info || !sim.fields) return null;
@@ -189,24 +200,22 @@ export function App() {
       fanPct,
       T: sim.fields.T.slice(),
       W: sim.info.W,
+      version: ++scenarioSeq.current,
     };
   };
-  const loadScenario = () => {
+  const loadScenario = async () => {
     const s = scenarios[selScenario];
     if (!s || busy) return;
     const p = { cpu: s.powers[0], gpu: s.powers[1], psu: s.powers[2] };
-    setPowers(p);
-    setAutoFan(s.autoFan);
-    setFanPct(s.fanPct);
-    setPendingFromLayout(s.layout);
-    applyLayout(false, { ...s.layout, power: p }, s.label, p, s.autoFan, s.fanPct);
+    const L = { ...s.layout, power: p };
+    if (await applyLayout(false, L, s.label, p, s.autoFan, s.fanPct)) setPendingFromLayout(L);
   };
   const exportPng = () => {
     const c = fieldCanvas.current;
     if (!c) return;
     compositeImage(c, spec).toBlob((b) => b && downloadBlob(b, `pcflow_${timestamp()}.png`));
   };
-  // GIF 录制：每 150 ms 取一帧（宽约 520 px），最多 300 帧。定时器只随录制开始/结束重建
+  // GIF 录制：每 150 ms 取一帧（宽约 480 px），最多 300 帧，延时按实际取帧间隔写。定时器只随录制开始/结束重建
   // （不能每次重绘都重建：帧间隔短于 150 ms 时定时器永远不会触发）；标题与色标取最新值
   const specRef = useRef(spec);
   specRef.current = spec;
@@ -225,7 +234,7 @@ export function App() {
     const id = setInterval(() => {
       const c = fieldCanvas.current;
       if (!c) return;
-      const more = gif.addFrame(compositeImage(c, specRef.current, 520 / c.width));
+      const more = gif.addFrame(compositeImage(c, specRef.current, 480 / c.width));
       setGifFrames(gif.frames);
       if (!more) stopGifRef.current();
     }, 150);
@@ -259,7 +268,7 @@ export function App() {
               onSpec={setSpec}
               slotTypes={slots.map((s) => s.type)}
               onSlotClick={onSlotClick}
-              diff={{ name: SCENARIO_NAMES[diffRef], T: diffScenario?.T ?? null, W: diffScenario?.W ?? 0 }}
+              diff={{ name: SCENARIO_NAMES[diffRef], T: diffScenario?.T ?? null, W: diffScenario?.W ?? 0, version: diffScenario?.version ?? 0 }}
               onCanvas={(c) => (fieldCanvas.current = c)}
             />
           ) : (
@@ -327,10 +336,11 @@ export function App() {
               <select
                 value={String(gridScale)}
                 disabled={busy}
-                onChange={(e) => {
-                  const gs = Number((e.target as HTMLSelectElement).value);
-                  setGridScale(gs);
-                  rebuild(applied, gs);
+                onChange={async (e) => {
+                  const sel = e.target as HTMLSelectElement;
+                  const gs = Number(sel.value);
+                  if (await rebuild(applied, gs)) setGridScale(gs);
+                  else sel.value = String(gridScale); // 失败：下拉框回到原网格档
                 }}
               >
                 <option value="0.5">预览 140²</option>
@@ -353,7 +363,7 @@ export function App() {
           </div>
           {st && (
             <div class="muted small">
-              每步 {st.msPerStep.toFixed(0)} ms · {steady && !steady.active ? steady.message : running ? '运行中' : '已暂停'}
+              每步 {st.msPerStep.toFixed(0)} ms · {building ? '正在重建流场…' : running ? '运行中' : steady ? steady.message : '已暂停'}
             </div>
           )}
         </section>

@@ -1,5 +1,5 @@
 // 机箱风扇布局的静态检查与标称风量（移植自 layout_fan_report.m；不需要求解器）。
-import { FAN_CATALOG } from './fans';
+import { FAN_CATALOG, hasModel } from './fans';
 import type { Layout } from './types';
 
 export interface FanReport {
@@ -52,6 +52,7 @@ export function layoutFanReport(L: Layout): FanReport {
   const lo: number[] = [];
   const hi: number[] = [];
   F.forEach((f, k) => {
+    if (!hasModel(f.model)) throw new Error(`未知风扇型号：${String(f.model)}`);
     const sp = FAN_CATALOG[f.model];
     lo[k] = f.alongMm - sp.size / 2;
     hi[k] = f.alongMm + sp.size / 2;

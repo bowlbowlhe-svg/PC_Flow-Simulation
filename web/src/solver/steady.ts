@@ -1,4 +1,5 @@
 // 推进到稳态（CFDSolverBase.runToSteady）与固定步数长时统计（tools/steady_long_run.m）。
+import { mmax, mmin } from '../numerics/mathx';
 import type { Layout } from '../model/types';
 import { Solver, type SolverOptions } from './solver';
 
@@ -47,7 +48,7 @@ export class SteadyRunner {
       tolT: opts.tolT ?? 0.3,
       tolFlow: opts.tolFlow ?? 0.03,
     };
-    this.nWin = Math.max(1, mr(this.opts.window / this.opts.chunk));
+    this.nWin = mmax(1, mr(this.opts.window / this.opts.chunk));
     // 列顺序同 MATLAB fieldnames(thermalNetworks)：cpu、gpu、psu 中存在者
     this.names = (['cpu', 'gpu', 'psu'] as const).filter((n) => solver.thermalNetworks[n]);
     this.info = {
@@ -89,8 +90,8 @@ export class SteadyRunner {
     if (this.done) return true;
     const s = this.solver;
     const info = this.info;
-    if (this.inChunk === 0) this.chunkN = Math.min(this.opts.chunk, this.opts.maxSteps - (s.iteration - this.startIter));
-    const m = Math.min(Math.max(1, Math.floor(limit)), this.chunkN - this.inChunk);
+    if (this.inChunk === 0) this.chunkN = mmin(this.opts.chunk, this.opts.maxSteps - (s.iteration - this.startIter));
+    const m = mmin(mmax(1, Math.floor(limit)), this.chunkN - this.inChunk);
     const r = s.stepMultiple(m);
     this.inChunk += m;
     if (this.inChunk < this.chunkN) {
@@ -102,7 +103,7 @@ export class SteadyRunner {
     info.history.push(row);
     info.steps = s.iteration - this.startIter;
     const h = info.history;
-    info.final = colMean(h, Math.max(0, h.length - this.nWin), h.length);
+    info.final = colMean(h, mmax(0, h.length - this.nWin), h.length);
     if (!row.every(Number.isFinite) || !s.T_fluid.every(Number.isFinite)) {
       info.diverged = true;
       return true;
@@ -111,9 +112,9 @@ export class SteadyRunner {
       const a = colMean(h, h.length - 2 * this.nWin, h.length - this.nWin);
       const b = info.final;
       let dT = 0;
-      for (let c = 0; c < b.length - 1; c++) dT = Math.max(dT, Math.abs(b[c] - a[c]));
+      for (let c = 0; c < b.length - 1; c++) dT = mmax(dT, Math.abs(b[c] - a[c]));
       const e = b.length - 1;
-      const dQ = Math.abs(b[e] - a[e]) / Math.max(b[e], 1);
+      const dQ = Math.abs(b[e] - a[e]) / mmax(b[e], 1);
       info.converged = dT < this.opts.tolT && dQ < this.opts.tolFlow;
     }
     return this.done;
@@ -192,8 +193,8 @@ export function steadyLongRun(
       let hi = -Infinity;
       for (const r of sel) {
         sum += r[c];
-        lo = Math.min(lo, r[c]);
-        hi = Math.max(hi, r[c]);
+        lo = mmin(lo, r[c]);
+        hi = mmax(hi, r[c]);
       }
       const m = sum / sel.length;
       let ss = 0;
