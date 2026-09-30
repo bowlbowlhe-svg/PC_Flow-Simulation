@@ -12,7 +12,9 @@
     "diag": "vite-node scripts/diag.ts",
     "profile": "vite-node scripts/profile.ts",
     "bench": "vite-node scripts/bench.ts",
-    "steady": "vite-node scripts/steady.ts"
+    "steady": "vite-node scripts/steady.ts",
+    "build:single": "tsc --noEmit && vite build --mode single",
+    "release": "npm run build:single && node -e \"require('fs').mkdirSync('release',{recursive:true});require('fs').copyFileSync('dist-single/index.html','release/pcflow-web.html')\""
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.6",

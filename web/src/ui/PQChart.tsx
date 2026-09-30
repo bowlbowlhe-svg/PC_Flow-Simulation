@@ -17,7 +17,8 @@ export function PQChart({ pq, note }: { pq: Status['pq']; note: string }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, css, cssH);
     const L = 44;
-    const R = 150;
+    const narrow = css < 560; // 窄屏：图例画在绘图区内右上角，不另留右侧空白
+    const R = narrow ? 10 : 150;
     const T = 22;
     const B = 28;
     const w = css - L - R;
@@ -76,12 +77,15 @@ export function PQChart({ pq, note }: { pq: Status['pq']; note: string }) {
       ctx.arc(xs(f.opCfm), ys(f.opDp), 4, 0, 2 * Math.PI);
       ctx.fill();
       // 图例
-      const ly = T + 6 + k * 16;
-      ctx.fillRect(L + w + 12, ly - 1, 14, 3);
+      const ly = T + 6 + k * (narrow ? 13 : 16);
+      const lx = narrow ? L + w - 118 : L + w + 12;
+      ctx.fillRect(lx, ly - 1, 14, 3);
       ctx.fillStyle = 'rgb(180,180,200)';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(f.name, L + w + 30, ly);
+      if (narrow) ctx.font = '10px system-ui, sans-serif';
+      ctx.fillText(f.name, lx + 18, ly);
+      ctx.font = '11px system-ui, sans-serif';
     });
     ctx.fillStyle = 'rgb(120,200,255)';
     ctx.textAlign = 'left';

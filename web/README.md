@@ -3,17 +3,22 @@
 MATLAB 版 v4.2.2 的浏览器移植。规格见 [`../docs/ALGORITHM.md`](../docs/ALGORITHM.md)，验收数据见
 [`../matlab_app/tests/reference/`](../matlab_app/tests/reference/)，阶段计划见 [`../docs/ROADMAP.md`](../docs/ROADMAP.md)（W0–W5）。
 
-当前进度：W0–W4 完成（求解器、诊断与稳态、主界面、布局编辑与方案对比），W5（性能与定稿）待做。
+当前进度：W0–W5 完成（求解器、诊断与稳态、主界面、布局编辑与方案对比、性能与定稿）。
 
 ## 使用
 
-需要 Node.js 18 以上。
+**直接用**：下载 [`release/pcflow-web.html`](release/pcflow-web.html)（单个文件，约 160 KB），双击用浏览器打开即可，不需要
+联网或安装。需要 2022 年以后的浏览器（Chrome/Edge 98+、Firefox 94+、Safari 15.4+；已在 Chromium 上测试）。
+操作说明见 [`GUIDE.md`](GUIDE.md)。
+
+**开发**：需要 Node.js 18 以上。
 
 ```bash
 cd web
 npm install
 npm run dev         # 开发服务器，浏览器打开终端里显示的地址
 npm run build       # 生成静态网页到 dist/（可放到任意静态网站托管；npx vite preview 本地预览）
+npm run release     # 生成单文件版 release/pcflow-web.html（入口 JS、CSS 与 Worker 全部内联，可 file:// 打开）
 npm test            # 全部测试（约 2–3 分钟，含与标准答案、Octave 的逐项对照）
 npm run typecheck
 ```
@@ -25,6 +30,8 @@ npm run bench -- 1 20            # 默认布局 280² 推进 20 步的每步耗�
 npm run diag -- fixed_default    # 与标准答案逐快照对照，打印超差的场
 npm run profile -- fixed_default 40   # 各类线性求解的次数、迭代数与耗时
 npm run steady -- steady_default out.json   # 280² 固定推进 3000 步，与稳态标准答案对照（约 20 分钟）
+# 界面端到端检查（Playwright + Chromium，用全局安装的 playwright）：
+PW=$(npm root -g)/playwright OUT=/tmp/shots URL=http://localhost:4173/ node scripts/e2e.cjs
 ```
 
 ## 界面
@@ -45,14 +52,15 @@ npm run steady -- steady_default out.json   # 280² 固定推进 3000 步，与�
 - **方案对比**：保存 A/B/C 三个方案，17 项指标逐项对比，载入方案继续调整，温差视图。
 - **导出**：主视图 PNG（含标题与色标），GIF 录制（每 150 ms 一帧，最多 300 帧）。
 
-仿真在 Web Worker 里推进（每段约 30 ms 或一步，与界面命令交替），界面至多每 50 ms 收到一帧。
+仿真在 Web Worker 里推进（每段约 30 ms 或一步，与界面命令交替），界面至多每 50 ms 收到一帧。Worker 以经典脚本
+（IIFE）内联进主包、用 Blob URL 启动：模块 Worker 在 file:// 页面里会被浏览器拒绝，经典 Worker 不会。
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
 | `src/model/` | 布局数据模型：类型、默认布局、风扇型号与安装位、预设、显卡槽数、基准布局、JSON 规整与校验、风扇布局检查、方案对比表（对应 `layout_default.m`、`fan_catalog.m`、`layout_json.m`、`layout_fan_report.m`、`scenario_table.m` 等） |
-| `src/numerics/` | 自带数值例程：`gridInterp2`（linear/cubic/makima）、`edtNearest`（最近点距离变换，平局取线性索引最小）、`pchipEval`、CSR 稀疏矩阵、PCG（IC(0)/修正 IC(0) 预条件）、稀疏 Cholesky（嵌套剖分排序）、MATLAB 语义的 max/min（忽略 NaN） |
+| `src/numerics/` | 自带数值例程：`gridInterp2`（linear/cubic/makima）、`edtNearest`（最近点距离变换，平局取线性索引最小）、`pchipEval`、CSR 稀疏矩阵、PCG（IC(0)/修正 IC(0) 预条件）、5 点模板存储的扩散系统求解（与 CSR 版逐位相同）、稀疏 Cholesky（嵌套剖分排序）、MATLAB 语义的 max/min（忽略 NaN） |
 | `src/solver/` | 几何构建（§2）、矩阵装配、风扇状态（P-Q 工作点、温控、噪音分项）、元件热网络、时间推进求解器（§3–§4）、诊断量（开口风量、温度汇总、噪音、评分、建议）、跑到稳态与长时统计 |
 | `src/worker/` | 仿真 Worker：命令协议与引擎（分段推进、帧、稳态进度） |
 | `src/ui/` | 界面（Preact + Canvas 2D）：主视图、粒子示踪、等值线、配色、曲线与工作点图、各标签页、导出 |
@@ -72,22 +80,22 @@ npm run steady -- steady_default out.json   # 280² 固定推进 3000 步，与�
 - 稳态（280²，3000 步，1000 步之后每步值的均值）：默认布局与标准答案差 ≤ 1e−7；底进顶出结温差 0.012/0.018°C，
   小于该算例的准周期波动（见 CHANGELOG web-0.5.0）。
 - 线性系统：两个压力泊松用稀疏 Cholesky 直接解（PCG 要两百多次迭代）；扩散系统（速度、温度、k、ω）用修正 IC(0) 预条件
-  PCG 解到相对残差 1e−12（从静止起约 3 次迭代，流场发展后约 16 次）。冻结系数与重装策略与 MATLAB 相同（§3.10），
+  PCG 解到相对残差 1e−12（从静止起约 3 次迭代，流场发展后约 16 次），矩阵按 5 点模板存储（运算次序与 CSR 版相同，结果逐位相同）。冻结系数与重装策略与 MATLAB 相同（§3.10），
   这是逐步复现标准答案的前提。
 - 分支路径：方腔、LVEL、层流、湍流隔步更新、手动转速、各种覆盖与节流、缺元件、散热体被覆盖（NaN 语义）等 12 个小算例
   与 Octave 的全精度状态指纹一致（相对差 ≤ 1e−8）。
 
 ## 性能（Node 22，单线程，默认布局）
 
-从静止起的前几十步流场未发展，扩散系统很好解，耗时偏低；下表取预热 400 步（2 s 物理时间）之后的每步耗时
-（`npm run bench -- <gridScale> <步数>`，默认先预热 400 步）。
+`npm run bench -- <gridScale> <步数>` 默认先推进 400 步（2 s 物理时间，流场已发展）再计时。
 
-| 网格 | 前 20 步 | 预热后 | 内存（类型化数组） |
-|---|---|---|---|
-| 140²（预览） | 约 80–90 ms | 约 125 ms | 约 40–50 MB |
-| 280²（标准） | 约 400 ms | 约 580 ms | 约 190 MB |
-| 560²（精细） | 约 2.0–2.3 s | 未测 | 约 650 MB |
+| 网格 | 每步耗时 | 内存（类型化数组） |
+|---|---|---|
+| 140²（预览） | 约 95–105 ms | 约 30 MB |
+| 280²（标准） | 约 410–450 ms | 约 125 MB |
+| 560²（精细） | 约 2 s（只测了前 20 步） | 约 650 MB |
 
-280² 预热后与 Octave 版（约 0.60 s/步）相当。主要耗时：扩散系统的 PCG（修正 IC(0) 预条件，发展后每解约 16 次迭代）、
-阻力耦合压力矩阵重装时的 Cholesky 分解（280² 一次约 0.6 s）、半拉格朗日插值。浏览器（Chromium）里求解器的速度与
-Node 相当。560² 内存偏大，界面只提供 140² 与 280²。W5 再做性能优化。
+（测时机器上同时有其它进程，负载约 2.5–4。）280² 比 Octave 版（约 0.60 s/步）快约 30%。默认布局在预览网格跑到稳态
+约 700 步、1 分钟左右。主要耗时：扩散系统的 PCG（修正 IC(0) 预条件、5 点模板存储，发展后每解约 16 次迭代，约占一半）、
+阻力耦合压力矩阵重装时的 Cholesky 分解（280² 一次约 0.37 s，流场变化快时每 5 步一次）与两次压力回代（各约 17 ms）、
+半拉格朗日插值。浏览器（Chromium）里求解器的速度与 Node 相当。560² 内存偏大，界面只提供 140² 与 280²。

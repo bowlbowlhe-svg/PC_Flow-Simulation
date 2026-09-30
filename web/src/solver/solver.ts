@@ -10,7 +10,8 @@ import type { CSR } from '../numerics/sparse';
 import { buildGeometry, type FanGeom, type Geometry } from './geometry';
 import { FanState, type FanControl } from './fan';
 import { ThermalNetwork } from './thermal';
-import { cellDiffusionMatrix, faceDiffusionMatrix, pressureMatrix } from './operators';
+import { cellDiffusionMatrix, cellDiffusionStencil, faceDiffusionMatrix, faceDiffusionStencil, pressureMatrix } from './operators';
+import { StencilSolver } from '../numerics/stencil';
 
 import { AIR_CP, AIR_DENSITY } from './constants';
 import { calculateCFDDiagnostics, computeAirflowTemperatures, computeVorticity, deadZoneRatio, type AirflowTemps, type CFDDiag } from './diagnostics';
@@ -119,18 +120,19 @@ export class Solver implements FanControl {
   thermalNetworks: { cpu?: ThermalNetwork; gpu?: ThermalNetwork; psu?: ThermalNetwork } = {};
 
   // ---- 冻结算子 ----
-  private velU: SPDSolver | null = null;
-  private velV: SPDSolver | null = null;
+  // 扩散系统：默认（mic0）用模板存储的 StencilSolver（全网格，非激活面为单位行）；ic0 用 CSR 版 SPDSolver（激活面压缩）
+  private velU: SPDSolver | StencilSolver | null = null;
+  private velV: SPDSolver | StencilSolver | null = null;
   private velUAct: Int32Array = new Int32Array(0);
   private velVAct: Int32Array = new Int32Array(0);
   nuFieldAssembled: Float64Array | null = null;
   nuAsmStep = -Infinity;
-  private tempSolver: SPDSolver | null = null;
+  private tempSolver: SPDSolver | StencilSolver | null = null;
   alphaFieldAssembled: Float64Array | null = null;
   alphaAsmStep = -Infinity;
   lastAlphaEff = 0;
-  private turbKSolver: SPDSolver | null = null;
-  private turbWSolver: SPDSolver | null = null;
+  private turbKSolver: SPDSolver | StencilSolver | null = null;
+  private turbWSolver: SPDSolver | StencilSolver | null = null;
   nuTAssembled: Float64Array | null = null;
   nuTAsmStep = -Infinity;
   private lastTurbDt = 0;
@@ -138,6 +140,7 @@ export class Solver implements FanControl {
   private presDrag: LinSolver | null = null;
   private readonly presSym: CholSymbolic | null;
   private readonly diffOpts: { tol: number; precond: 'ic0' | 'mic0' };
+  private readonly stencil: boolean;
   betaRefU: Float64Array | null = null;
   betaRefV: Float64Array | null = null;
   betaRefStep = -Infinity;
@@ -151,6 +154,10 @@ export class Solver implements FanControl {
   private readonly wallAdjCaseIdx: Int32Array;
   private readonly buoyV: Uint8Array;
   private readonly dirT: Float64Array; // 按格的定温壁温度（非定温壁为 NaN）
+  private readonly dragU: Int32Array; // 阻力系数 > 0 的 u 面
+  private readonly dragV: Int32Array;
+  /** 阻力判据的两组面（多孔区、开口格栅），各为 [u 面, v 面]，只含激活面 */
+  private readonly dragGroups: [Int32Array, Int32Array][];
 
   constructor(layout: Layout, opts: SolverOptions = {}) {
     const gridScale = opts.gridScale ?? 1;
@@ -222,9 +229,23 @@ export class Solver implements FanControl {
       }
     }
     this.diffOpts = { tol: opts.diffusionTol ?? TOL, precond: opts.diffusionPrecond ?? 'mic0' };
+    this.stencil = this.diffOpts.precond === 'mic0';
     const P0 = pressureMatrix(W, H, g.uFaceActive, g.vFaceActive, null, null, this.isPin);
     this.presSym = (opts.pressureSolver ?? 'direct') === 'direct' ? cholAnalyze(P0, nestedDissectionGrid(W, H)) : null;
     this.pres0 = this.pressureSolverFor(P0);
+    const pick = (n: number, pred: (k: number) => boolean) => {
+      const out: number[] = [];
+      for (let k = 0; k < n; k++) if (pred(k)) out.push(k);
+      return Int32Array.from(out);
+    };
+    const nU = W * (H + 1);
+    const nV = (W + 1) * H;
+    this.dragU = pick(nU, (k) => g.uDragCoef[k] > 0);
+    this.dragV = pick(nV, (k) => g.vDragCoef[k] > 0);
+    this.dragGroups = [false, true].map((grille) => [
+      pick(nU, (k) => g.uDragCoef[k] > 0 && g.uFaceActive[k] === 1 && (g.uGrilleFace[k] === 1) === grille),
+      pick(nV, (k) => g.vDragCoef[k] > 0 && g.vFaceActive[k] === 1 && (g.vGrilleFace[k] === 1) === grille),
+    ]) as [Int32Array, Int32Array][];
     this.initState();
   }
 
@@ -441,17 +462,18 @@ export class Solver implements FanControl {
     for (let k = 0; k < this.uF.length; k++) if (this.geo.uFaceRing[k]) this.uF[k] = this.uF[k] * this.spongeDamping;
     for (let k = 0; k < this.vF.length; k++) if (this.geo.vFaceRing[k]) this.vF[k] = this.vF[k] * this.spongeDamping;
     // ---- 湍流 ----
-    if (this.turbulenceModel === 'komega' && this.iteration % this.turbUpdateEvery === 0) this.stepTurbulence(sr!.S);
+    // 投影与海绵阻尼之后速度不再变化：k-ω、温度平流与共轭传热共用同一份格心速度
+    const vel = this.getCellVelocity();
+    if (this.turbulenceModel === 'komega' && this.iteration % this.turbUpdateEvery === 0) this.stepTurbulence(sr!.S, vel);
     // ---- 温度：扩散 → 平流 → 边界 → 注热 ----
     const alpha = new Float64Array(this.N);
     for (let i = 0; i < this.N; i++) alpha[i] = nuEff[i] / this.AIR.Pr;
     this.diffuseTemperature(alpha);
-    const { uC, vC } = this.getCellVelocity();
-    this.T_fluid = this.advectScalar(this.T_fluid, uC, vC, this.T_amb, this.DT);
+    this.T_fluid = this.advectScalar(this.T_fluid, vel.uC, vel.vC, this.T_amb, this.DT);
     this.clampMin(this.T_fluid, this.T_amb);
     this.setDisplayObstacleTemps();
     for (const i of this.geo.spongeRingIdx) this.T_fluid[i] = this.T_amb;
-    this.solveConjugateHeatTransfer();
+    this.solveConjugateHeatTransfer(vel);
     // min(T, 200) 再 max(T, T_amb)（MATLAB 语义：NaN 先变为 200）
     for (let i = 0; i < this.N; i++) this.T_fluid[i] = mmax(mmin(this.T_fluid[i], 200), this.T_amb);
     for (const i of this.geo.spongeRingIdx) this.T_fluid[i] = this.T_amb;
@@ -485,12 +507,17 @@ export class Solver implements FanControl {
       !this.nuFieldAssembled ||
       (this.iteration - this.nuAsmStep >= this.reassembleEvery && !arraysEqual(nuField, this.nuFieldAssembled))
     ) {
-      const U = faceDiffusionMatrix(nuField, true, this.W, this.H, g.uFaceActive, this.DT, this.diffScale);
-      const V = faceDiffusionMatrix(nuField, false, this.W, this.H, g.vFaceActive, this.DT, this.diffScale);
-      this.velU = new SPDSolver(U.A, this.diffOpts);
-      this.velV = new SPDSolver(V.A, this.diffOpts);
-      this.velUAct = U.actIdx;
-      this.velVAct = V.actIdx;
+      if (this.stencil) {
+        this.velU = new StencilSolver(faceDiffusionStencil(nuField, true, this.W, this.H, g.uFaceActive, this.DT, this.diffScale), this.diffOpts.tol);
+        this.velV = new StencilSolver(faceDiffusionStencil(nuField, false, this.W, this.H, g.vFaceActive, this.DT, this.diffScale), this.diffOpts.tol);
+      } else {
+        const U = faceDiffusionMatrix(nuField, true, this.W, this.H, g.uFaceActive, this.DT, this.diffScale);
+        const V = faceDiffusionMatrix(nuField, false, this.W, this.H, g.vFaceActive, this.DT, this.diffScale);
+        this.velU = new SPDSolver(U.A, this.diffOpts);
+        this.velV = new SPDSolver(V.A, this.diffOpts);
+        this.velUAct = U.actIdx;
+        this.velVAct = V.actIdx;
+      }
       this.nuFieldAssembled = nuField;
       this.nuAsmStep = this.iteration;
     }
@@ -500,7 +527,16 @@ export class Solver implements FanControl {
     this.solveFaces(this.velV!, this.velVAct, this.vF);
   }
 
-  private solveFaces(sol: SPDSolver, act: Int32Array, f: Float64Array): void {
+  private solveFaces(sol: SPDSolver | StencilSolver, act: Int32Array, f: Float64Array): void {
+    if (sol instanceof StencilSolver) {
+      // 全面网格：非激活面已置 0（单位行、右端 0）
+      const b = new Float64Array(f.length);
+      for (let k = 0; k < f.length; k++) b[k] = f[k] / this.DT;
+      const r = sol.solve(b, f);
+      this.checkSolve(r.converged, 'velocity', r.x);
+      f.set(r.x);
+      return;
+    }
     const n = act.length;
     const b = new Float64Array(n);
     const x0 = new Float64Array(n);
@@ -695,33 +731,28 @@ export class Solver implements FanControl {
     const g = this.geo;
     const nU = W * (H + 1);
     const nV = (W + 1) * H;
-    const bU = new Float64Array(nU);
-    const bV = new Float64Array(nV);
-    for (let k = 0; k < nU; k++) bU[k] = 1 / (1 + g.uDragCoef[k] * Math.abs(uRef[k]));
-    for (let k = 0; k < nV; k++) bV[k] = 1 / (1 + g.vDragCoef[k] * Math.abs(vRef[k]));
+    // β = 1/(1 + C·|u_ref|)：无阻力面（C = 0）恒为 1，只在有阻力的面上计算
+    const bU = new Float64Array(nU).fill(1);
+    const bV = new Float64Array(nV).fill(1);
+    for (const k of this.dragU) bU[k] = 1 / (1 + g.uDragCoef[k] * Math.abs(uRef[k]));
+    for (const k of this.dragV) bV[k] = 1 / (1 + g.vDragCoef[k] * Math.abs(vRef[k]));
     let rebuild = !this.presDrag || this.forceReassemble;
     if (!rebuild && this.iteration - this.betaRefStep >= 5) {
-      // 两组：多孔区面、开口格栅面（只计流体激活面）
-      for (const grille of [false, true]) {
+      // 两组：多孔区面、开口格栅面（只计流体激活面）；面按 u 面在前、v 面在后、索引递增累加
+      for (const [gu, gv] of this.dragGroups) {
         let sum = 0;
         let big = 0;
-        let n = 0;
-        for (let k = 0; k < nU; k++) {
-          if (g.uDragCoef[k] > 0 && g.uFaceActive[k] && (g.uGrilleFace[k] === 1) === grille) {
-            const rel = Math.abs(bU[k] - this.betaRefU![k]) / this.betaRefU![k];
-            sum += rel;
-            if (rel > 0.1) big++;
-            n++;
-          }
+        for (const k of gu) {
+          const rel = Math.abs(bU[k] - this.betaRefU![k]) / this.betaRefU![k];
+          sum += rel;
+          if (rel > 0.1) big++;
         }
-        for (let k = 0; k < nV; k++) {
-          if (g.vDragCoef[k] > 0 && g.vFaceActive[k] && (g.vGrilleFace[k] === 1) === grille) {
-            const rel = Math.abs(bV[k] - this.betaRefV![k]) / this.betaRefV![k];
-            sum += rel;
-            if (rel > 0.1) big++;
-            n++;
-          }
+        for (const k of gv) {
+          const rel = Math.abs(bV[k] - this.betaRefV![k]) / this.betaRefV![k];
+          sum += rel;
+          if (rel > 0.1) big++;
         }
+        const n = gu.length + gv.length;
         if (n > 0 && (sum / n > 0.03 || big / n > 0.02)) rebuild = true;
       }
     }
@@ -773,7 +804,7 @@ export class Solver implements FanControl {
   }
 
   // ---- k-ω（§3.8）----
-  private stepTurbulence(Svec: Float64Array): void {
+  private stepTurbulence(Svec: Float64Array, vel: { uC: Float64Array; vC: Float64Array }): void {
     const betaS = 0.09;
     const beta1 = 0.0708;
     const alphaW = 5 / 9;
@@ -791,7 +822,7 @@ export class Solver implements FanControl {
       nuT[i] = mmin(v, 2000 * nu);
     }
     for (const i of this.geo.obsIdx) nuT[i] = 0;
-    const { uC, vC } = this.getCellVelocity();
+    const { uC, vC } = vel;
     const kA = this.advectScalar(this.turbK, uC, vC, kIn, dt);
     const wA = this.advectScalar(this.turbOmega, uC, vC, wIn, dt);
     for (let i = 0; i < N; i++) {
@@ -810,8 +841,13 @@ export class Solver implements FanControl {
         wK[i] = nu + sigK * nuT[i];
         wW[i] = nu + sigW * nuT[i];
       }
-      this.turbKSolver = new SPDSolver(cellDiffusionMatrix(wK, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
-      this.turbWSolver = new SPDSolver(cellDiffusionMatrix(wW, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
+      if (this.stencil) {
+        this.turbKSolver = new StencilSolver(cellDiffusionStencil(wK, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts.tol);
+        this.turbWSolver = new StencilSolver(cellDiffusionStencil(wW, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts.tol);
+      } else {
+        this.turbKSolver = new SPDSolver(cellDiffusionMatrix(wK, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
+        this.turbWSolver = new SPDSolver(cellDiffusionMatrix(wW, this.W, this.H, this.isObs, null, dt, gs), this.diffOpts);
+      }
       this.nuTAssembled = nuT;
       this.nuTAsmStep = this.iteration;
       this.lastTurbDt = dt;
@@ -868,15 +904,16 @@ export class Solver implements FanControl {
     const aMol = this.AIR.nu / this.AIR.Pr;
     const alphaField = new Float64Array(N);
     for (let i = 0; i < N; i++) alphaField[i] = mmax(alphaEff[i], aMol);
-    const alphaVal = median(alphaField);
     const stale =
       !this.alphaFieldAssembled ||
       (this.iteration - this.alphaAsmStep >= this.reassembleEvery && !arraysEqual(alphaField, this.alphaFieldAssembled));
     if (this.forceReassemble || stale) {
-      this.tempSolver = new SPDSolver(cellDiffusionMatrix(alphaField, this.W, this.H, this.isObs, this.isDir, this.DT, this.diffScale), this.diffOpts);
+      this.tempSolver = this.stencil
+        ? new StencilSolver(cellDiffusionStencil(alphaField, this.W, this.H, this.isObs, this.isDir, this.DT, this.diffScale), this.diffOpts.tol)
+        : new SPDSolver(cellDiffusionMatrix(alphaField, this.W, this.H, this.isObs, this.isDir, this.DT, this.diffScale), this.diffOpts);
       this.alphaFieldAssembled = alphaField;
       this.alphaAsmStep = this.iteration;
-      this.lastAlphaEff = alphaVal;
+      this.lastAlphaEff = median(alphaField); // 只作显示（MATLAB 每步算、只在重装时存；这里只在重装时算）
     }
     const aA = this.alphaFieldAssembled!;
     const gs = this.diffScale;
@@ -949,8 +986,8 @@ export class Solver implements FanControl {
     return AIR_DENSITY * AIR_CP * cm * cm * this.chassisDepthM;
   }
 
-  private solveConjugateHeatTransfer(): void {
-    const { uC, vC } = this.getCellVelocity();
+  private solveConjugateHeatTransfer(vel: { uC: Float64Array; vC: Float64Array }): void {
+    const { uC, vC } = vel;
     const speed = new Float64Array(this.N);
     for (let i = 0; i < this.N; i++) speed[i] = Math.sqrt(uC[i] * uC[i] + vC[i] * vC[i]) * this.VEL_SCALE;
     const rc = this.rhoCpCell();

@@ -2,6 +2,7 @@
 // 与 MATLAB CFDSolverFEM 的 assembleFaceDiffusion / buildWeightedLaplacian / buildPressureOperator
 // 数学上相同（规格 §3.2、§3.3、§3.8、§3.9）；矩阵均为对称正定（扩散用 PCG、压力用稀疏 Cholesky 求解）。
 import type { CSR } from '../numerics/sparse';
+import { StencilMatrix } from '../numerics/stencil';
 
 /** 按行收集 (列, 值) 后生成 CSR；每行列号需递增 */
 class RowBuilder {
@@ -238,4 +239,124 @@ export function pressureMatrix(
     rb.endRow();
   }
   return rb.build();
+}
+
+/**
+ * 与 faceDiffusionMatrix 相同的矩阵，存为全面网格上的 5 点模板（非激活面为单位行）。
+ * 对角元的累加次序与邻面权重逐项相同，因而与 CSR 版求解结果逐位相同。
+ */
+export function faceDiffusionStencil(
+  nuField: Float64Array,
+  isU: boolean,
+  W: number,
+  H: number,
+  faceActive: Uint8Array,
+  dt: number,
+  gs: number,
+): StencilMatrix {
+  const nR = isU ? W : W + 1;
+  const nC = isU ? H + 1 : H;
+  const nTot = nR * nC;
+  const wM = new Float64Array(nTot);
+  if (isU) {
+    for (let xf = 0; xf < nC; xf++) {
+      for (let y = 0; y < W; y++) {
+        const k = xf * W + y;
+        if (xf === 0) wM[k] = nuField[y];
+        else if (xf === H) wM[k] = nuField[(H - 1) * W + y];
+        else wM[k] = 0.5 * (nuField[(xf - 1) * W + y] + nuField[xf * W + y]);
+      }
+    }
+  } else {
+    for (let x = 0; x < H; x++) {
+      for (let yf = 0; yf < nR; yf++) {
+        const k = x * nR + yf;
+        if (yf === 0) wM[k] = nuField[x * W];
+        else if (yf === W) wM[k] = nuField[x * W + W - 1];
+        else wM[k] = 0.5 * (nuField[x * W + yf - 1] + nuField[x * W + yf]);
+      }
+    }
+  }
+  const S = new StencilMatrix(nR, nC);
+  const invDt = 1 / dt;
+  for (let f = 0; f < nTot; f++) {
+    if (!faceActive[f]) {
+      S.diag[f] = 1;
+      continue;
+    }
+    const r = f % nR;
+    const c = (f - r) / nR;
+    const wF = wM[f];
+    let sumW = 0;
+    // 邻面次序同 faceDiffusionMatrix：左、上、下、右
+    if (c > 0) {
+      const g = f - nR;
+      if (faceActive[g]) {
+        const w = 0.5 * (wF + wM[g]);
+        sumW += w;
+        S.west[f] = -gs * w;
+      } else sumW += wF;
+    } else sumW += wF;
+    if (r > 0) {
+      const g = f - 1;
+      if (faceActive[g]) {
+        const w = 0.5 * (wF + wM[g]);
+        sumW += w;
+        S.south[f] = -gs * w;
+      } else sumW += wF;
+    } else sumW += wF;
+    if (r < nR - 1) {
+      const g = f + 1;
+      sumW += faceActive[g] ? 0.5 * (wF + wM[g]) : wF;
+    } else sumW += wF;
+    if (c < nC - 1) {
+      const g = f + nR;
+      sumW += faceActive[g] ? 0.5 * (wF + wM[g]) : wF;
+    } else sumW += wF;
+    S.diag[f] = invDt + gs * sumW;
+  }
+  return S;
+}
+
+/** 与 cellDiffusionMatrix 相同的矩阵的 5 点模板存储（障碍格为钉扎行 1/dt） */
+export function cellDiffusionStencil(
+  wField: Float64Array,
+  W: number,
+  H: number,
+  isObs: Uint8Array,
+  isDir: Uint8Array | null,
+  dt: number,
+  gs: number,
+): StencilMatrix {
+  const N = W * H;
+  const S = new StencilMatrix(W, H);
+  const invDt = 1 / dt;
+  for (let i = 0; i < N; i++) {
+    if (isObs[i]) {
+      S.diag[i] = invDt;
+      continue;
+    }
+    const y = i % W;
+    const x = (i - y) / W;
+    const wi = wField[i];
+    let sumW = 0;
+    const link = (j: number, set: ((v: number) => void) | null) => {
+      const w = 0.5 * (wi + wField[j]);
+      if (!isObs[j]) {
+        sumW += w;
+        if (set) set(-gs * w);
+      } else if (isDir && isDir[j]) sumW += w;
+    };
+    // 邻格次序同 cellDiffusionMatrix：左、上、下、右；域外缺失邻居按 w_i 计入
+    if (x > 0) link(i - W, (v) => (S.west[i] = v));
+    else sumW += wi;
+    if (y > 0) link(i - 1, (v) => (S.south[i] = v));
+    else sumW += wi;
+    if (y < W - 1) link(i + 1, null);
+    else sumW += wi;
+    if (x < H - 1) link(i + W, null);
+    else sumW += wi;
+    S.diag[i] = invDt + gs * sumW;
+  }
+  return S;
 }

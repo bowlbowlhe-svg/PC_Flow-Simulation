@@ -1,5 +1,7 @@
 // 主线程侧的 Worker 封装：发送命令，保存最新的静态信息与帧，通知订阅者。
 import type { Command, FrameFields, StaticInfo, Status, WorkerMessage } from '../worker/protocol';
+// Worker 代码内联进主包（Blob URL 启动），单文件版（file:// 双击打开）也能用
+import SimWorker from '../worker/sim.worker.ts?worker&inline';
 
 export interface SimState {
   info: StaticInfo | null;
@@ -18,7 +20,7 @@ export class SimClient {
   private listeners = new Set<(s: SimState) => void>();
 
   constructor() {
-    this.worker = new Worker(new URL('../worker/sim.worker.ts', import.meta.url), { type: 'module' });
+    this.worker = new SimWorker();
     this.worker.onmessage = (e: MessageEvent<WorkerMessage>) => this.onMessage(e.data);
     this.worker.onerror = (e) => {
       this.state = { ...this.state, error: e.message || '仿真线程出错' };
