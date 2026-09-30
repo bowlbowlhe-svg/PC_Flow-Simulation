@@ -1,0 +1,26 @@
+{
+  "name": "pc-flow-web",
+  "private": true,
+  "version": "0.2.0",
+  "description": "PC 机箱风道与散热 2D 仿真（网页版，移植自 MATLAB 版 v4.2.2）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "diag": "vite-node scripts/diag.ts",
+    "profile": "vite-node scripts/profile.ts",
+    "bench": "vite-node scripts/bench.ts"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "@types/node": "^26.6.3",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "preact": "^11.0.0"
+  }
+}

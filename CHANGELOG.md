@@ -3,6 +3,29 @@
 版本号规则见 `docs/ROADMAP.md`。v3.3.1 及更早的条目原样保留自旧版 README，
 其中的数值（结温、守恒残差等）对应各自版本的模型口径。
 
+### web-0.2.0（网页版 W1：求解器）
+
+- `web/src/solver/solver.ts`：每步顺序（ALGORITHM §3）全部环节——速度隐式扩散、两次投影（普通 + 阻力耦合）、
+  面场三次插值平流、浮力、风扇执行盘（P-Q 工作点、温控曲线、噪音用低通流量比）、海绵层、k-ω（含壁面 ω、入口值）、
+  温度扩散（定温壁 Dirichlet、域外 ghost）与 makima 平流、障碍显示温度、元件热网络与共轭传热。冻结系数与重装
+  策略（每 5 步 + 系数不变时跳过、阻力判据、`forceReassemble`）与 MATLAB 相同。
+- 线性系统：压力泊松用新写的稀疏 Cholesky（`web/src/numerics/cholesky.ts`：规则网格嵌套剖分排序 + 上视分解，
+  符号分析在两个压力矩阵间复用），PCG 要两百多次迭代、直接解一次前代回代即可，140² 每步由 0.60 s 降到约 85 ms；
+  扩散系统仍用 IC(0) PCG（约 3 次迭代）。
+- 验收：`fixed_default`、`fixed_duct` 第 1/10/13/200 步的全部状态与标准答案在存储舍入内（温度 ≤ 5e−5°C，结温差约
+  1e−11°C），压力改用 PCG 时前 13 步同样一致。测试 165 项全部通过。
+- 性能（Node，单线程）：140² 约 85 ms/步，280² 约 380 ms/步，560² 约 2.0 s/步（内存约 660 MB，W5 优化）。
+- 诊断脚本：`npm run diag`（逐快照对照）、`npm run profile`（线性求解统计）、`npm run bench`（每步耗时）。
+
+### web-0.1.0（网页版 W0：骨架、布局模型、数值例程、几何）
+
+- `web/`：TypeScript + Vite + Vitest + Preact 工程骨架（界面在 W3）。
+- 布局模型（`web/src/model/`）：类型、默认布局、风扇型号/安装位/预设、显卡槽数（2–4.5 槽）、基准布局、
+  JSON 规整与校验，与 MATLAB 的 `layout_default`、`fan_catalog`、`layout_json` 等一致（数据集嵌入的 5 种布局逐项相同）。
+- 数值例程（`web/src/numerics/`）：`gridInterp2`、`edtNearest`、`pchipEval`、CSR 稀疏矩阵、PCG（IC(0)、修正 IC(0)、
+  Jacobi），与 Octave 8.4 逐位相同（`web/test/fixtures/numerics.json`，由 `web/test/gen/gen_numerics_fixtures.m` 生成）。
+- 几何构建（`web/src/solver/geometry.ts`，ALGORITHM §2）：`fixed_default`、`fixed_duct` 的几何导出逐项相同。
+
 ### v4.2.2 文档修订（审计后；计算代码与数据不变）
 
 v4.2.2 的独立审计结论为"有条件放行"。重要问题：每 5 步重装在 280² 正压布局上仍有假平台——第 600–1800 步 GPU 停在
