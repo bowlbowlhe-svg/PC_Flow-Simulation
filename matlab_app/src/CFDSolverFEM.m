@@ -10,10 +10,11 @@ classdef CFDSolverFEM < CFDSolverBase
     %     6. 温度隐式扩散 → 半拉格朗日平流（makima 保形）→ 边界 → 共轭传热注热
     %
     %   扩散算子系数 diffScale = 1/格距²（ν、α 为物理量 m²/s）。速度/温度/k-ω 扩散的稀疏分解
-    %   每隔 reassembleEvery（10）步按当前系数场（ν_eff、α_eff、ν_t）重装一次，重装时刻与数值无关，
-    %   移植实现可逐步复现。此前的阈值判据都会让算子过期：v4.1 按全域中位数（机箱外静止空气使
-    %   中位数几乎不变，280² 默认布局先停在假平台，约 850 步才跳变）；v4.2.0 按全域相对 L1 变化 5%
-    %   （局部变化被摊薄，140² 前进顶出布局出现假平台后转为振荡）。
+    %   每隔 reassembleEvery（5）步按当前系数场（ν_eff、α_eff、ν_t）重装一次（系数场与装配时逐位
+    %   相同则不重装，如层流基准），重装时刻与数值无关，移植实现可逐步复现。过期的算子会造成假平台
+    %   与伪振荡：v4.1 按全域中位数判断（280² 默认布局先停在假平台，约 850 步才跳变）；v4.2.0 按全域
+    %   相对 L1 变化 5%（140² 前进顶出假平台后振荡）；v4.2.1 每 10 步（280² 底进顶出 GPU 伪振荡 ±0.1°C、
+    %   偏 +0.46°C）。每 5 步时各算例与每步重装相差 ≤ 0.05°C。
 
     properties
         K_lap           % 5 点差分 Laplacian（外圈缺失邻居计入对角，即伪 Dirichlet）
@@ -42,7 +43,7 @@ classdef CFDSolverFEM < CFDSolverBase
         nuFieldAssembled = []  % 当前速度扩散算子装配时所用的 ν_eff 场
         alphaFieldAssembled = []  % 当前温度扩散算子装配时所用的 α_eff 场
         nuTAssembled = []      % 当前 k-ω 扩散算子装配时所用的 ν_t 场
-        reassembleEvery = 10   % 扩散算子（速度/温度/k-ω）每隔多少步重装
+        reassembleEvery = 5    % 扩散算子（速度/温度/k-ω）每隔多少步重装
         nuAsmStep = -inf       % 各算子上次装配时的 iteration
         alphaAsmStep = -inf
         nuTAsmStep = -inf
@@ -264,7 +265,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
             obj.nuFieldStep = nuField;
             if obj.forceReassemble || isempty(obj.nuFieldAssembled) || ...
-                    obj.iteration - obj.nuAsmStep >= obj.reassembleEvery
+                    (obj.iteration - obj.nuAsmStep >= obj.reassembleEvery && ~isequal(nuField, obj.nuFieldAssembled))
                 dt = obj.DT;
                 gs = obj.diffScale;
                 [obj.decomp_velU, obj.velU_actIdx] = obj.assembleFaceDiffusion(nuField, true,  dt, gs);
@@ -527,7 +528,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
         function diffuseTemperature(obj, alphaEff)
             % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，每隔 reassembleEvery 步按当前
-            % α_eff 场重装；边界 RHS 用装配时的 α 场（与矩阵一致）。
+            % α_eff 场重装（与装配时逐位相同则不重装）；边界 RHS 用装配时的 α 场（与矩阵一致）。
             % 定温壁 Dirichlet，其余障碍绝热。
             if nargin < 2 || isempty(alphaEff)
                 alphaEff = obj.AIR.nu / obj.AIR.Pr;
@@ -544,7 +545,8 @@ classdef CFDSolverFEM < CFDSolverBase
                         ~isempty(obj.alphaFieldAssembled);
             else
                 stale = isempty(obj.alphaFieldAssembled) || ...
-                        obj.iteration - obj.alphaAsmStep >= obj.reassembleEvery;
+                        (obj.iteration - obj.alphaAsmStep >= obj.reassembleEvery && ...
+                         ~isequal(alphaField, obj.alphaFieldAssembled));
             end
             if obj.forceReassemble || stale
                 dt = obj.DT;
@@ -648,7 +650,7 @@ classdef CFDSolverFEM < CFDSolverBase
 
             % 2) 隐式扩散（距上次装配 ≥ reassembleEvery 步或推进时长变化时按当前 ν_t 重装）
             if obj.forceReassemble || isempty(obj.decomp_turbK) || obj.lastTurbDt ~= dt || ...
-                    obj.iteration - obj.nuTAsmStep >= obj.reassembleEvery
+                    (obj.iteration - obj.nuTAsmStep >= obj.reassembleEvery && ~isequal(nuT, obj.nuTAssembled))
                 LwK = obj.buildWeightedLaplacian(nu + sigK * nuT, true);
                 LwW = obj.buildWeightedLaplacian(nu + sigW * nuT, true);
                 % 障碍行列已由 buildWeightedLaplacian 清零，钉扎行对角 = 1/dt（RHS 为 0）

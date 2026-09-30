@@ -9,7 +9,7 @@ function make_reference_dataset(cases, outDir)
 %     fixed_default  默认布局与功率，预览网格 140²，湍流逐步更新，从静止推进 200 步
 %     fixed_duct     直风道基准（ζ = 20），预览网格，200 步
 %                    两者都含：几何导出（障碍类型、面掩码、阻力系数、最近流体格、壁距、
-%                    风扇盘、开口、共轭传热区域、海绵环）、第 1/10/200 步的完整状态快照
+%                    风扇盘、开口、共轭传热区域、海绵环）、第 1/10/13/200 步的完整状态快照
 %                    （温度、面速度、两次投影压力、k、ω、ν_eff、固体温度、风扇与热网络状态），
 %                    以及第 200 步的显示量（格心速度 m/s、静压 Pa）
 %     steady_*       默认布局三种功率（gaming/default/heavy）与 4 个预设（front_top、positive、
@@ -31,9 +31,9 @@ function make_reference_dataset(cases, outDir)
         c = cases{k};
         switch c
             case 'fixed_default'
-                R = fixedCase(layout_default(), [125 250 450], 0.5, [1 10 200]);
+                R = fixedCase(layout_default(), [125 250 450], 0.5, [1 10 13 200]);
             case 'fixed_duct'
-                R = fixedCase(layout_benchmark('duct', 20), [0 0 0], 0.5, [1 10 200]);
+                R = fixedCase(layout_benchmark('duct', 20), [0 0 0], 0.5, [1 10 13 200]);
             case 'steady_gaming',     R = steadyCase(layout_default(), [100 200 500], c);
             case 'steady_default',    R = steadyCase(layout_default(), [125 250 450], c);
             case 'steady_heavy',      R = steadyCase(layout_default(), [180 320 850], c);
@@ -135,8 +135,8 @@ function R = steadyCase(L, P, tag)
     stat = @(v) cell2struct(num2cell(v), S.columns, 2);
     R = struct('kind', 'steady', 'layout', listifyLayout(L), 'powers', P, 'gridScale', 1, 'DT', s.DT, ...
         'steps', S.steps, 'avgFrom', S.avgFrom, ...
-        'note', ['稳态结果取 avgFrom 步之后每 50 步瞬时值的统计（不依赖判稳时刻）；' ...
-                 'history 每行为 [步数, 各列瞬时值]，列名见 columns'], ...
+        'note', ['稳态结果取 avgFrom 步之后每一步瞬时值的统计（不依赖判稳时刻）；' ...
+                 'history 每 10 步一行 [步数, 各列瞬时值]，列名见 columns'], ...
         'columns', {S.columns}, 'mean', stat(S.mean), 'std', stat(S.std), 'min', stat(S.min), ...
         'max', stat(S.max), 'history', r6(S.history), 'scalars', scalars(s));
 end

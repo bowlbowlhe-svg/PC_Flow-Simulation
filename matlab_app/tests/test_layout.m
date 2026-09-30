@@ -89,6 +89,32 @@ function pass = test_layout()
     end
     delete(f);
 
+    % 5b) 列表字段各项字段顺序不同 → jsondecode 给出 cell，读取时规整为列向 struct 数组；字段不一致时报错
+    Ld = layout_benchmark('duct', 20);
+    v = Ld.vents(1);
+    fnv = fieldnames(v);
+    v2 = orderfields(v, fnv(end:-1:1));             % 同样的字段，顺序相反
+    Ld.vents = {v, v2};
+    writeRaw(f, Ld);
+    try
+        Lr = layout_json('load', f);
+        errs = check(errs, isstruct(Lr.vents) && isequal(size(Lr.vents), [2 1]), ...
+            '字段顺序不同的 vents 应规整为 2×1 struct 数组');
+        CFDSolverFEM(0, 0, 0, Lr, 0.5);
+    catch ME
+        errs{end+1} = ['字段顺序不同的 vents 读取/构建失败：' ME.message];
+    end
+    v3 = v; v3.extra = 1;
+    Ld.vents = {v, v3};
+    writeRaw(f, Ld);
+    try
+        layout_json('load', f);
+        errs{end+1} = '字段不一致的 vents 应报错';
+    catch ME
+        errs = check(errs, strcmp(ME.identifier, 'layout_json:list'), ['错误标识应为 layout_json:list：' ME.identifier]);
+    end
+    delete(f);
+
     pass = isempty(errs);
     for k = 1:numel(errs), fprintf('  - %s\n', errs{k}); end
     if pass, stt = 'PASS'; else, stt = 'FAIL'; end
@@ -107,4 +133,11 @@ function F = sortFans(F)
     key = arrayfun(@(f) sprintf('%s%06.1f', f.mount, f.alongMm), F, 'UniformOutput', false);
     [~, i] = sort(key);
     F = F(i);
+end
+
+function writeRaw(f, L)
+    % 不经 layout_json 直接写（构造 jsondecode 会给出 cell 的输入）
+    fid = fopen(f, 'w');
+    fwrite(fid, unicode2native(jsonencode(L), 'UTF-8'));
+    fclose(fid);
 end

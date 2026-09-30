@@ -62,7 +62,7 @@ function L = normalize(L)
             end
             try
                 c = cellfun(@orderfields, c, 'UniformOutput', false);
-                L.(nm{1}) = [c{:}];
+                L.(nm{1}) = reshape([c{:}], [], 1);   % 与 jsondecode 的 struct 数组同为列向
             catch
                 error('layout_json:list', '%s 的各项字段不一致', nm{1});
             end
