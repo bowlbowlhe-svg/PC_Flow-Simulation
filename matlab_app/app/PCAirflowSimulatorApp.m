@@ -1035,7 +1035,7 @@ classdef PCAirflowSimulatorApp < handle
                 rpm = f.getRPM(s);
                 qFree = f.cfm_max * rpm / f.rpm_max;               % CFM
                 q = linspace(0, 1, 21);
-                dp = f.pmax_pa * (rpm / f.rpm_max)^2 * interp1(f.PQ_QGRID, f.pq_curve, q, 'pchip');
+                dp = f.pmax_pa * (rpm / f.rpm_max)^2 * pchip_eval(f.PQ_QGRID, f.pq_curve, q);
                 set(app.hPQ{k}{1}, 'XData', q * qFree, 'YData', dp);
                 set(app.hPQ{k}{2}, 'XData', max(s.diskFlow(f), 0) * Fan.CFM_PER_M3S, 'YData', max(f.lastDp, 0));
             end

@@ -10,9 +10,10 @@ classdef CFDSolverFEM < CFDSolverBase
     %     6. 温度隐式扩散 → 半拉格朗日平流（makima 保形）→ 边界 → 共轭传热注热
     %
     %   扩散算子系数 diffScale = 1/格距²（ν、α 为物理量 m²/s）。速度/温度/k-ω 扩散的稀疏分解
-    %   在系数场（ν_eff、α_eff、ν_t）相对装配时的场的 L1 变化 Σ|a−b|/Σ|b| > reassembleTol（5%）
-    %   时重装。v4.2 前按全域中位数判断：机箱外大片静止空气使中位数几乎不变，算子会长期停留在
-    %   早期的系数场上，280² 下出现假的"第一平台"（默认布局约 850 步时才重装并跳到真实状态）。
+    %   每隔 reassembleEvery（10）步按当前系数场（ν_eff、α_eff、ν_t）重装一次，重装时刻与数值无关，
+    %   移植实现可逐步复现。此前的阈值判据都会让算子过期：v4.1 按全域中位数（机箱外静止空气使
+    %   中位数几乎不变，280² 默认布局先停在假平台，约 850 步才跳变）；v4.2.0 按全域相对 L1 变化 5%
+    %   （局部变化被摊薄，140² 前进顶出布局出现假平台后转为振荡）。
 
     properties
         K_lap           % 5 点差分 Laplacian（外圈缺失邻居计入对角，即伪 Dirichlet）
@@ -41,8 +42,11 @@ classdef CFDSolverFEM < CFDSolverBase
         nuFieldAssembled = []  % 当前速度扩散算子装配时所用的 ν_eff 场
         alphaFieldAssembled = []  % 当前温度扩散算子装配时所用的 α_eff 场
         nuTAssembled = []      % 当前 k-ω 扩散算子装配时所用的 ν_t 场
-        reassembleTol = 0.05   % 冻结算子重装判据：系数场相对 L1 变化
-        forceReassemble = false  % 诊断：每步重装全部冻结算子
+        reassembleEvery = 10   % 扩散算子（速度/温度/k-ω）每隔多少步重装
+        nuAsmStep = -inf       % 各算子上次装配时的 iteration
+        alphaAsmStep = -inf
+        nuTAsmStep = -inf
+        forceReassemble = false  % 诊断：每步重装全部冻结算子（含阻力耦合压力算子）
         lastAlphaEff = 0    % 上次温度扩散装配时的 α_eff 中位数（标量 α 路径的判据与边界项）
         lastAlphaField = [] % 本步温度扩散使用的 α 场（守恒校核用）
         % k-ω 输运缓存
@@ -82,6 +86,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.velU_actIdx = []; obj.velV_actIdx = [];
             obj.lastNuEff = 0;
             obj.nuFieldAssembled = []; obj.alphaFieldAssembled = []; obj.nuTAssembled = [];
+            obj.nuAsmStep = -inf; obj.alphaAsmStep = -inf; obj.nuTAsmStep = -inf;
         end
 
         % ================================================================
@@ -259,13 +264,14 @@ classdef CFDSolverFEM < CFDSolverBase
 
             obj.nuFieldStep = nuField;
             if obj.forceReassemble || isempty(obj.nuFieldAssembled) || ...
-                    obj.relChange(nuField, obj.nuFieldAssembled) > obj.reassembleTol
+                    obj.iteration - obj.nuAsmStep >= obj.reassembleEvery
                 dt = obj.DT;
                 gs = obj.diffScale;
                 [obj.decomp_velU, obj.velU_actIdx] = obj.assembleFaceDiffusion(nuField, true,  dt, gs);
                 [obj.decomp_velV, obj.velV_actIdx] = obj.assembleFaceDiffusion(nuField, false, dt, gs);
                 obj.lastNuEff = nuVal;
                 obj.nuFieldAssembled = nuField;
+                obj.nuAsmStep = obj.iteration;
             end
 
             obj.uF(~obj.uFaceActive) = 0;
@@ -450,12 +456,6 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.vF = reshape(max(-velCap, min(velCap, vM)), [], 1);
         end
 
-        function r = relChange(~, a, b)
-            % 系数场相对 L1 变化 Σ|a − b| / Σ|b|（b 为装配时的场）
-            if isempty(b) || numel(a) ~= numel(b), r = inf; return; end
-            r = sum(abs(a(:) - b(:))) / max(sum(abs(b(:))), realmin);
-        end
-
         function advectFaces(obj)
             % 面场半拉格朗日平流（cubic）。回溯速度：u 面取本地 u + 环绕四个 v 面平均，
             % v 面对称。插值器第 1 维为 y，查询为 (y 回溯, x 回溯)。
@@ -526,8 +526,8 @@ classdef CFDSolverFEM < CFDSolverBase
         end
 
         function diffuseTemperature(obj, alphaEff)
-            % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，α_eff 场相对装配时的
-            % L1 变化 > reassembleTol 时重装；边界 RHS 用装配时的 α 场（与矩阵一致）。
+            % 温度隐式扩散。α 为空间场时用面加权 Laplacian 装配，每隔 reassembleEvery 步按当前
+            % α_eff 场重装；边界 RHS 用装配时的 α 场（与矩阵一致）。
             % 定温壁 Dirichlet，其余障碍绝热。
             if nargin < 2 || isempty(alphaEff)
                 alphaEff = obj.AIR.nu / obj.AIR.Pr;
@@ -544,7 +544,7 @@ classdef CFDSolverFEM < CFDSolverBase
                         ~isempty(obj.alphaFieldAssembled);
             else
                 stale = isempty(obj.alphaFieldAssembled) || ...
-                        obj.relChange(alphaField, obj.alphaFieldAssembled) > obj.reassembleTol;
+                        obj.iteration - obj.alphaAsmStep >= obj.reassembleEvery;
             end
             if obj.forceReassemble || stale
                 dt = obj.DT;
@@ -554,6 +554,7 @@ classdef CFDSolverFEM < CFDSolverBase
                     A_temp = obj.M_mass/dt - gs*Lw;       % 钉扎行对角 = 1/dt
                     obj.tempCoupling = coupling;
                     obj.alphaFieldAssembled = alphaField;
+                    obj.alphaAsmStep = obj.iteration;
                 else
                     A_temp = obj.M_mass/dt - alphaVal * gs * obj.L_temp + alphaVal * gs * obj.E_obs;
                     obj.tempCoupling = [];
@@ -645,15 +646,16 @@ classdef CFDSolverFEM < CFDSolverBase
             kA = max(kA, obj.nuTFloor);
             wA = max(wA, 1e-6);
 
-            % 2) 隐式扩散（ν_t 场相对装配时的 L1 变化 > reassembleTol 或推进时长变化时重装）
+            % 2) 隐式扩散（距上次装配 ≥ reassembleEvery 步或推进时长变化时按当前 ν_t 重装）
             if obj.forceReassemble || isempty(obj.decomp_turbK) || obj.lastTurbDt ~= dt || ...
-                    obj.relChange(nuT, obj.nuTAssembled) > obj.reassembleTol
+                    obj.iteration - obj.nuTAsmStep >= obj.reassembleEvery
                 LwK = obj.buildWeightedLaplacian(nu + sigK * nuT, true);
                 LwW = obj.buildWeightedLaplacian(nu + sigW * nuT, true);
                 % 障碍行列已由 buildWeightedLaplacian 清零，钉扎行对角 = 1/dt（RHS 为 0）
                 obj.decomp_turbK = decomposition(obj.M_mass/dt - gs*LwK, 'ldl');
                 obj.decomp_turbW = decomposition(obj.M_mass/dt - gs*LwW, 'ldl');
                 obj.nuTAssembled = nuT;
+                obj.nuTAsmStep = obj.iteration;
                 obj.lastTurbDt = dt;
             end
             rhsK = obj.M_mass/dt * kA;  rhsK(obj.obsIdx) = 0;

@@ -52,6 +52,22 @@ function L = normalize(L)
         end
         L.caseFans = cf(:);
     end
+    % 其它列表字段：各项字段不齐时 jsondecode 给出 cell，统一成 struct 数组
+    for nm = {'vents', 'solidBlocks', 'porousBlocks'}
+        if isfield(L, nm{1}) && iscell(L.(nm{1}))
+            c = L.(nm{1});
+            if isempty(c)
+                L.(nm{1}) = [];
+                continue;
+            end
+            try
+                c = cellfun(@orderfields, c, 'UniformOutput', false);
+                L.(nm{1}) = [c{:}];
+            catch
+                error('layout_json:list', '%s 的各项字段不一致', nm{1});
+            end
+        end
+    end
     validateFans(L);
     % 电源仓挡板缺口：空数组读回为 []
     if isfield(L, 'shroud') && isfield(L.shroud, 'gaps') && isempty(L.shroud.gaps)

@@ -2,7 +2,7 @@
 
 网页版（或其它移植）对照用的参考数据，由 `tools/make_reference_dataset` 生成；
 算法说明见 [`../../../docs/ALGORITHM.md`](../../../docs/ALGORITHM.md)。每个文件记录生成环境
-（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.2.0 在
+（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.2.1 在
 GNU Octave 8.4 下生成（单线程）。
 
 | 文件 | 内容 |
@@ -62,7 +62,7 @@ GNU Octave 8.4 下生成（单线程）。
    ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.15°C、
    风量 σ ≤ 0.6 CFM）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
 5. **基准**（`bench.json`）：Nu 与风道流量的相对差 ≤ 1%（本数据与解析解/文献值的偏差：Nu +2.5/+2.1%，
-   风道 +1.0/+0.6/+0.7%）。
+   风道 +0.7/+0.5/+0.4%）。
 
 `tests/test_reference.m` 按第 2 级复算两个 `fixed_*` 算例（`run_all_tests('full')` 包含）。
 数据由 Octave 生成，而插值、最近流体格、pchip 都是项目自带实现，MATLAB 下的差异应只来自线性求解与求和的舍入。

@@ -20,7 +20,7 @@ function pass = test_fan_duct(zetaPlug, nSteps)
     K = b.zetaPlug + b.zetaIn + b.zetaOut + 1;
     rho = s.AIR_DENSITY;
     qMax = fan.cfm_max * s.CFM_TO_M3S;           % 满速
-    fanDp = @(q) fan.pmax_pa * interp1(fan.PQ_QGRID, fan.pq_curve, min(max(q,0),1), 'pchip');
+    fanDp = @(q) fan.pmax_pa * pchip_eval(fan.PQ_QGRID, fan.pq_curve, min(max(q,0),1));
     sysDp = @(q) K * 0.5 * rho * (q * qMax / b.areaM2).^2;
     lo = 0; hi = 1;
     for it = 1:60
