@@ -119,6 +119,8 @@ export function FieldView(p: Props) {
     sizePx: 0,
     dirty: true,
     acc: 0, // 粒子推进的时间累积 [s]
+    lastFrameNo: -1,
+    idleSince: 0, // 最近一次有新帧（或鼠标活动）的时刻 [ms]
   });
 
   // 画布尺寸跟随容器（正方形）
@@ -155,8 +157,15 @@ export function FieldView(p: Props) {
           s.tracer.reset({ W: info.W, H: info.H, obstacle: info.obstacle, fluidIdx: info.fluidIdx, insideIdx: info.insideIdx }, Math.round(1500 * Math.max(1, info.gridScale)));
           s.tracerBuild = P.buildNo;
         }
-        // 同 MATLAB：每 0.05 s 推进一帧（0.02 s 物理时间）；寿命、尾迹、静止判据都按这个帧率计，与屏幕刷新率无关
-        s.acc = Math.min(s.acc + dtReal, 0.2);
+        // 同 MATLAB：每 0.05 s 推进一帧（0.02 s 物理时间）；寿命、尾迹、静止判据都按这个帧率计，与屏幕刷新率无关。
+        // 流场约 2 分钟没有新帧（暂停且无操作）时粒子也停下，省 CPU（同 MATLAB 粒子定时器 2400 帧后自停）；
+        // 有新帧或鼠标移到视图上即恢复
+        if (P.frameNo !== s.lastFrameNo) {
+          s.lastFrameNo = P.frameNo;
+          s.idleSince = t;
+        }
+        const idle = t - s.idleSince > 120000;
+        s.acc = idle ? 0 : Math.min(s.acc + dtReal, 0.2);
         while (s.acc >= 0.05) {
           s.tracer.step(fields.uC, fields.vC, info.VEL_SCALE, info.cellMm / 1000, 0.02);
           s.acc -= 0.05;
@@ -204,6 +213,7 @@ export function FieldView(p: Props) {
     return -1;
   };
   const onMove = (e: MouseEvent) => {
+    st.current.idleSince = performance.now();
     canvasRef.current!.style.cursor = slotAt(e) >= 0 ? 'pointer' : 'crosshair';
     const P = props.current;
     const c = canvasRef.current!;
@@ -391,7 +401,11 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     ctx.fillStyle = 'rgba(64,199,89,0.9)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText('主板区', E(info.motherboardTray.x) + 5 * sc, E(info.motherboardTray.y) + 5 * sc); // 同 MATLAB：左上角
+    // 同 MATLAB 放在左上角；VRM 在左上角时移到其右侧，免得被 VRM 框压住
+    const mt = info.motherboardTray;
+    let lx = mt.x + 5;
+    if (info.vrm && info.vrm.x <= lx + 8 && info.vrm.y <= mt.y + 10) lx = Math.max(lx, info.vrm.x + info.vrm.w + 2);
+    ctx.fillText('主板区', E(lx), E(mt.y) + 5 * sc);
   }
   if (info.vrm) {
     rect(info.vrm, 'rgba(217,217,217,0.9)', base);

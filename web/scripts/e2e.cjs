@@ -147,6 +147,27 @@ function check(cond, msg) {
   check((await text('.layout-info')).split('\n')[0] === before.split('\n')[0], '布局名未被改写');
   await p.click('.error');
 
+  // 8b. 配置缺 power：沿用当前功率正常载入；power 不全：报"配置无效"，不载入（最终审计）
+  const Lnp = JSON.parse(fs.readFileSync(js, 'utf8'));
+  delete Lnp.power;
+  await p.setInputFiles('input[type=file]', writeJson('nopower.json', Lnp));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('nopower.json'), null, { timeout: 30000 });
+  check(true, '缺 power 的配置正常载入');
+  const Lpart = JSON.parse(fs.readFileSync(js, 'utf8'));
+  Lpart.power = { cpu: 100 };
+  await p.setInputFiles('input[type=file]', writeJson('partpower.json', Lpart));
+  await p.waitForSelector('.error', { timeout: 30000 });
+  check((await text('.error')).includes('配置无效'), `power 不全时报错：${(await text('.error')).slice(0, 50)}`);
+  check(!(await text('.layout-info')).includes('partpower.json'), 'power 不全的配置未载入');
+  await p.click('.error');
+  // 8c. 计算域过大：读取时即报错
+  const Lbig = JSON.parse(fs.readFileSync(js, 'utf8'));
+  Lbig.domain.sizeMm = 8000;
+  await p.setInputFiles('input[type=file]', writeJson('bigdomain.json', Lbig));
+  await p.waitForSelector('.error', { timeout: 30000 });
+  check((await text('.error')).includes('读取配置失败'), `超大计算域报错：${(await text('.error')).slice(0, 50)}`);
+  await p.click('.error');
+
   // 9. GIF 录制约 2 秒
   await p.click('text=▶ 开始仿真');
   await p.click('text=● 录制 GIF');

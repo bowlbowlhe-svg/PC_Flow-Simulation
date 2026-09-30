@@ -26,6 +26,8 @@ export class SimClient {
     this.worker.onmessage = (e: MessageEvent<WorkerMessage>) => this.onMessage(e.data);
     this.worker.onerror = (e) => {
       this.state = { ...this.state, error: e.message || '仿真线程出错' };
+      // 仿真线程出错：挂起的重建请求一律按失败结束，界面不会卡在"正在重建"
+      for (const id of [...this.pendingBuilds.keys()]) this.settle(id, { ok: false, message: this.state.error ?? '' });
       this.emit();
     };
   }

@@ -28,7 +28,7 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 420px;
+  grid-template-columns: minmax(0, 1fr) 450px;
   gap: 12px;
   padding: 12px;
   max-width: 1400px;
@@ -399,13 +399,13 @@ button.danger {
 .fan-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .fan-table th,
 .fan-table td {
-  padding: 3px 4px;
+  padding: 3px 3px;
   border-bottom: 1px solid #1e1e36;
   text-align: right;
   white-space: nowrap;

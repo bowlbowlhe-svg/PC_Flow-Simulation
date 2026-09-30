@@ -18,7 +18,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '0.9.0';
+export const APP_VERSION = '1.0.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -119,17 +119,20 @@ export function App() {
   }
   const report: FanReport = layoutFanReport(pending ?? pendingBase);
 
-  const onPower = (name: ComponentName, w: number) => {
+  // 滑块拖动中只更新显示，松手（或按钮）才发给求解器（同 MATLAB 滑块的 ValueChanged）
+  const onPower = (name: ComponentName, w: number, send = true) => {
     const [lo, hi] = POWER_LIMITS[name];
     const v = Math.min(hi, Math.max(lo, w));
     setPowers((p) => ({ ...p, [name]: v }));
-    client.send({ type: 'setPower', name, watts: v });
+    if (send) client.send({ type: 'setPower', name, watts: v });
   };
-  const onFan = (auto: boolean, pct: number) => {
+  const onFan = (auto: boolean, pct: number, send = true) => {
     setAutoFan(auto);
     setFanPct(pct);
-    client.send({ type: 'setFan', auto, pct });
+    if (send) client.send({ type: 'setFan', auto, pct });
   };
+  const preciseRef = useRef(precise);
+  preciseRef.current = precise;
   /**
    * 重建求解器，成功后才返回 true（同 MATLAB rebuildSolver：失败时原求解器保留、界面状态不变，Worker 报"重建失败"）。
    * 调用方只在成功后提交界面状态（已应用布局、标签、网格、功率），也只在成功后才发"跑到稳态"。
@@ -138,7 +141,8 @@ export function App() {
     setBuilding(true);
     const r = await client.init({ layout: L, gridScale: gs, powers: p, autoFan: auto, fanPct: pct });
     setBuilding(false);
-    if (r.ok && precise) client.send({ type: 'setForceReassemble', on: true });
+    // 精确模式按当前勾选状态（重建期间勾选框禁用；这里取最新值而不是调用时的旧值）
+    if (r.ok && preciseRef.current) client.send({ type: 'setForceReassemble', on: true });
     return r.ok;
   };
   const setPendingFromLayout = (L: Layout) => {
@@ -181,9 +185,20 @@ export function App() {
       setSim({ ...client.state });
       return;
     }
-    // 功率同 MATLAB 经滑块：夹在滑块范围内并取整
-    const p = { cpu: L.power.cpu, gpu: L.power.gpu, psu: L.power.psu };
-    for (const n of ['cpu', 'gpu', 'psu'] as const) p[n] = Math.round(Math.min(POWER_LIMITS[n][1], Math.max(POWER_LIMITS[n][0], p[n])));
+    // 功率：配置里没有 power 时沿用当前功率（同 MATLAB isfield）；有则每项须为有限数，夹在滑块范围内并取整
+    const p = { ...powers };
+    const raw = (L as { power?: Record<string, unknown> }).power;
+    if (raw !== undefined && raw !== null) {
+      for (const n of ['cpu', 'gpu', 'psu'] as const) {
+        const v = raw[n];
+        if (typeof v !== 'number' || !Number.isFinite(v)) {
+          client.state.error = `配置无效：power.${n} 应为有限的数（${f.name}）`;
+          setSim({ ...client.state });
+          return;
+        }
+        p[n] = Math.round(Math.min(POWER_LIMITS[n][1], Math.max(POWER_LIMITS[n][0], v)));
+      }
+    }
     const L2 = { ...L, power: p };
     if (await applyLayout(false, L2, `配置 ${f.name}`, p)) setPendingFromLayout(L2);
   };
@@ -347,10 +362,11 @@ export function App() {
                 <option value="1">精确 280²</option>
               </select>
             </label>
-            <label title="每步按当前系数重装全部冻结算子（ALGORITHM §3.10），结果更精确，约慢 3 倍">
+            <label title="每步按当前系数重装全部冻结算子（ALGORITHM §3.10），结果更精确，约慢 2 倍（与网格的“精确 280²”无关）">
               <input
                 type="checkbox"
                 checked={precise}
+                disabled={building}
                 onChange={(e) => {
                   const on = (e.target as HTMLInputElement).checked;
                   setPrecise(on);
@@ -395,6 +411,7 @@ export function App() {
             autoFan={autoFan}
             fanPct={fanPct}
             onPower={onPower}
+            disabled={building}
             onScenario={(p) => (['cpu', 'gpu', 'psu'] as const).forEach((n, k) => onPower(n, p[k]))}
             onFan={onFan}
           />

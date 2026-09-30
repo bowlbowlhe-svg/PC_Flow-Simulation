@@ -173,6 +173,7 @@ export class StencilSolver {
   solve(b: Float64Array, x0: Float64Array | null): { x: Float64Array; iters: number; relres: number; converged: boolean } {
     const A = this.A;
     const n = A.n;
+    // maxIter 按全网格 n 计（CSR 版按激活面数）；只在不收敛时才有差别
     const maxIter = Math.max(200, Math.min(n, 10000));
     const { r, z, p, q, M } = this;
     const x = new Float64Array(n);

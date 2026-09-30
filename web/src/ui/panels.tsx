@@ -92,9 +92,12 @@ interface FansTabProps {
   powers: Record<ComponentName, number>;
   autoFan: boolean;
   fanPct: number;
-  onPower: (name: ComponentName, w: number) => void;
+  /** send = false：拖动中只更新显示 */
+  onPower: (name: ComponentName, w: number, send?: boolean) => void;
   onScenario: (p: [number, number, number]) => void;
-  onFan: (auto: boolean, pct: number) => void;
+  onFan: (auto: boolean, pct: number, send?: boolean) => void;
+  /** 重建求解器期间禁用（避免界面与求解器状态不一致） */
+  disabled?: boolean;
 }
 
 export function FansTab(p: FansTabProps) {
@@ -112,7 +115,9 @@ export function FansTab(p: FansTabProps) {
         max={POWER_LIMITS[name][1]}
         step={1}
         value={p.powers[name]}
-        onInput={(e) => p.onPower(name, Math.round(Number((e.target as HTMLInputElement).value)))}
+        disabled={p.disabled}
+        onInput={(e) => p.onPower(name, Math.round(Number((e.target as HTMLInputElement).value)), false)}
+        onChange={(e) => p.onPower(name, Math.round(Number((e.target as HTMLInputElement).value)))}
       />
       <span class="slider-val">{p.powers[name]} W</span>
     </label>
@@ -128,7 +133,7 @@ export function FansTab(p: FansTabProps) {
           </div>
           <div class="scenario-btns">
             {SCENARIOS.map((s) => (
-              <button key={s.key} onClick={() => p.onScenario(s.p)}>
+              <button key={s.key} disabled={p.disabled} onClick={() => p.onScenario(s.p)}>
                 {s.label}
               </button>
             ))}
@@ -137,7 +142,7 @@ export function FansTab(p: FansTabProps) {
       </Section>
       <Section title="风扇转速（“自动”档风扇）">
         <div class="fan-ctrl">
-          <button class={p.autoFan ? 'active' : ''} onClick={() => p.onFan(!p.autoFan, p.fanPct)} title="自动：按 CPU/GPU 温度调速；手动：固定转速">
+          <button class={p.autoFan ? 'active' : ''} disabled={p.disabled} onClick={() => p.onFan(!p.autoFan, p.fanPct)} title="自动：按 CPU/GPU 温度调速；手动：固定转速">
             {p.autoFan ? '自动温控' : '手动'}
           </button>
           <label class="slider-row grow">
@@ -148,7 +153,9 @@ export function FansTab(p: FansTabProps) {
               max={100}
               step={1}
               value={p.fanPct}
-              onInput={(e) => p.onFan(false, Math.round(Number((e.target as HTMLInputElement).value)))}
+              disabled={p.disabled}
+              onInput={(e) => p.onFan(false, Math.round(Number((e.target as HTMLInputElement).value)), false)}
+              onChange={(e) => p.onFan(false, Math.round(Number((e.target as HTMLInputElement).value)))}
             />
             <span class="slider-val">{p.fanPct}%</span>
           </label>

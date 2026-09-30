@@ -2,6 +2,7 @@
 // 用法：npm run profile -- fixed_default 40 [预热步数=2]      （压力用 PCG：PCG=1 npm run profile -- …）
 import { SPDSolver } from '../src/numerics/pcg';
 import { SparseCholesky } from '../src/numerics/cholesky';
+import { StencilSolver } from '../src/numerics/stencil';
 import { loadRef } from '../test/refdata';
 import { makeSolver } from '../test/solverCompare';
 
@@ -32,6 +33,14 @@ const pcgSolve = SPDSolver.prototype.solve;
 SPDSolver.prototype.solve = function (this: SPDSolver, b, x0, o) {
   const t = performance.now();
   const r = pcgSolve.call(this, b, x0, o);
+  add(labelOf(this), r.iters, performance.now() - t);
+  return r;
+};
+// 默认的扩散系统求解器是模板存储版 StencilSolver（W5）
+const stSolve = StencilSolver.prototype.solve;
+StencilSolver.prototype.solve = function (this: StencilSolver, b, x0) {
+  const t = performance.now();
+  const r = stSolve.call(this, b, x0);
   add(labelOf(this), r.iters, performance.now() - t);
   return r;
 };

@@ -115,3 +115,21 @@ describe('布局规整与值语义（W0/W1 审计）', () => {
     for (const d of B.duct) expect(layoutBenchmark('duct', d.zeta)).toEqual(normalizeLayout(d.layout));
   });
 });
+
+describe('计算域尺寸校验（最终审计）', () => {
+  it('域过大、为 0 或负、机箱越出域时报错；现有各种布局都通过', async () => {
+    const { layoutBenchmark } = await import('../src/model/layoutBenchmark');
+    for (const L of [layoutDefault(), layoutBenchmark('duct', 20), layoutBenchmark('cavity', 1e5), layoutBenchmark('empty')])
+      expect(() => normalizeLayout(JSON.parse(JSON.stringify(L)))).not.toThrow();
+    const bad = (f: (L: ReturnType<typeof layoutDefault>) => void) => {
+      const L = layoutDefault();
+      f(L);
+      return () => normalizeLayout(JSON.parse(JSON.stringify(L)));
+    };
+    expect(bad((L) => (L.domain.sizeMm = 8000))).toThrow(/20–400 格/);
+    expect(bad((L) => (L.domain.sizeMm = 0))).toThrow(LayoutError);
+    expect(bad((L) => ((L.domain as { sizeMm: unknown }).sizeMm = null))).toThrow(LayoutError);
+    expect(bad((L) => (L.domain.baseCellMm = -2))).toThrow(LayoutError);
+    expect(bad((L) => (L.chassis.originMm = 300))).toThrow(/机箱/);
+  });
+});
