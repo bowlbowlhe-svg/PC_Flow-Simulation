@@ -1,6 +1,8 @@
 // 布局编辑的纯逻辑（界面状态 ↔ 布局），移植自 MATLAB 界面的 pendingLayout / setPendingFromLayout。
-import { getSlotStates, setSlotStates, type SlotState } from '../model/fans';
+import { FAN_SLOTS, getSlotStates, setSlotStates, type SlotState } from '../model/fans';
 import { layoutGpuSlots, layoutSetGpuSlots } from '../model/gpuSlots';
+import { chassisSizeMm } from '../model/chassis';
+import { layoutDefault } from '../model/layoutDefault';
 import type { Layout } from '../model/types';
 
 export type Gaps = { x0Mm: number; x1Mm: number }[];
@@ -12,6 +14,20 @@ export function buildPending(base: Layout, slots: SlotState[], gap: boolean, gpu
   if (L.shroud) L = { ...L, shroud: { ...L.shroud, gaps: gap ? structuredClone(defaultGaps) : [] } };
   if (L.gpu && gpuSlots !== null && gpuSlots !== layoutGpuSlots(L)) L = layoutSetGpuSlots(L, gpuSlots);
   return { ...L, power: { cpu: powers.cpu, gpu: powers.gpu, psu: powers.psu } };
+}
+
+/**
+ * 布局页的提示（网页版额外提供，MATLAB 版没有）：不在安装位上的机箱风扇（例如 v4.3 之前 400 mm 见方机箱的配置），
+ * 以及机箱尺寸与默认不同（安装位与"前部开孔"都按默认机箱定义）。
+ */
+export function layoutNotes(L: Layout): string[] {
+  const out: string[] = [];
+  const off = (L.caseFans ?? []).filter((f) => !FAN_SLOTS.some((s) => s.mount === f.mount && Math.abs(s.alongMm - f.alongMm) < 1)).length;
+  if (off) out.push(`另有 ${off} 台机箱风扇不在安装位上：照常参与计算，但表格与主视图的安装位不显示它们；载入预设会清除它们`);
+  const [w, h] = chassisSizeMm(L);
+  const [w0, h0] = chassisSizeMm(layoutDefault());
+  if (w !== w0 || h !== h0) out.push(`机箱为 ${w} × ${h} mm：安装位与"前部开孔"按默认机箱（深 ${w0} × 高 ${h0} mm）定义，位置可能不合适`);
+  return out;
 }
 
 /** 以布局 L 作为待编辑布局时的界面状态；带非空挡板缺口时更新 defaultGaps（同 MATLAB setPendingFromLayout） */

@@ -71,16 +71,15 @@ export interface FanSlot {
   alongMm: number;
 }
 
-/** 机箱风扇安装位（400 mm 见方机箱）：前 3、顶 2、后 1、底 2 */
+/** 机箱风扇安装位（默认机箱深 320 × 高 400 mm）：前 3、顶 2、后 1、底 1（电源之后只剩约 150 mm） */
 export const FAN_SLOTS: readonly FanSlot[] = Object.freeze([
   { id: 'F1', label: '前上', mount: 'front', alongMm: 100 },
   { id: 'F2', label: '前中', mount: 'front', alongMm: 220 },
   { id: 'F3', label: '前下', mount: 'front', alongMm: 338 },
-  { id: 'T1', label: '顶后', mount: 'top', alongMm: 140 },
-  { id: 'T2', label: '顶前', mount: 'top', alongMm: 260 },
+  { id: 'T1', label: '顶后', mount: 'top', alongMm: 100 },
+  { id: 'T2', label: '顶前', mount: 'top', alongMm: 220 },
   { id: 'R1', label: '后部', mount: 'rear', alongMm: 124 },
-  { id: 'B1', label: '底中', mount: 'bottom', alongMm: 230 },
-  { id: 'B2', label: '底前', mount: 'bottom', alongMm: 338 },
+  { id: 'B1', label: '底部', mount: 'bottom', alongMm: 232 },
 ] as FanSlot[]);
 
 export interface FanPreset {
@@ -95,7 +94,7 @@ export const FAN_PRESETS: readonly FanPreset[] = Object.freeze([
   { name: 'single_front', short: '单前进', label: '1 前进 · 后顶出', fans: [['F2', 'intake', 'P12'], ['R1', 'exhaust', 'P12'], ['T1', 'exhaust', 'Stock120']] },
   { name: 'front_rear', short: '前进后出', label: '前进后出', fans: [['F2', 'intake', 'P12'], ['R1', 'exhaust', 'P12']] },
   { name: 'front_top', short: '前进顶出', label: '前进顶出', fans: [['F1', 'intake', 'P12'], ['F2', 'intake', 'P12'], ['T1', 'exhaust', 'P12'], ['T2', 'exhaust', 'P12']] },
-  { name: 'bottom_top', short: '底进顶出', label: '底进顶出', fans: [['B1', 'intake', 'P12'], ['B2', 'intake', 'P12'], ['R1', 'exhaust', 'P12'], ['T1', 'exhaust', 'P12'], ['T2', 'exhaust', 'P12']] },
+  { name: 'bottom_top', short: '底进顶出', label: '底进顶出', fans: [['B1', 'intake', 'P12'], ['T1', 'exhaust', 'P12'], ['T2', 'exhaust', 'P12']] },
   { name: 'positive', short: '正压', label: '正压（3 进 1 出）', fans: [['F1', 'intake', 'P12'], ['F2', 'intake', 'P12'], ['F3', 'intake', 'P12'], ['R1', 'exhaust', 'P12']] },
   { name: 'negative', short: '负压', label: '负压（1 进 3 出）', fans: [['F2', 'intake', 'P12'], ['R1', 'exhaust', 'P12'], ['T1', 'exhaust', 'P12'], ['T2', 'exhaust', 'P12']] },
   { name: 'full', short: '全装', label: '全装（3 前进 · 1 底进 · 后顶出）', fans: [['F1', 'intake', 'P12'], ['F2', 'intake', 'P12'], ['F3', 'intake', 'P12'], ['B1', 'intake', 'P12'], ['R1', 'exhaust', 'P12'], ['T1', 'exhaust', 'P12'], ['T2', 'exhaust', 'P12']] },

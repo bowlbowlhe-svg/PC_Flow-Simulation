@@ -1,7 +1,7 @@
 // 主界面：左侧主视图 + 工具栏 + 温度曲线/风扇工作点，右侧视图与操作 + 标签页（状态、功率与风扇、风扇布局、方案对比）。
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { FAN_PRESETS, applyPreset, getSlotStates, type SlotState } from '../model/fans';
-import { buildPending, pendingFromLayout, type Gaps } from './layoutEdit';
+import { buildPending, layoutNotes, pendingFromLayout, type Gaps } from './layoutEdit';
 import { layoutFanReport, type FanReport } from '../model/fanReport';
 import { layoutGpuSlots } from '../model/gpuSlots';
 import { layoutDefault } from '../model/layoutDefault';
@@ -18,7 +18,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -427,6 +427,7 @@ export function App() {
             shroudGap={shroudGap}
             hasShroud={!!pendingBase.shroud}
             gpuSlots={gpuSlots}
+            notes={layoutNotes(pendingBase)}
             busy={busy}
             onSlot={(k, s) => {
               setSlots((ss) => ss.map((x, i) => (i === k ? s : x)));

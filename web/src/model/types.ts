@@ -110,7 +110,8 @@ export interface Layout {
   ambientC: number;
   turbulenceModel: 'komega' | 'lvel' | 'laminar';
   domain: { sizeMm: number; baseCellMm: number };
-  chassis: { enabled: boolean; originMm: number; sizeMm: number; depthM: number; wallTempC: WallTemps };
+  /** originMm：标量（x = y）或 [x y]；sizeMm：标量（见方）或 [深 高]（见 chassis.ts） */
+  chassis: { enabled: boolean; originMm: number | number[]; sizeMm: number | number[]; depthM: number; wallTempC: WallTemps };
   power: { cpu: number; gpu: number; psu: number };
   fanDiskMm: number;
   grille: { intakeZeta: number; exhaustZeta: number };

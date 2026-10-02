@@ -4,6 +4,7 @@ import type { Acoustics, CaseFan, Layout } from './types';
 import { hasModel } from './fans';
 import { acousticsDefault } from './layoutDefault';
 import { LayoutError } from './gpuSlots';
+import { pairMm } from './chassis';
 
 /** 保存：JSON.stringify 会把 NaN 写成 null，与 MATLAB jsonencode 一致 */
 export function layoutToJson(L: Layout): string {
@@ -80,16 +81,23 @@ export function normalizeLayout(raw: Raw): Layout {
 /**
  * 计算域与机箱尺寸的合理范围（网页版额外的检查，MATLAB 版不查）：域边长 / 基准格距为 20–400 格
  * （默认 560 / 2 = 280），机箱在域内。超大的域会让浏览器长时间卡在构建上，0 或负数会构建出空网格。
+ * chassis.sizeMm、originMm 可为数或 1–2 个数的数组（[深 高]、[x y]，见 chassis.ts）。
  */
 function validateDomain(L: Raw): void {
   const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+  const pair = (v: unknown): [number, number] | null =>
+    num(v) ? [v as number, v as number] : Array.isArray(v) && (v.length === 1 || v.length === 2) && v.every(num) ? pairMm(v) : null;
   const d = L?.domain;
   const c = L?.chassis;
   let bad = '';
   if (!d || !num(d.sizeMm) || !num(d.baseCellMm) || d.sizeMm <= 0 || d.baseCellMm <= 0) bad = 'domain.sizeMm、domain.baseCellMm 应为正数';
   else if (d.sizeMm / d.baseCellMm < 20 || d.sizeMm / d.baseCellMm > 400) bad = `计算域 ${d.sizeMm} mm / 格距 ${d.baseCellMm} mm 应为 20–400 格`;
-  else if (!c || !num(c.sizeMm) || !num(c.originMm) || c.sizeMm <= 0 || c.originMm < 0 || c.originMm + c.sizeMm > d.sizeMm)
-    bad = 'chassis.originMm、chassis.sizeMm 应使机箱位于计算域内';
+  else {
+    const sz = pair(c?.sizeMm);
+    const org = pair(c?.originMm);
+    if (!c || !sz || !org || !(sz[0] > 0 && sz[1] > 0) || !(org[0] >= 0 && org[1] >= 0) || org[0] + sz[0] > d.sizeMm || org[1] + sz[1] > d.sizeMm)
+      bad = 'chassis.originMm、chassis.sizeMm 应使机箱位于计算域内（各为数或 [x y] 两个数）';
+  }
   if (bad) throw new LayoutError('layout_json:domain', bad);
 }
 

@@ -414,11 +414,12 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
   for (const r of info.ram) rect(r, 'rgba(184,77,255,0.9)', base);
   if (info.ram.length) {
     const r1 = info.ram[0];
+    const yb = Math.max(...info.ram.map((r) => r.y + r.h)); // 标签放在内存条下方，不压住内存条、不越出主板区
     ctx.font = `bold ${Math.max(9, Math.round(sc * 2.6))}px system-ui, sans-serif`;
     ctx.fillStyle = 'rgb(204,128,255)';
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`RAM×${info.ram.length}`, E(r1.x + r1.w) + 2 * sc, E(r1.y) + 7 * sc);
+    ctx.textBaseline = 'top';
+    ctx.fillText(`RAM×${info.ram.length}`, E(r1.x), E(yb) + sc);
   }
   if (info.chipset) {
     rect(info.chipset, 'rgba(204,204,204,0.8)', base * 0.6);
@@ -456,6 +457,21 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     ctx.lineTo(E(x1), E(gh.y + gh.h));
     ctx.stroke();
     ctx.setLineDash([]);
+    // 挡板端（仅显示）：PCB 一直延伸到后面板的挡板，散热片后端到后壁之间是接口区；求解器里这段不是障碍
+    const xb = info.caseOuter.x + 1; // 后壁内侧所在格
+    if (x0 > xb && (x0 - xb) * info.cellMm <= 60) {
+      ctx.strokeStyle = 'rgba(255,153,64,0.8)';
+      ctx.lineWidth = Math.max(1, base * 0.6);
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(E(xb), E(gp.y), (x0 - xb) * sc, gp.h * sc);
+      ctx.setLineDash([]);
+      ctx.lineWidth = base * 1.3;
+      ctx.strokeStyle = 'rgb(255,128,26)';
+      ctx.beginPath();
+      ctx.moveTo(E(xb), E(y0));
+      ctx.lineTo(E(xb), E(y1));
+      ctx.stroke();
+    }
     label({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, `GPU（${info.gpu.slots} 槽）`, 'rgb(255,204,128)', 9);
   }
   if (info.psu) {

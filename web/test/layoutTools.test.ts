@@ -132,4 +132,28 @@ describe('计算域尺寸校验（最终审计）', () => {
     expect(bad((L) => (L.domain.baseCellMm = -2))).toThrow(LayoutError);
     expect(bad((L) => (L.chassis.originMm = 300))).toThrow(/机箱/);
   });
+
+  it('矩形机箱：sizeMm/originMm 可为数或 [x y]，按 MATLAB 的 v(1)、v(end) 解释；两个方向分别检查是否越出域', async () => {
+    const { pairMm, chassisSizeMm, chassisOriginMm } = await import('../src/model/chassis');
+    expect(pairMm(400)).toEqual([400, 400]);
+    expect(pairMm([400])).toEqual([400, 400]);
+    expect(pairMm([320, 400])).toEqual([320, 400]);
+    const L0 = layoutDefault();
+    expect(chassisSizeMm(L0)).toEqual([320, 400]);
+    expect(chassisOriginMm(L0)).toEqual([120, 80]);
+    const bad = (f: (L: ReturnType<typeof layoutDefault>) => void) => {
+      const L = layoutDefault();
+      f(L);
+      return () => normalizeLayout(JSON.parse(JSON.stringify(L)));
+    };
+    // 单元素数组（MATLAB 读回的 1×1）与标量等价
+    expect(bad((L) => ((L.chassis.sizeMm = [400]), (L.chassis.originMm = [80])))).not.toThrow();
+    expect(normalizeLayout(JSON.parse(JSON.stringify(L0))).chassis.sizeMm).toEqual([320, 400]);
+    expect(bad((L) => (L.chassis.originMm = [120, 200]))).toThrow(/机箱/); // y 越出（200 + 400 > 560），x 不越出
+    expect(bad((L) => (L.chassis.originMm = [300, 80]))).toThrow(/机箱/); // x 越出（300 + 320 > 560）
+    expect(bad((L) => (L.chassis.sizeMm = [320, 0]))).toThrow(/机箱/);
+    expect(bad((L) => (L.chassis.sizeMm = [320, 400, 500]))).toThrow(/机箱/);
+    expect(bad((L) => ((L.chassis as { sizeMm: unknown }).sizeMm = [320, '400']))).toThrow(/机箱/);
+    expect(bad((L) => ((L.chassis as { sizeMm: unknown }).sizeMm = []))).toThrow(/机箱/);
+  });
 });

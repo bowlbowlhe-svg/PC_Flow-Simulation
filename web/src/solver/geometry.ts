@@ -6,6 +6,7 @@
 // idx = (x−1)·W + (y−1)，列优先。索引列表的顺序与 MATLAB 一致（find/setdiff 为升序，rectCells 为 x 外层、y 内层）。
 import type { Acoustics, Layout, Mount, Porous, Rect, ThruDir } from '../model/types';
 import { FAN_CATALOG, FAN_SLOTS, hasModel, type FanSpec } from '../model/fans';
+import { chassisOriginMm, chassisSizeMm } from '../model/chassis';
 import { mround } from '../model/mround';
 import { mergeAcoustics } from '../model/layoutJson';
 import { edtNearest } from '../numerics/edtNearest';
@@ -133,8 +134,9 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const H = W;
   const N = W * H;
   const toCell = (mm: number) => mround(mm / cellMm);
-  const caseOffsetX = mround(L.chassis.originMm / cellMm);
-  const caseOffsetY = mround(L.chassis.originMm / cellMm);
+  const [orgX, orgY] = chassisOriginMm(L);
+  const caseOffsetX = mround(orgX / cellMm);
+  const caseOffsetY = mround(orgY / cellMm);
   const VEL_SCALE = (W - 2) * (cellMm / 1000);
   const diffScale = 1 / (cellMm / 1000) ** 2;
   const rectToGrid = (rm: Rect): Rect => ({
@@ -158,8 +160,10 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   // ---- initGeometry ----
   const ox = caseOffsetX;
   const oy = caseOffsetY;
-  const cs = toCell(L.chassis.sizeMm);
-  const outer: Rect = { x: ox + 1, y: oy + 1, w: cs, h: cs };
+  const [szX, szY] = chassisSizeMm(L);
+  const outer: Rect = { x: ox + 1, y: oy + 1, w: toCell(szX), h: toCell(szY) };
+  /** 壁沿长 [格]（含两端壁格）：前/后壁为机箱高，顶/底壁为机箱深 */
+  const wallLen = (mount: string) => (mount === 'front' || mount === 'rear' ? outer.h : outer.w);
   const CASE2D: Geometry['CASE2D'] = { outer, enabled: L.chassis.enabled };
   if (L.motherboardTray) CASE2D.motherboardTray = rectToGrid(L.motherboardTray);
   const cL = outer.x;
@@ -249,7 +253,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     const n = toCell(sizeMm);
     const c = toCell(alongMm);
     let a0 = c - floor(n / 2);
-    a0 = Math.max(2, Math.min(outer.w - n, a0)); // 夹在壁内侧范围
+    a0 = Math.max(2, Math.min(wallLen(mount) - n, a0)); // 夹在壁内侧范围
     const a1 = a0 + n - 1;
     switch (mount) {
       case 'front':
@@ -372,7 +376,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     const n = toCell(v.lengthMm);
     const c = toCell(v.alongMm);
     const a0 = Math.max(2, c - floor(n / 2));
-    const a1 = Math.min(outer.w - 1, a0 + n - 1);
+    const a1 = Math.min(wallLen(v.mount) - 1, a0 + n - 1);
     const span = v.mount === 'front' || v.mount === 'rear' ? [outer.y - 1 + a0, outer.y - 1 + a1] : [outer.x - 1 + a0, outer.x - 1 + a1];
     openings.push({ mount: v.mount, idx: wallSpanCells(v.mount, span[0], span[1]), kind: 'vent', fan: 0, zeta: v.zeta });
   }

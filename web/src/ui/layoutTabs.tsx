@@ -26,6 +26,7 @@ interface LayoutTabProps {
   shroudGap: boolean;
   hasShroud: boolean;
   gpuSlots: number | null; // null = 布局中无显卡
+  notes: string[]; // 不在安装位上的风扇、非默认机箱尺寸等提示（layoutNotes）
   busy: boolean;
   onSlot: (k: number, st: SlotState) => void;
   onPreset: (name: string) => void;
@@ -142,6 +143,11 @@ export function LayoutTab(p: LayoutTabProps) {
         <div>
           低速 {R.intakeCfmIdle.toFixed(0)} / {R.exhaustCfmIdle.toFixed(0)} CFM（{R.pressureIdle}）
         </div>
+        {p.notes.map((t, k) => (
+          <div key={k} class="layout-note">
+            {t}
+          </div>
+        ))}
       </div>
       <ul class="warnings">{warnings.length ? warnings.map((w, k) => <li key={k}>{w}</li>) : <li class="ok">安装检查：无冲突</li>}</ul>
       <div class="btn-grid">

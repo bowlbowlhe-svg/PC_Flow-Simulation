@@ -1,6 +1,7 @@
 // 机箱风扇布局的静态检查与标称风量（移植自 layout_fan_report.m；不需要求解器）。
 import { FAN_CATALOG, hasModel } from './fans';
 import type { Layout } from './types';
+import { chassisSizeMm } from './chassis';
 
 export interface FanReport {
   warnings: string[]; // 同壁重叠、相邻壁角部相碰、超出壁面、与电源重叠
@@ -47,7 +48,7 @@ export function layoutFanReport(L: Layout): FanReport {
     R.pressureIdle = R.pressure;
     return R;
   }
-  const size = L.chassis.sizeMm;
+  const [Sx, Sy] = chassisSizeMm(L); // 机箱深（x）、高（y）[mm]
   const wallMm = L.domain.baseCellMm; // 机箱壁厚约 1 格
   const lo: number[] = [];
   const hi: number[] = [];
@@ -56,7 +57,8 @@ export function layoutFanReport(L: Layout): FanReport {
     const sp = FAN_CATALOG[f.model];
     lo[k] = f.alongMm - sp.size / 2;
     hi[k] = f.alongMm + sp.size / 2;
-    if (lo[k] < wallMm - 0.5 || hi[k] > size - wallMm + 0.5)
+    const len = f.mount === 'front' || f.mount === 'rear' ? Sy : Sx;
+    if (lo[k] < wallMm - 0.5 || hi[k] > len - wallMm + 0.5)
       R.warnings.push(`${MOUNT_CN[f.mount]}壁 ${f.model}（中心 ${g(f.alongMm)} mm）超出壁面，求解时会被夹到壁内`);
     const frac = f.speedMode === 'manual' ? [f.manualPct / 100, f.manualPct / 100] : [1, 0.2];
     const q = frac.map((fr) => (sp.cfm_max * (sp.rpm_min + (sp.rpm_max - sp.rpm_min) * fr)) / sp.rpm_max);
@@ -83,13 +85,13 @@ export function layoutFanReport(L: Layout): FanReport {
   const box = (mount: string, a0: number, a1: number): number[] => {
     switch (mount) {
       case 'front':
-        return [size - d, size, a0, a1];
+        return [Sx - d, Sx, a0, a1];
       case 'rear':
         return [0, d, a0, a1];
       case 'top':
         return [a0, a1, 0, d];
       default:
-        return [a0, a1, size - d, size];
+        return [a0, a1, Sy - d, Sy];
     }
   };
   for (let i = 0; i < F.length; i++) {

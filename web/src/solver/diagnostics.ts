@@ -3,6 +3,7 @@
 // pressureFieldPa / openingMarkers / cellReadout / getRecommendations）。只读求解器状态，不改变推进结果。
 import { mmax, mmin } from '../numerics/mathx';
 import type { Mount } from '../model/types';
+import { chassisSizeMm } from '../model/chassis';
 import type { NoiseParts } from './fan';
 import { CFM_PER_M3S } from './fan';
 import type { Opening } from './geometry';
@@ -171,10 +172,11 @@ export interface CFDDiag {
   boussinesqValid: boolean;
 }
 
-/** 无量纲数诊断（特征长度 = 机箱边长，特征温差 = 最热元件 − 环境） */
+/** 无量纲数诊断（特征长度 = 机箱截面水力直径 2wh/(w+h)，见方机箱即边长；特征温差 = 最热元件 − 环境） */
 export function calculateCFDDiagnostics(s: Solver): CFDDiag {
   const A = s.AIR;
-  const L = s.layout.chassis.sizeMm / 1000;
+  const [sw, sh] = chassisSizeMm(s.layout).map((v) => v / 1000);
+  const L = sw * ((2 * sh) / (sw + sh)); // 见方时括号内恰为 1
   const { uC, vC } = s.getCellVelocity();
   const inside = s.geo.insideMask;
   let sum = 0;

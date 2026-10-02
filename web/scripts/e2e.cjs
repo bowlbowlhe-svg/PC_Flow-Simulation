@@ -54,12 +54,12 @@ function check(cond, msg) {
   const it1 = Number((await text('.right')).match(/（(\d+) 步）/)?.[1] ?? 0);
   check(it1 > 5, `推进了若干步（${it1}）`);
 
-  // 2. 布局页：点击主视图 B1 安装位（底中）→ 进气；表格把 F1 改为排气
+  // 2. 布局页：点击主视图 B1 安装位（底部）→ 进气；表格把 F1 改为排气
   await p.click('.tabs >> text=风扇布局');
   const box = await (await p.$('canvas.field-canvas')).boundingBox();
   const cell = box.width / 140;
-  // B1 底中：机箱外框为第 21–120 格，风扇盘在底壁内侧，点击区域向壁外延伸几格
-  await p.mouse.click(box.x + (20 + 230 / 4) * cell, box.y + 121.5 * cell);
+  // B1 底部（中心 232 mm）：机箱外框 x 为第 31–110 格、y 为第 21–120 格，风扇盘在底壁内侧，点击区域向壁外延伸几格
+  await p.mouse.click(box.x + (30 + 232 / 4) * cell, box.y + 121.5 * cell);
   await p.$$eval('.slot-table tbody tr:nth-child(1) select', (els) => {
     els[0].value = 'exhaust';
     els[0].dispatchEvent(new Event('change', { bubbles: true }));
@@ -113,7 +113,7 @@ function check(cond, msg) {
   const js = await download('text=保存配置（JSON）');
   const L = JSON.parse(fs.readFileSync(js, 'utf8'));
   const fanStr = L.caseFans.map((f) => `${f.mount}${f.alongMm}:${f.type}`).join(' ');
-  check(fanStr.includes('bottom230:intake') && fanStr.includes('front100:exhaust'), `保存的 JSON 含点击与表格的修改（${fanStr}）`);
+  check(fanStr.includes('bottom232:intake') && fanStr.includes('front100:exhaust'), `保存的 JSON 含点击与表格的修改（${fanStr}）`);
 
   // 6. 载入预设再载入 JSON
   await p.selectOption('.tab-body .row select >> nth=0', 'positive');
@@ -125,16 +125,16 @@ function check(cond, msg) {
 
   // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）
   const Lgap = JSON.parse(fs.readFileSync(js, 'utf8'));
-  Lgap.shroud.gaps = [{ x0Mm: 300, x1Mm: 340 }];
+  Lgap.shroud.gaps = [{ x0Mm: 270, x1Mm: 310 }];
   await p.setInputFiles('input[type=file]', writeJson('customgap.json', Lgap));
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('customgap.json'), null, { timeout: 30000 });
-  await p.$$eval('.slot-table tbody tr:nth-child(8) select', (els) => {
-    els[0].value = 'intake';
+  await p.$$eval('.slot-table tbody tr:nth-child(5) select', (els) => {
+    els[0].value = 'exhaust';
     els[0].dispatchEvent(new Event('change', { bubbles: true }));
   });
   const js2 = await download('text=保存配置（JSON）');
   const L2 = JSON.parse(fs.readFileSync(js2, 'utf8'));
-  check(JSON.stringify(L2.shroud.gaps) === JSON.stringify([{ x0Mm: 300, x1Mm: 340 }]), `自定义缺口保留（${JSON.stringify(L2.shroud.gaps)}）`);
+  check(JSON.stringify(L2.shroud.gaps) === JSON.stringify([{ x0Mm: 270, x1Mm: 310 }]), `自定义缺口保留（${JSON.stringify(L2.shroud.gaps)}）`);
   await p.click('text=撤销未应用的修改');
 
   // 8. 重建失败回滚（W2–W4 审计）：噪音参数无效的配置 → 报"重建失败"，布局名与网格不变，之后不在旧求解器上跑稳态

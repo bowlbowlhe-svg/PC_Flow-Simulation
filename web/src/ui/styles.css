@@ -501,6 +501,11 @@ button.danger {
   margin: 6px 0;
 }
 
+.layout-info .layout-note {
+  color: var(--warn);
+  margin-top: 3px;
+}
+
 .warnings {
   list-style: none;
   margin: 0 0 8px;

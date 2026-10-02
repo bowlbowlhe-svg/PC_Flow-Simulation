@@ -3,6 +3,8 @@ function ref = make_steady_reference()
 %   默认场景精确档（280²）固定推进 3000 步，取 1000 步之后的均值与标准差（steady_long_run）。
 %   若 tests/reference/steady_default.json 由当前版本生成（同一算例），直接取其统计量；
 %   否则重新计算（Octave 约 20–30 分钟）。物理或数值改动后先重新生成标准答案或本参考值。
+%   另存预览档自身的回归值 preview（与 test_steady 相同的设置跑 runToSteady，约 2–3 分钟），
+%   test_steady 用它做严格回归（0.5°C、2%），弥补"预览档 vs 精确档"容差较宽的不足。
     root = fileparts(fileparts(mfilename('fullpath')));
     fd = fullfile(root, 'tests', 'reference', 'steady_default.json');
     src = '';
@@ -25,6 +27,15 @@ function ref = make_steady_reference()
     ref = struct('version', pcflow_version(), 'source', src, 'steps', steps, 'avgFrom', avgFrom, ...
         'tj', r2([m.cpu m.gpu m.psu]), 'tjStd', r2([sd.cpu sd.gpu sd.psu]), ...
         'interior', r2(m.interior), 'cfm', r2(m.cfm), 'cfmStd', r2(sd.cfm));
+    % 预览档回归值：同 test_steady 的设置
+    s = CFDSolverFEM([], [], [], [], 0.5);
+    s.turbUpdateEvery = 2;
+    info = s.runToSteady();
+    col = @(nm) info.final(strcmp(info.columns, nm));
+    ref.preview = struct('steps', info.steps, 'tj', r2([col('cpu') col('gpu') col('psu')]), ...
+        'interior', r2(col('interior')), 'cfm', r2(col('cfm')));
+    fprintf('预览档 runToSteady %d 步：结温 %.2f/%.2f/%.2f°C，内温 %.2f°C，风量 %.2f CFM\n', ...
+        ref.preview.steps, ref.preview.tj, ref.preview.interior, ref.preview.cfm);
     fprintf('精确档 %d 步（%d 步后均值，来源 %s）：结温 %.2f/%.2f/%.2f°C（σ %.2f/%.2f/%.2f），内温 %.2f°C，风量 %.2f CFM（σ %.2f）\n', ...
         steps, avgFrom, src, ref.tj, ref.tjStd, ref.interior, ref.cfm, ref.cfmStd);
     f = fullfile(root, 'tests', 'steady_reference.json');

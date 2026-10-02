@@ -1,4 +1,5 @@
-// 默认 ATX 中塔布局（移植自 matlab_app/src/layout_default.m，数值逐项一致）。
+// 默认 ATX 机箱布局（移植自 matlab_app/src/layout_default.m，数值逐项一致）：紧凑机箱，只比主板略大，
+// 主板贴后壁（I/O 与扩展槽在后面板），前部留出前进风风扇的空间，电源在底部电源仓。
 import type { Acoustics, CaseFan, FanType, Layout, Mount, Rect } from './types';
 import { gpuFinArea } from './gpuSlots';
 
@@ -25,12 +26,13 @@ export function layoutDefault(): Layout {
     name: 'atx_balanced',
     ambientC: 25,
     turbulenceModel: 'komega',
-    // 计算域 560 mm 见方（基准网格 280×280、格距 2 mm），机箱 400 mm 见方，四周各留 80 mm 外部空气
+    // 计算域 560 mm 见方（基准网格 280×280、格距 2 mm）。机箱深 320 mm（后 → 前）× 高 400 mm：ATX 主板 244 mm 深，
+    // 前部 72 mm 放前进风风扇；机箱居中，前后各留 120 mm、上下各留 80 mm 外部空气
     domain: { sizeMm: 560, baseCellMm: 2 },
     chassis: {
       enabled: true,
-      originMm: 80,
-      sizeMm: 400,
+      originMm: [120, 80],
+      sizeMm: [320, 400],
       depthM: 0.15,
       wallTempC: { rear: 25, front: 25, top: 25, bottom: 25 },
     },
@@ -39,8 +41,8 @@ export function layoutDefault(): Layout {
     grille: { intakeZeta: 2.0, exhaustZeta: 0.8 },
     acoustics: acousticsDefault(),
     cpu: {
-      base: rect(194, 114, 48, 48),
-      fins: rect(158, 86, 120, 104),
+      base: rect(70, 114, 48, 48),
+      fins: rect(34, 86, 120, 104), // 鳍片后端距后排风扇执行盘约 20 mm
       porous: { zetaThru: 8, zetaCross: 60, thru: 'x' },
       thermal: { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 },
       tjmax: 100,
@@ -49,8 +51,8 @@ export function layoutDefault(): Layout {
     },
     gpu: {
       slots: 4,
-      pcb: rect(160, 212, 216, 12),
-      heatsink: rect(150, 224, 236, 57),
+      pcb: rect(38, 212, 216, 12),
+      heatsink: rect(28, 224, 236, 57), // 后端离后壁约 26 mm（挡板端接口区；热风可沿后壁上行），前端伸出主板前缘约 16 mm
       porous: { zetaThru: 4, zetaCross: 10, thru: 'x' },
       thermal: {
         R_junction_to_case: 0.08,
@@ -61,7 +63,7 @@ export function layoutDefault(): Layout {
       },
       tjmax: 95,
       throttleTemp: 87,
-      fans: { model: 'GPU80', xs: [190, 268, 346] },
+      fans: { model: 'GPU80', xs: [68, 146, 224] },
     },
     psu: {
       body: rect(4, 334, 164, 66),
@@ -74,16 +76,17 @@ export function layoutDefault(): Layout {
       R_internal: 0.25,
       warnTemp: 85,
     },
-    ram: [rect(314, 48, 4, 32), rect(320, 48, 4, 32), rect(326, 48, 4, 32), rect(332, 48, 4, 32)],
-    vrm: rect(158, 44, 28, 20),
-    chipset: rect(264, 306, 20, 8),
-    motherboardTray: rect(150, 36, 248, 274),
-    shroud: { yMm: 314, hMm: 16, gaps: [{ x0Mm: 360, x1Mm: 398 }] },
+    // 主板 ATX 244 × 305 mm，后缘贴后壁；下沿约 27 mm 在电源仓挡板后，主板区只画挡板以上部分
+    ram: [rect(190, 48, 4, 32), rect(196, 48, 4, 32), rect(202, 48, 4, 32), rect(208, 48, 4, 32)],
+    vrm: rect(34, 44, 28, 20),
+    chipset: rect(174, 306, 20, 8),
+    motherboardTray: rect(4, 36, 244, 278),
+    shroud: { yMm: 314, hMm: 16, gaps: [{ x0Mm: 280, x1Mm: 318 }] },
     caseFans: [
       caseFan('front', 220, 'intake', 'P12'),
       caseFan('front', 338, 'intake', 'P12'),
       caseFan('rear', 124, 'exhaust', 'P12'),
-      caseFan('top', 140, 'exhaust', 'Stock120'),
+      caseFan('top', 100, 'exhaust', 'Stock120'),
     ],
   };
 }

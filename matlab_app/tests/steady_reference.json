@@ -1,1 +1,1 @@
-{"version":"4.2.2","source":"tests/reference/steady_default.json","steps":3000,"avgFrom":1000,"tj":[66.75,61.2,53.02],"tjStd":[0,0,0.01],"interior":32.56,"cfm":50.08,"cfmStd":0.01}
+{"version":"4.3.0","source":"tests/reference/steady_default.json","steps":3000,"avgFrom":1000,"tj":[71.53,65.74,53.03],"tjStd":[0.01,0,0.01],"interior":31.25,"cfm":56.43,"cfmStd":0.13,"preview":{"steps":850,"tj":[72.72,67.98,54.22],"interior":31.68,"cfm":59.48}}

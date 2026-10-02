@@ -31,7 +31,9 @@ function L = normalize(L)
         v = L.chassis.wallTempC.(sides{k});
         if isempty(v), L.chassis.wallTempC.(sides{k}) = NaN; end
     end
-    % 数值数组（如 gpu.fans.xs）读回可能为列向量，统一为行向量
+    % 数值数组（如 gpu.fans.xs、矩形机箱的 sizeMm/originMm）读回可能为列向量，统一为行向量
+    L.chassis.sizeMm = L.chassis.sizeMm(:)';
+    L.chassis.originMm = L.chassis.originMm(:)';
     if isfield(L, 'gpu') && isfield(L.gpu, 'fans')
         L.gpu.fans.xs = L.gpu.fans.xs(:)';
     end

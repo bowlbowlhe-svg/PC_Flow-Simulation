@@ -25,10 +25,14 @@ function gen_layout_fixtures(outFile)
         add(F, 'rear', 360, 'exhaust', 'P12', 'auto', 60); ...      % 与电源重叠
         add(F, 'front', 220, 'intake', 'P14', 'manual', 80); ...
         add(F, 'front', 250, 'intake', 'P12', 'auto', 60); ...      % 同壁重叠
-        add(F, 'bottom', 300, 'intake', 'RX140', 'auto', 60); ... % 与电源重叠？
-        add(F, 'bottom', 375, 'intake', 'P12', 'manual', 50)];      % 与前壁角部
+        add(F, 'front', 345, 'intake', 'P12', 'auto', 60); ...      % 超出壁面 + 与底壁角部
+        add(F, 'bottom', 230, 'intake', 'RX140', 'auto', 60); ... % 与电源重叠 8 mm
+        add(F, 'bottom', 290, 'intake', 'P12', 'manual', 50); ...   % 超出壁面（底壁按机箱深 320 mm）+ 与前壁角部
+        add(F, 'top', 270, 'exhaust', 'P12', 'auto', 60)];          % 超出壁面（顶壁按机箱深）
     L.caseFans = fans;
     cases{end+1} = rep('custom_warnings', L);
+    Lq = L; Lq.chassis.sizeMm = 400; Lq.chassis.originMm = 80;  % 见方机箱（标量 sizeMm）：同样的风扇在 400 mm 壁上
+    cases{end+1} = rep('custom_square400', Lq);
     L = L0; L.caseFans = L0.caseFans([]);
     cases{end+1} = rep('no_fans', L);
 

@@ -6,7 +6,7 @@ classdef PCAirflowSimulatorApp < handle
     %   右侧：常驻的视图与运行控制，下方四个标签页：
     %     状态       实时温度、评分、CFD 诊断、智能诊断
     %     功率与风扇 元件功率、全局风扇转速、各风扇工作状态（转速/风量/静压/噪音）
-    %     风扇布局   8 个安装位的 空/进气/排气、型号、转速；预设；电源仓挡板开孔；JSON 存取
+    %     风扇布局   7 个安装位的 空/进气/排气、型号、转速；预设；电源仓挡板开孔；JSON 存取
     %     方案对比   保存 A/B/C 三个方案逐项对比，温差视图（当前 − 参考方案）
 
     properties (Constant)
@@ -478,7 +478,11 @@ classdef PCAirflowSimulatorApp < handle
                 mb = s.CASE2D.motherboard_tray;
                 plot(ax, [mb.x mb.x+mb.w mb.x+mb.w mb.x mb.x], [mb.y mb.y mb.y+mb.h mb.y+mb.h mb.y], '--', ...
                     'Color', [0.20 0.68 0.28], 'LineWidth', 1.2, 'PickableParts', 'none');
-                text(ax, mb.x+5, mb.y+6, '主板区', 'Color', [0.25 0.78 0.35], 'FontSize', 7, 'FontWeight', 'bold', ...
+                lx = mb.x + 5;                                   % VRM 在左上角时移到其右侧，免得被 VRM 框压住
+                if ~isempty(s.VRM) && s.VRM.heatsink.x <= lx + 8 && s.VRM.heatsink.y <= mb.y + 10
+                    lx = max(lx, s.VRM.heatsink.x + s.VRM.heatsink.w + 2);
+                end
+                text(ax, lx, mb.y+6, '主板区', 'Color', [0.25 0.78 0.35], 'FontSize', 7, 'FontWeight', 'bold', ...
                     'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'none', 'PickableParts', 'none');
             end
             if ~isempty(s.VRM)
@@ -492,8 +496,9 @@ classdef PCAirflowSimulatorApp < handle
             end
             if ~isempty(s.RAM_SLOTS)
                 r1 = s.RAM_SLOTS(1);
-                text(ax, r1.x+r1.w+2, r1.y+7, sprintf('RAMx%d', numel(s.RAM_SLOTS)), 'Color', [0.80 0.50 1.0], ...
-                    'FontSize', 6, 'FontWeight', 'bold', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'middle', ...
+                yb = max([s.RAM_SLOTS.y] + [s.RAM_SLOTS.h]);     % 标签放在内存条下方，不压住内存条、不越出主板区
+                text(ax, r1.x-0.5, yb+0.5, sprintf('RAMx%d', numel(s.RAM_SLOTS)), 'Color', [0.80 0.50 1.0], ...
+                    'FontSize', 6, 'FontWeight', 'bold', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', ...
                     'Interpreter', 'none', 'PickableParts', 'none');
             end
             if ~isempty(s.CHIPSET)
@@ -530,6 +535,13 @@ classdef PCAirflowSimulatorApp < handle
                     'Color', [1.0 0.60 0.25], 'LineWidth', 1.2, 'PickableParts', 'none');
                 plot(ax, [x0 x1], [gh.y+gh.h-0.5, gh.y+gh.h-0.5], ':', ...
                     'Color', [1.0 0.60 0.25], 'LineWidth', 1.0, 'PickableParts', 'none');
+                % 挡板端（仅显示）：PCB 延伸到后面板的挡板，散热片后端到后壁之间是接口区；求解器里这段不是障碍
+                xb = co.x + 0.5;                                 % 后壁内侧
+                if x0 > xb && (x0 - xb) * s.GRID.cell_size_mm <= 60
+                    plot(ax, [xb x0 x0 xb xb], [gp.y-0.5 gp.y-0.5 gp.y+gp.h-0.5 gp.y+gp.h-0.5 gp.y-0.5], '--', ...
+                        'Color', [1.0 0.60 0.25], 'LineWidth', 1.0, 'PickableParts', 'none');
+                    plot(ax, [xb xb], [y0 y1], '-', 'Color', [1.0 0.50 0.10], 'LineWidth', 2.2, 'PickableParts', 'none');
+                end
                 sl = layout_gpu_slots(s.layout);
                 lb(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0, sprintf('GPU（%g 槽）', sl), [1.0 0.80 0.50], 9);
             end

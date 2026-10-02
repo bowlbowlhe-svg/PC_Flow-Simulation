@@ -1,6 +1,6 @@
 // 界面布局编辑逻辑（W2–W4 审计：自定义挡板缺口不能被默认值覆盖）。
 import { describe, expect, it } from 'vitest';
-import { buildPending, pendingFromLayout } from '../src/ui/layoutEdit';
+import { buildPending, layoutNotes, pendingFromLayout } from '../src/ui/layoutEdit';
 import { layoutDefault } from '../src/model/layoutDefault';
 import { layoutFromJson, layoutToJson } from '../src/model/layoutJson';
 import { layoutSetGpuSlots } from '../src/model/gpuSlots';
@@ -43,5 +43,23 @@ describe('待应用布局', () => {
     const st = pendingFromLayout(L, L.shroud!.gaps);
     expect(() => buildPending(L, st.slots, true, 4, st.defaultGaps, P)).toThrow(/放不下/);
     expect(buildPending(layoutDefault(), st.slots, true, null, st.defaultGaps, { cpu: 1, gpu: 2, psu: 3 }).power).toEqual({ cpu: 1, gpu: 2, psu: 3 });
+  });
+});
+
+describe('布局页提示（旧配置兼容）', () => {
+  it('默认布局无提示；v4.3 之前的 400 mm 见方配置提示机箱尺寸与不在安装位上的风扇', () => {
+    expect(layoutNotes(layoutDefault())).toEqual([]);
+    const old = layoutDefault();
+    old.chassis.sizeMm = 400;
+    old.chassis.originMm = 80;
+    old.caseFans = old.caseFans!.map((f) => (f.mount === 'top' ? { ...f, alongMm: 140 } : f));
+    const notes = layoutNotes(old);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain('1 台机箱风扇不在安装位上');
+    expect(notes[1]).toContain('400 × 400 mm');
+    // 风扇都在安装位上、只是机箱尺寸不同：只提示尺寸
+    const sq = layoutDefault();
+    sq.chassis.sizeMm = [400, 400];
+    expect(layoutNotes(sq)).toEqual([expect.stringContaining('400 × 400 mm')]);
   });
 });

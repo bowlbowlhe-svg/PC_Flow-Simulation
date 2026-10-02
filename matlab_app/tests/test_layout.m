@@ -59,10 +59,15 @@ function pass = test_layout()
         Rk = layout_fan_report(layout_apply_preset(L0, P(k).name));
         errs = check(errs, isempty(Rk.warnings), sprintf('预设 %s 不应有安装警告', P(k).name));
     end
-    st = layout_slots('get', L0);                               % 角部相碰：F3 与 B2
-    st(strcmp({st.id}, 'B2')).type = 'intake';
-    Rc = layout_fan_report(layout_slots('set', L0, st));
-    errs = check(errs, any(contains_(Rc.warnings, '角部')), 'F3 与 B2 应报角部相碰');
+    Lc4 = L0;                                                    % 角部相碰：前壁靠顶的风扇与顶壁靠前的风扇
+    Lc4.caseFans = [Lc4.caseFans(1); Lc4.caseFans(4)];
+    Lc4.caseFans(1).alongMm = 70;  Lc4.caseFans(2).alongMm = 255;
+    Rc = layout_fan_report(Lc4);
+    errs = check(errs, numel(Rc.warnings) == 1 && any(contains_(Rc.warnings, '角部')), ...
+        sprintf('前 70 / 顶 255 应只报角部相碰（%s）', strjoin(Rc.warnings, '；')));
+    Lr = L0; Lr.caseFans(4).alongMm = 270;                      % 顶壁按机箱深（320 mm）判断超出
+    Rr = layout_fan_report(Lr);
+    errs = check(errs, any(contains_(Rr.warnings, '超出壁面')), '顶壁 270 mm 的风扇应超出 320 mm 深的机箱');
 
     % 4b) 显卡厚度：默认 4 槽与 layout_set_gpu_slots 一致；各槽数的散热片高度；放不下时报错
     errs = check(errs, isequal(layout_set_gpu_slots(L0, 4), L0) && layout_gpu_slots(L0) == 4, ...

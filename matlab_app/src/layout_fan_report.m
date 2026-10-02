@@ -19,7 +19,7 @@ function R = layout_fan_report(L)
         return;
     end
     F = L.caseFans;
-    size_ = L.chassis.sizeMm;
+    S = [L.chassis.sizeMm(1), L.chassis.sizeMm(end)];   % 机箱深（x）、高（y）[mm]
     wallMm = L.domain.baseCellMm;           % 机箱壁厚约 1 格
     lo = zeros(numel(F), 1); hi = lo;
     mountCN = struct('front', '前', 'rear', '后', 'top', '顶', 'bottom', '底');
@@ -27,7 +27,8 @@ function R = layout_fan_report(L)
         f = F(k);
         sp = cat.(f.model);
         lo(k) = f.alongMm - sp.size/2; hi(k) = f.alongMm + sp.size/2;
-        if lo(k) < wallMm - 0.5 || hi(k) > size_ - wallMm + 0.5
+        if any(strcmp(f.mount, {'front', 'rear'})), len = S(2); else, len = S(1); end
+        if lo(k) < wallMm - 0.5 || hi(k) > len - wallMm + 0.5
             R.warnings{end+1} = sprintf('%s壁 %s（中心 %g mm）超出壁面，求解时会被夹到壁内', ...
                 mountCN.(f.mount), f.model, f.alongMm);
         end
@@ -58,7 +59,7 @@ function R = layout_fan_report(L)
     end
     % 相邻壁在角部相碰：框架（沿壁跨度 × 厚 25 mm）在机箱坐标中的矩形相交
     d = 25;
-    box = @(f, a, b) wallBox(f.mount, a, b, size_, d);
+    box = @(f, a, b) wallBox(f.mount, a, b, S, d);
     for i = 1:numel(F)
         for j = i+1:numel(F)
             if strcmp(F(i).mount, F(j).mount), continue; end
@@ -91,11 +92,11 @@ function R = layout_fan_report(L)
 end
 
 function b = wallBox(mount, a0, a1, S, d)
-% 风扇框架在机箱坐标（x 后→前，y 顶→底，mm）中的矩形 [x0 x1 y0 y1]
+% 风扇框架在机箱坐标（x 后→前，y 顶→底，mm）中的矩形 [x0 x1 y0 y1]；S = [深 高]
     switch mount
-        case 'front',  b = [S - d, S, a0, a1];
+        case 'front',  b = [S(1) - d, S(1), a0, a1];
         case 'rear',   b = [0, d, a0, a1];
         case 'top',    b = [a0, a1, 0, d];
-        otherwise,     b = [a0, a1, S - d, S];
+        otherwise,     b = [a0, a1, S(2) - d, S(2)];
     end
 end

@@ -4,7 +4,8 @@ function gen_paths_fixtures(outFile)
 %     OMP_NUM_THREADS=1 octave-cli --no-gui --eval "setup_paths(); addpath('../web/test/gen'); gen_paths_fixtures"
 %   标准答案数据集只覆盖默认布局与风道（k-ω、湍流逐步更新、自动温控）。这里补充其余分支的小算例（≤ 20 步）：
 %   方腔（层流、DT 0.02、压力参考点）、LVEL、层流、湍流每 3 步更新、手动转速与全局转速、环境温度/定温壁/物性覆盖/
-%   节流/超温/中途改功率/精确模式、只有电源、无电源、散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域。
+%   节流/超温/中途改功率/精确模式、只有电源、无电源、散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域、
+%   被动通风口（矩形机箱各壁的沿壁夹紧）。
 %   每个快照记录各场的指纹（和、绝对值和、平方和、极值、固定权重的加权和、均匀抽样点与机箱内 200 个抽样点，全精度）、
 %   装配步、热网络与风扇状态。
 %   场景定义取自 W0/W1 审计脚本（audit_run.m）。
@@ -13,7 +14,7 @@ function gen_paths_fixtures(outFile)
         outFile = fullfile(here, '..', 'fixtures', 'paths.json');
     end
     names = {'cavity', 'lvel', 'laminar140', 'tue3', 'manual', 'misc', 'onlypsu', 'nopsu', 'blockfins', ...
-             'full140', 'gpu2slot', 'empty'};
+             'full140', 'gpu2slot', 'empty', 'vents'};
     C = cell(1, numel(names));
     for c = 1:numel(names)
         t0 = tic;
@@ -60,13 +61,19 @@ function R = runCase(caseName)
             L = rmfield(L, {'psu', 'shroud'}); snaps = [1 10];
         case 'blockfins'
             % 固体块盖住 CPU 散热片：散热体没有流体格（MATLAB 的 max 忽略 NaN，风速取 0）
-            L.solidBlocks = struct('x', 158, 'y', 86, 'w', 120, 'h', 104); snaps = [1 3 5];
+            L.solidBlocks = L.cpu.fins; snaps = [1 3 5];
         case 'full140'
             L = layout_apply_preset(L, 'full'); snaps = [1 10 15];
         case 'gpu2slot'
             L = layout_set_gpu_slots(L, 2); L.turbulenceModel = 'lvel'; props.turbUpdateEvery = 2; snaps = [1 10 15];
         case 'empty'
             L = layout_benchmark('empty'); P = [0 0 0]; gs = 1; snaps = [1 3];
+        case 'vents'
+            % 被动通风口：沿壁范围按各壁长度夹紧（矩形机箱：顶/底壁 320 mm、前/后壁 400 mm）
+            L.vents = [struct('mount', 'rear', 'alongMm', 250, 'lengthMm', 80, 'zeta', 3); ...
+                       struct('mount', 'top', 'alongMm', 290, 'lengthMm', 80, 'zeta', 1.5); ...
+                       struct('mount', 'front', 'alongMm', 60, 'lengthMm', 40, 'zeta', 2)];
+            snaps = [1 5 10];
     end
     s = CFDSolverFEM(P(1), P(2), P(3), L, gs, DT);
     fn = fieldnames(props);

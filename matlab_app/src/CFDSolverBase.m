@@ -160,8 +160,9 @@ classdef CFDSolverBase < handle
             cellMm = layout.domain.baseCellMm / gridScale;
             Wg = round(layout.domain.sizeMm / cellMm);
             obj.GRID = struct('W',Wg,'H',Wg,'cell_size_mm',cellMm,'TOTAL',Wg*Wg);
-            obj.caseOffsetX = round(layout.chassis.originMm / cellMm);
-            obj.caseOffsetY = round(layout.chassis.originMm / cellMm);
+            org = layout.chassis.originMm;               % 标量（x = y）或 [x y]
+            obj.caseOffsetX = round(org(1) / cellMm);
+            obj.caseOffsetY = round(org(end) / cellMm);
             obj.CHASSIS_DEPTH_M = layout.chassis.depthM;
             obj.VEL_SCALE = (obj.GRID.W-2) * (obj.GRID.cell_size_mm/1000);
             obj.diffScale = 1 / (obj.GRID.cell_size_mm/1000)^2;
@@ -270,8 +271,8 @@ classdef CFDSolverBase < handle
             L = obj.layout;
             ox = obj.caseOffsetX;
             oy = obj.caseOffsetY;
-            cs = obj.toCell(L.chassis.sizeMm);
-            obj.CASE2D = struct('outer', struct('x',ox+1,'y',oy+1,'w',cs,'h',cs), ...
+            sz = L.chassis.sizeMm;                       % 标量（见方）或 [深 高]
+            obj.CASE2D = struct('outer', struct('x',ox+1,'y',oy+1,'w',obj.toCell(sz(1)),'h',obj.toCell(sz(end))), ...
                                 'enabled', L.chassis.enabled);
             if isfield(L, 'motherboardTray')
                 obj.CASE2D.motherboard_tray = obj.rectToGrid(L.motherboardTray);
@@ -292,7 +293,7 @@ classdef CFDSolverBase < handle
                 % 电源贴后壁/底壁安装：与壁内侧的间隙 ≤ 6 mm 时对齐到壁内侧
                 % （按 mm 判断，各档网格一致；粗网格取整可能压到壁上，也一并对齐）
                 b = obj.rectToGrid(L.psu.body);
-                cL = ox + 1; cB = oy + cs;
+                cL = ox + 1; cB = oy + obj.CASE2D.outer.h;
                 snapCells = 6 / obj.GRID.cell_size_mm;
                 if b.x - (cL + 1) <= snapCells
                     b.w = b.w + (b.x - (cL + 1)); b.x = cL + 1;
@@ -672,7 +673,7 @@ classdef CFDSolverBase < handle
             n = obj.toCell(sizeMm);
             c = obj.toCell(alongMm);
             a0 = c - floor(n/2);
-            a0 = max(2, min(co.w - n, a0));              % 夹在壁内侧范围
+            a0 = max(2, min(obj.wallLenCells(mount) - n, a0));   % 夹在壁内侧范围
             a1 = a0 + n - 1;
             switch mount
                 case 'front',  cols = [cR - t, cR - 1];  rows = co.y - 1 + [a0 a1];
@@ -682,6 +683,12 @@ classdef CFDSolverBase < handle
                 otherwise
                     error('CFDSolverBase:mount', '未知风扇安装位：%s', mount);
             end
+        end
+
+        function n = wallLenCells(obj, mount)
+            % 壁沿长 [格]（含两端壁格）：前/后壁为机箱高，顶/底壁为机箱深
+            co = obj.CASE2D.outer;
+            if any(strcmp(mount, {'front', 'rear'})), n = co.h; else, n = co.w; end
         end
 
         function initOpenings(obj)
@@ -711,7 +718,7 @@ classdef CFDSolverBase < handle
                     v = L.vents(k);
                     n = obj.toCell(v.lengthMm);
                     c = obj.toCell(v.alongMm);
-                    a0 = max(2, c - floor(n/2)); a1 = min(co.w - 1, a0 + n - 1);
+                    a0 = max(2, c - floor(n/2)); a1 = min(obj.wallLenCells(v.mount) - 1, a0 + n - 1);
                     switch v.mount
                         case {'front','rear'}, span = co.y - 1 + [a0 a1];
                         otherwise,             span = co.x - 1 + [a0 a1];
@@ -1298,8 +1305,9 @@ classdef CFDSolverBase < handle
         end
 
         function diag = calculateCFDDiagnostics(obj)
-            % 无量纲数诊断（特征长度 = 机箱边长，特征温差 = 最热元件 − 环境）
-            L = obj.layout.chassis.sizeMm / 1000;
+            % 无量纲数诊断（特征长度 = 机箱截面水力直径 2wh/(w+h)，见方机箱即边长；特征温差 = 最热元件 − 环境）
+            sz = obj.layout.chassis.sizeMm / 1000;
+            L = sz(1) * (2 * sz(end) / (sz(1) + sz(end)));     % 见方时括号内恰为 1
             [uC, vC] = obj.getCellVelocity();
             vel = sqrt(uC.^2 + vC.^2);
             if ~isempty(obj.insideMask), fluidVel = vel(obj.insideMask); else, fluidVel = vel(obj.obstacle == 0); end
