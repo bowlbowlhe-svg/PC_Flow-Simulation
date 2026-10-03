@@ -45,6 +45,9 @@ function pass = test_ui()
     fprintf('[2] 场景按钮与视图模式\n');
     errs = act(errs, 'gaming', @() ui_press(app.GamingBtn));
     errs = expect(errs, app.Solver.powerW.gpu == 200, 'gaming', 'GPU 功率应为 200 W');
+    errs = expect(errs, app.IsRunning, 'gaming', '暂停时切换功率场景应自动继续仿真（否则温度不变）');
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
+    errs = expect(errs, ~app.IsRunning, 'pause', '暂停后应停止');
     modeBtns = {app.ModeTempBtn, app.ModePressureBtn, app.ModeVorticityBtn, app.ModeSolidBtn, app.ModeDiffBtn, app.ModeVelocityBtn};
     modeNames = {'temperature', 'pressure', 'vorticity', 'solid', 'diff', 'velocity'};
     for k = 1:numel(modeBtns)
@@ -65,7 +68,9 @@ function pass = test_ui()
     errs = act(errs, 'run off', @() ui_press(app.RunButton));
     errs = expect(errs, ~app.IsRunning, 'run', '暂停后应停止');
     errs = act(errs, 'cpu slider', @() ui_slide(app.CPUPowerSlider, 150));
-    errs = expect(errs, app.Solver.powerW.cpu == 150, 'cpu slider', 'CPU 功率应为 150 W');
+    errs = expect(errs, app.Solver.powerW.cpu == 150 && app.IsRunning, 'cpu slider', 'CPU 功率应为 150 W，并自动继续仿真');
+    errs = act(errs, 'run off', @() ui_press(app.RunButton));
+    errs = expect(errs, ~app.IsRunning, 'run', '暂停后应停止');
 
     %% 3b. 可视化：粒子、开口标注、压力视图、工作点图、悬停、导出
     fprintf('[3b] 粒子、标注、压力、工作点图、悬停、PNG/GIF\n');
@@ -243,8 +248,8 @@ function pass = test_ui()
     layout_json('save', Lbad, f);
     errs = act(errs, 'unbuildable json', @() app.runTestHook('loadLayoutFile', f));
     errs = expect(errs, ~isempty(app.LastError) && isequal(app.Solver.layout, L0) && ...
-        app.Solver.iteration == it0 && ~app.LayoutDirty, ...
-        'unbuildable json', '无法构建的布局应回滚到原求解器');
+        app.Solver.iteration == it0 && ~app.LayoutDirty && ~app.IsRunning, ...
+        'unbuildable json', '无法构建的布局应回滚到原求解器（恢复原功率不应自动继续仿真）');
     app.LastError = '';
     % 缺元件的布局（无显卡）可以载入、推进、显示
     Lng = rmfield(layout_default(), 'gpu');
@@ -279,10 +284,15 @@ function pass = test_ui()
     %% 8. 全局风扇、网格切换、重置
     fprintf('[8] 全局风扇、网格切换、重置\n');
     errs = act(errs, 'fan manual', @() ui_slide(app.FanSpeedSlider, 70));
-    errs = expect(errs, ~app.Solver.autoFanEnabled && app.Solver.fanSpeedRatio == 70, 'fan manual', '应为手动 70%');
+    errs = expect(errs, ~app.Solver.autoFanEnabled && app.Solver.fanSpeedRatio == 70 && app.IsRunning, 'fan manual', ...
+        '应为手动 70%，并自动继续仿真');
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'fan auto', @() ui_press(app.AutoFanButton));
-    errs = expect(errs, app.Solver.autoFanEnabled, 'fan auto', '应恢复自动');
+    errs = expect(errs, app.Solver.autoFanEnabled && app.IsRunning, 'fan auto', '应恢复自动，并自动继续仿真');
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'heavy', @() ui_press(app.HeavyBtn));
+    errs = expect(errs, app.Solver.powerW.cpu == 180 && app.Solver.powerW.psu == 850 && app.IsRunning, 'heavy', ...
+        '暂停时点"满载"：功率应为 180/320/850 W，并自动继续仿真');
     errs = act(errs, 'grid fine', @() ui_choose(app.GridDrop, '精确 280²'));
     errs = expect(errs, app.GridScale == 1 && app.Solver.GRID.W == 280, 'grid fine', '应为 280² 网格');
     errs = expect(errs, app.Solver.powerW.gpu == 320 && numel(app.Solver.fans) == 4, 'grid fine', '切换网格应保留功率与布局');

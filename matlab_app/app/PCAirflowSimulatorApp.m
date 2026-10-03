@@ -1361,31 +1361,42 @@ classdef PCAirflowSimulatorApp < handle
         end
 
         % ================= 功率与全局风扇 =================
-        function CPUPowerSliderValueChanged(app, ~)
+        function CPUPowerSliderValueChanged(app, event)
             val = round(app.CPUPowerSlider.Value);
             app.Solver.setComponentPower('cpu', val);
             app.CPUPowerLbl.Text = sprintf('%dW', val);
             app.stateChanged();
+            if ~isempty(event), app.resumeAfterChange(); end    % 用户拖动（setPowers 内部调用时 event 为空）
         end
 
-        function GPUPowerSliderValueChanged(app, ~)
+        function GPUPowerSliderValueChanged(app, event)
             val = round(app.GPUPowerSlider.Value);
             app.Solver.setComponentPower('gpu', val);
             app.GPUPowerLbl.Text = sprintf('%dW', val);
             app.stateChanged();
+            if ~isempty(event), app.resumeAfterChange(); end    % 用户拖动（setPowers 内部调用时 event 为空）
         end
 
-        function PSUPowerSliderValueChanged(app, ~)
+        function PSUPowerSliderValueChanged(app, event)
             val = round(app.PSUPowerSlider.Value);
             app.Solver.setComponentPower('psu', val);
             app.PSUPowerLbl.Text = sprintf('%dW', val);
             app.stateChanged();
+            if ~isempty(event), app.resumeAfterChange(); end    % 用户拖动（setPowers 内部调用时 event 为空）
         end
 
         function stateChanged(app)
             % 功率或风扇设置改变：当前流场不再是稳态结果
             app.SteadyIter = -1;
             app.StatusMsg = '';
+        end
+
+        function resumeAfterChange(app)
+            % 用户在暂停时改了功率或全局风扇：自动继续仿真。新设置立即作用于求解器，但温度、噪音、评分要推进后才会变，
+            % 暂停着不动看起来就像没生效。跑到稳态中不打断（新设置照常生效）。
+            if ~app.IsRunning && ~app.SteadyRunning
+                app.toggleRun();
+            end
         end
 
         function setPowers(app, p)
@@ -1402,6 +1413,7 @@ classdef PCAirflowSimulatorApp < handle
 
         function FanSpeedSliderValueChanged(app, ~)
             app.setGlobalFan(false, round(app.FanSpeedSlider.Value));
+            app.resumeAfterChange();
         end
 
         function toggleAutoFan(app)
@@ -1409,6 +1421,7 @@ classdef PCAirflowSimulatorApp < handle
             if ~app.IsRunning
                 app.updateUI();
             end
+            app.resumeAfterChange();
         end
 
         function setGlobalFan(app, auto, pct)
@@ -1437,6 +1450,7 @@ classdef PCAirflowSimulatorApp < handle
                 otherwise, return;
             end
             app.setPowers(p);
+            app.resumeAfterChange();
         end
 
         % ================= 视图与运行 =================

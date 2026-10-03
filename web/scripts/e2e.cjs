@@ -160,6 +160,7 @@ function check(cond, msg) {
   await p.waitForSelector('.error', { timeout: 30000 });
   check((await text('.error')).includes('重建失败'), `报错：${(await text('.error')).slice(0, 60)}`);
   check((await text('.layout-info')).split('\n')[0] === before.split('\n')[0], '布局名未被改写');
+  check(!(await text('.right .muted.small')).includes('运行中'), '载入失败回滚后仍暂停（恢复功率不自动继续仿真）');
   await p.click('.error');
 
   // 8b. 配置缺 power：沿用当前功率正常载入；power 不全：报"配置无效"，不载入（最终审计）
@@ -212,6 +213,20 @@ function check(cond, msg) {
   check(m && Number(m[1]) > 0, `停止消息：${stopMsg}`);
   await p.click('.tabs >> text=状态');
   await shot('e2e_final');
+
+  // 11b. 暂停时切换功率场景：自动继续仿真，温度随之变化（用户反馈：跑到稳态后点"满载"，状态没有变化）
+  const cpuOf = async () => Number((await text('.tab-body')).match(/CPU (\d+)°C/)?.[1] ?? NaN);
+  const cpu0 = await cpuOf();
+  await p.click('.tabs >> text=功率与风扇');
+  await p.click('.tab-body button:text-is("满载")');
+  await p.waitForTimeout(500);
+  check((await text('.right .muted.small')).includes('运行中'), '暂停时点"满载"后自动继续仿真');
+  await p.waitForTimeout(4000);
+  await p.click('text=⏸ 暂停仿真');
+  await p.click('.tabs >> text=状态');
+  await p.waitForTimeout(300);
+  const cpu1 = await cpuOf();
+  check(cpu1 >= cpu0 + 3, `满载后 CPU 结温上升（${cpu0} → ${cpu1}°C）`);
 
   // 12. 窄屏
   await p.setViewportSize({ width: 390, height: 900 });

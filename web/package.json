@@ -1,8 +1,8 @@
 {
   "name": "pc-flow-web",
   "private": true,
-  "version": "1.3.0",
-  "description": "PC 机箱风道与散热 2D 仿真（网页版，移植自 MATLAB 版 v4.5.0）",
+  "version": "1.3.1",
+  "description": "PC 机箱风道与散热 2D 仿真（网页版，移植自 MATLAB 版 v4.5.1）",
   "type": "module",
   "scripts": {
     "dev": "vite",

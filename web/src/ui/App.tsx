@@ -19,7 +19,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.3.1';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -121,17 +121,30 @@ export function App() {
   }
   const report: FanReport = layoutFanReport(pending ?? pendingBase);
 
+  /**
+   * 暂停时改了功率或全局风扇：自动继续仿真（同 MATLAB resumeAfterChange）。新设置立即作用于求解器，
+   * 但温度、噪音、评分要推进后才会变；暂停着不动，看起来就像没生效。跑到稳态中不打断（新设置照常生效）。
+   */
+  const resumeIfPaused = () => {
+    if (!running && !steadyActive && sim.info && !building) client.send({ type: 'run' });
+  };
   // 滑块拖动中只更新显示，松手（或按钮）才发给求解器（同 MATLAB 滑块的 ValueChanged）
-  const onPower = (name: ComponentName, w: number, send = true) => {
+  const onPower = (name: ComponentName, w: number, send = true, resume = true) => {
     const [lo, hi] = POWER_LIMITS[name];
     const v = Math.min(hi, Math.max(lo, w));
     setPowers((p) => ({ ...p, [name]: v }));
-    if (send) client.send({ type: 'setPower', name, watts: v });
+    if (send) {
+      client.send({ type: 'setPower', name, watts: v });
+      if (resume) resumeIfPaused();
+    }
   };
   const onFan = (auto: boolean, pct: number, send = true) => {
     setAutoFan(auto);
     setFanPct(pct);
-    if (send) client.send({ type: 'setFan', auto, pct });
+    if (send) {
+      client.send({ type: 'setFan', auto, pct });
+      resumeIfPaused();
+    }
   };
   const preciseRef = useRef(precise);
   preciseRef.current = precise;
@@ -416,7 +429,10 @@ export function App() {
             fanPct={fanPct}
             onPower={onPower}
             disabled={building}
-            onScenario={(p) => (['cpu', 'gpu', 'psu'] as const).forEach((n, k) => onPower(n, p[k]))}
+            onScenario={(p) => {
+              (['cpu', 'gpu', 'psu'] as const).forEach((n, k) => onPower(n, p[k], true, false));
+              resumeIfPaused(); // 三项都设完后再继续（同 MATLAB setScenario）
+            }}
             onFan={onFan}
           />
         )}
