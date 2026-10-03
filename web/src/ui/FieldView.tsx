@@ -232,6 +232,8 @@ export function FieldView(p: Props) {
       const sp = Math.hypot(fields.uC[i], fields.vC[i]) * info.VEL_SCALE;
       const pa = fields.P[i];
       txt = `x ${xm.toFixed(0)}  y ${ym.toFixed(0)} mm │ ${sp.toFixed(2)} m/s │ ${fields.T[i].toFixed(1)}°C │ ${pa >= 0 ? '+' : ''}${pa.toFixed(2)} Pa`;
+      // 固体温度视图里散热片、CPU 底座等流体格按 T_solid 上色，读数一并给出（同 MATLAB）
+      if (P.mode === 'solid') txt += ` │ 固体 ${fields.Tsolid[i].toFixed(1)}°C`;
     }
     P.onHover(txt);
   };
@@ -426,7 +428,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     label(info.chipset, '芯', 'rgb(230,230,230)', 5);
   }
   if (info.cpu) {
-    rect(info.cpu.base, 'rgb(0,191,255)', base * 1.2);
+    rect(info.cpu.base, 'rgb(0,191,255)', base * 1.2, [5, 3]); // 虚线：只显示、不挡风（底座在鳍片内侧）
     label(info.cpu.base, 'CPU', 'rgb(102,230,255)', 8);
     const f = info.cpu.finArea;
     const fw: Rect = { ...f, w: Math.min(info.H, f.x + f.w - 1) - f.x + 1 };

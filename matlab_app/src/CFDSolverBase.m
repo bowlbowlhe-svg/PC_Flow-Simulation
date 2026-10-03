@@ -69,7 +69,7 @@ classdef CFDSolverBase < handle
 
         % ===== 障碍与区域索引 =====
         obsIdx = []           % 全部障碍格
-        heatObsIdx = []       % 发热元件固体格（CPU 底座/GPU PCB/电源外壳；仅显示 T_solid）
+        heatObsIdx = []       % 发热元件固体格（GPU PCB/电源外壳；仅显示 T_solid。CPU 底座不是障碍）
         caseWallIdx = []      % 机箱壁格（全部）
         dirichletIdx = []     % 定温壁格
         dirichletT = []       % 定温壁温度（与 dirichletIdx 对齐）[°C]
@@ -356,7 +356,8 @@ classdef CFDSolverBase < handle
             setIfFree = @(idx, type) obj.setObstacle(idx(obj.obstacle(idx) == 0), type);
 
             if obj.hasCpu
-                setIfFree(obj.rectCells(obj.CPU_HEATSINK.base), OB.CPU_BASE);
+                % CPU 底座只显示、不挡风（v4.4.0 起）：真实机箱里底座贴在主板上，塔式鳍片在它外侧（Z 向），
+                % 气流从鳍片中穿过；2D 侧视的投影把底座画在鳍片中间，若作为固体会挡住约一半的过风截面
                 pz = L.cpu.porous;
                 obj.porousZones(end+1) = struct('rect', obj.CPU_HEATSINK.fin_area, ...
                     'zetaThru', pz.zetaThru, 'zetaCross', pz.zetaCross, 'thru', pz.thru);
@@ -420,7 +421,7 @@ classdef CFDSolverBase < handle
             % 由 obstacle 重建各障碍索引集与内外掩码
             OB = obj.OBSTACLE;
             obj.obsIdx = find(obj.obstacle > 0);
-            obj.heatObsIdx = find(ismember(obj.obstacle, [OB.CPU_BASE, OB.GPU_PCB, OB.PSU_CASE]));
+            obj.heatObsIdx = find(ismember(obj.obstacle, [OB.GPU_PCB, OB.PSU_CASE]));
             obj.caseWallIdx = find(obj.obstacle == OB.WALL);
             % 温度边界：定温壁 = Dirichlet，其余障碍 = 绝热。元件热量全部经注热进入流体。
             [obj.dirichletIdx, obj.dirichletT] = obj.wallTemperatureCells();
@@ -1257,8 +1258,8 @@ classdef CFDSolverBase < handle
             if obj.hasCpu
                 net = obj.thermalNetworks.cpu;
                 obj.solveComponent(net, obj.cpuInletIdx, obj.cpuFinIdx, speed, rhoCpCell);
-                obj.T_solid(obj.rectCells(obj.CPU_HEATSINK.base)) = net.T_junction;
                 obj.T_solid(obj.cpuFinIdx) = net.T_sink_base;
+                obj.T_solid(obj.rectCells(obj.CPU_HEATSINK.base)) = net.T_junction;   % 底座在鳍片内，后写（固体温度视图显示芯片）
             end
             if obj.hasGpu
                 net = obj.thermalNetworks.gpu;

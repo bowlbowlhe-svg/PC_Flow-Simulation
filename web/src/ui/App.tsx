@@ -18,7 +18,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.1.1';
+export const APP_VERSION = '1.2.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },

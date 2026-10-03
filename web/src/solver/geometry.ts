@@ -14,7 +14,7 @@ import { edtNearest } from '../numerics/edtNearest';
 export const OBSTACLE = Object.freeze({
   WALL: 1,
   MOTHERBOARD: 2,
-  CPU_BASE: 3,
+  CPU_BASE: 3, // v4.4.0 起不再写入（底座只显示、不挡风），保留码表
   CPU_FINS: 4,
   GPU_PCB: 5,
   GPU_HEATSINK: 6,
@@ -208,7 +208,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const addZone = (rect: Rect, pz: Porous) =>
     porousZones.push({ rect, zetaThru: pz.zetaThru, zetaCross: pz.zetaCross, thru: pz.thru });
   if (cpu && L.cpu) {
-    setIfFree(rectCells(cpu.base), OBSTACLE.CPU_BASE);
+    // CPU 底座只显示、不挡风（v4.4.0 起，同 MATLAB）：2D 侧视里底座画在鳍片中间，真实机箱里它贴主板、在鳍片内侧
     addZone(cpu.finArea, L.cpu.porous);
   }
   if (gpu && L.gpu) {
@@ -412,7 +412,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     return Int32Array.from(out);
   };
   const obsIdx = findIdx((i) => obstacle[i] > 0);
-  const heatObsIdx = findIdx((i) => obstacle[i] === OBSTACLE.CPU_BASE || obstacle[i] === OBSTACLE.GPU_PCB || obstacle[i] === OBSTACLE.PSU_CASE);
+  const heatObsIdx = findIdx((i) => obstacle[i] === OBSTACLE.GPU_PCB || obstacle[i] === OBSTACLE.PSU_CASE);
   const caseWallIdx = findIdx((i) => obstacle[i] === OBSTACLE.WALL);
   // 定温壁：顶/底壁优先占角格，NaN 壁为绝热
   const dirIdx: number[] = [];

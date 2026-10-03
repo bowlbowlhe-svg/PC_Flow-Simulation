@@ -1002,8 +1002,8 @@ export class Solver implements FanControl {
     const nets = this.thermalNetworks;
     if (nets.cpu && g.cpu) {
       this.solveComponent(nets.cpu, g.cpuInletIdx, g.cpuFinIdx, speed, rc);
-      for (const i of rectCells(g.cpu.base)) this.T_solid[i] = nets.cpu.T_junction;
       for (const i of g.cpuFinIdx) this.T_solid[i] = nets.cpu.T_sink_base;
+      for (const i of rectCells(g.cpu.base)) this.T_solid[i] = nets.cpu.T_junction; // 底座在鳍片内，后写（同 MATLAB）
     }
     if (nets.gpu && g.gpu) {
       this.solveComponent(nets.gpu, g.gpuInletIdx, g.gpuFinIdx, speed, rc);

@@ -509,13 +509,15 @@ classdef PCAirflowSimulatorApp < handle
 
             % CPU 底座与塔式散热器
             if s.hasCpu
-                cb = s.CPU_HEATSINK.base;
-                plotRect(cb.x, cb.y, cb.w, cb.h, [0.00 0.75 1.0], 2.0);
+                cb = s.CPU_HEATSINK.base;                        % 虚线：只显示、不挡风（底座在鳍片内侧）
+                plot(ax, [cb.x cb.x+cb.w cb.x+cb.w cb.x cb.x], [cb.y cb.y cb.y+cb.h cb.y+cb.h cb.y], '--', ...
+                    'Color', [0.00 0.75 1.0], 'LineWidth', 2.0, 'PickableParts', 'none');
                 lb(cb.x, cb.y, cb.w, cb.h, 'CPU', [0.40 0.90 1.0], 8);
                 cf = s.CPU_HEATSINK.fin_area;
                 cfW = min(W, cf.x+cf.w-1) - cf.x;
                 plotRect(cf.x, cf.y, cfW, cf.h, [0.00 0.60 1.0], 2.0);
-                text(ax, cf.x+cfW/2, cf.y+cf.h/2, '塔式散热器', 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
+                th = max(3, min(6, cb.y - cf.y - 1));          % 标签放在散热器上沿（同网页），不与底座的"CPU"重叠
+                text(ax, cf.x+cfW/2, cf.y+0.5+th/2, '塔式散热器', 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'PickableParts', 'none');
             end
 
@@ -1209,6 +1211,9 @@ classdef PCAirflowSimulatorApp < handle
                     txt = sprintf('x %.0f  y %.0f mm │ 固体 %.1f°C', xm, ym, r.Tsolid);
                 else
                     txt = sprintf('x %.0f  y %.0f mm │ %.2f m/s │ %.1f°C │ %+.2f Pa', xm, ym, r.speed, r.T, r.P);
+                    if strcmp(app.VisMode, 'solid')      % 固体温度视图里散热片、CPU 底座等流体格按 T_solid 上色
+                        txt = sprintf('%s │ 固体 %.1f°C', txt, r.Tsolid);
+                    end
                 end
                 app.HoverLabel.Text = txt;
             catch

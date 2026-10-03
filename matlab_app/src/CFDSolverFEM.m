@@ -757,7 +757,7 @@ classdef CFDSolverFEM < CFDSolverBase
             obj.accClampAdvect = obj.accClampAdvect + dCl;
             obj.accClampCase = obj.accClampCase + sum(obj.T_fluid(obj.insideMask) - Tpre(obj.insideMask));
             % 障碍格温度仅作显示（不参与流体格的计算）：定温壁取壁温；发热元件固体格
-            % （CPU 底座、GPU PCB、电源外壳）取 T_solid；其余绝热障碍取 4 邻域流体格均值
+            % （GPU PCB、电源外壳）取 T_solid；其余绝热障碍取 4 邻域流体格均值
             % （无流体邻居取环境温度），避免温度视图出现假冷块
             obj.T_fluid(obj.dirichletIdx) = obj.dirichletT;
             if ~isempty(obj.adiabaticObsIdx)
