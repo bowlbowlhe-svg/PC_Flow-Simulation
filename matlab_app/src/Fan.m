@@ -16,6 +16,7 @@ classdef Fan < handle
     properties
         id                 % 标识
         role = 'case'      % 'case' | 'cpu' | 'gpu' | 'psu'
+        pos = ''           % CPU 塔扇位置：'front' | 'mid' | 'rear'（其它风扇为空）
         mount = 'internal' % 机箱风扇：'front' | 'rear' | 'top' | 'bottom'；内置：'internal'
         type = 'exhaust'   % 机箱风扇：'intake' | 'exhaust'
         model
@@ -63,7 +64,7 @@ classdef Fan < handle
             obj.pmax_pa = sp.pmax_pa;
             obj.pq_curve = sp.pq_curve;
             obj.price = sp.price;
-            flds = {'id','role','mount','type','speedMode','manualPct','sensor'};
+            flds = {'id','role','pos','mount','type','speedMode','manualPct','sensor'};
             for k = 1:numel(flds)
                 if isfield(cfg, flds{k}) && ~isempty(cfg.(flds{k}))
                     obj.(flds{k}) = cfg.(flds{k});

@@ -5,6 +5,7 @@ import { hasModel } from './fans';
 import { acousticsDefault } from './layoutDefault';
 import { LayoutError } from './gpuSlots';
 import { pairMm } from './chassis';
+import { layoutCpuTower } from './cpuTower';
 
 /** 保存：JSON.stringify 会把 NaN 写成 null，与 MATLAB jsonencode 一致 */
 export function layoutToJson(L: Layout): string {
@@ -46,6 +47,13 @@ export function normalizeLayout(raw: Raw): Layout {
     const t = L[c]?.throttleTemp;
     if (L[c] && (t === null || (Array.isArray(t) && t.length === 0))) delete L[c].throttleTemp;
   }
+  // CPU 塔式散热器：null 或 []（MATLAB isempty，例如 cpu.fan = [] 存为 "fan":[]）按没写处理
+  const isEmpty = (v: unknown) => v === null || (Array.isArray(v) && v.length === 0);
+  if (L.cpu) {
+    for (const k of ['fan', 'tower']) if (isEmpty(L.cpu[k])) delete L.cpu[k];
+    if (L.cpu.fan) for (const k of ['count']) if (isEmpty(L.cpu.fan[k])) delete L.cpu.fan[k];
+    if (L.cpu.tower) for (const k of ['stacks', 'gapMm']) if (isEmpty(L.cpu.tower[k])) delete L.cpu.tower[k];
+  }
   // 机箱风扇：缺转速字段的补默认值
   if (L.caseFans !== undefined) {
     L.caseFans = asArray<Raw>(L.caseFans).map(
@@ -61,6 +69,13 @@ export function normalizeLayout(raw: Raw): Layout {
     );
   }
   validateFans(L);
+  if (L.cpu) {
+    try {
+      layoutCpuTower(L as Layout);
+    } catch (e) {
+      throw new LayoutError('layout_json:invalid', `CPU 散热器：${(e as Error).message}`);
+    }
+  }
   for (const nm of ['vents', 'solidBlocks', 'porousBlocks']) {
     if (L[nm] === undefined) continue;
     const items = asArray<Raw>(L[nm]);

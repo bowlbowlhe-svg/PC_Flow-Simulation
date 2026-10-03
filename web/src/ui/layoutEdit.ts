@@ -1,6 +1,7 @@
 // 布局编辑的纯逻辑（界面状态 ↔ 布局），移植自 MATLAB 界面的 pendingLayout / setPendingFromLayout。
 import { FAN_SLOTS, getSlotStates, setSlotStates, type SlotState } from '../model/fans';
 import { layoutGpuSlots, layoutSetGpuSlots } from '../model/gpuSlots';
+import { layoutCpuTower, layoutSetCpuFans } from '../model/cpuTower';
 import { chassisSizeMm } from '../model/chassis';
 import { layoutDefault } from '../model/layoutDefault';
 import type { Layout } from '../model/types';
@@ -8,12 +9,34 @@ import type { Layout } from '../model/types';
 export type Gaps = { x0Mm: number; x1Mm: number }[];
 export type Powers = { cpu: number; gpu: number; psu: number };
 
-/** 待应用布局：基底 + 安装位状态 + 挡板开孔（勾选时用 defaultGaps）+ 显卡厚度 + 当前功率（显卡放不下时抛错） */
-export function buildPending(base: Layout, slots: SlotState[], gap: boolean, gpuSlots: number | null, defaultGaps: Gaps, powers: Powers): Layout {
+/**
+ * 待应用布局：基底 + 安装位状态 + 挡板开孔（勾选时用 defaultGaps）+ 显卡厚度 + CPU 塔扇数量 + 当前功率
+ * （显卡放不下时抛错；cpuFans 为 null 时不改塔扇）
+ */
+export function buildPending(
+  base: Layout,
+  slots: SlotState[],
+  gap: boolean,
+  gpuSlots: number | null,
+  defaultGaps: Gaps,
+  powers: Powers,
+  cpuFans: number | null = null,
+): Layout {
   let L = setSlotStates(base, slots);
   if (L.shroud) L = { ...L, shroud: { ...L.shroud, gaps: gap ? structuredClone(defaultGaps) : [] } };
   if (L.gpu && gpuSlots !== null && gpuSlots !== layoutGpuSlots(L)) L = layoutSetGpuSlots(L, gpuSlots);
+  if (L.cpu && L.cpu.fan && cpuFans !== null && cpuFans !== layoutCpuTower(L).fans) L = layoutSetCpuFans(L, cpuFans);
   return { ...L, power: { cpu: powers.cpu, gpu: powers.gpu, psu: powers.psu } };
+}
+
+/** 布局的 CPU 塔扇数量；无 CPU 或无塔扇时为 null（界面下拉框禁用） */
+export function layoutCpuFans(L: Layout): number | null {
+  return L.cpu && L.cpu.fan ? layoutCpuTower(L).fans : null;
+}
+
+/** 塔扇数量下拉项（第 k 项 = k 个塔扇，同 MATLAB cpuFanItems） */
+export function cpuFanItems(stacks: number): string[] {
+  return stacks === 2 ? ['1 个（中间）', '2 个（前 + 中间）'] : ['1 个（前侧）', '2 个（前 + 后）'];
 }
 
 /**
@@ -31,11 +54,15 @@ export function layoutNotes(L: Layout): string[] {
 }
 
 /** 以布局 L 作为待编辑布局时的界面状态；带非空挡板缺口时更新 defaultGaps（同 MATLAB setPendingFromLayout） */
-export function pendingFromLayout(L: Layout, defaultGaps: Gaps): { slots: SlotState[]; gpuSlots: number | null; shroudGap: boolean | null; defaultGaps: Gaps } {
+export function pendingFromLayout(
+  L: Layout,
+  defaultGaps: Gaps,
+): { slots: SlotState[]; gpuSlots: number | null; cpuFans: number | null; shroudGap: boolean | null; defaultGaps: Gaps } {
   const gaps = L.shroud?.gaps ?? [];
   return {
     slots: getSlotStates(L),
     gpuSlots: L.gpu ? layoutGpuSlots(L) : null,
+    cpuFans: layoutCpuFans(L),
     shroudGap: L.shroud ? gaps.length > 0 : null, // null：布局无挡板，勾选框保持原状
     defaultGaps: gaps.length ? structuredClone(gaps) : defaultGaps,
   };

@@ -83,6 +83,104 @@ function pass = test_layout()
     Lold = L0; Lold.gpu = rmfield(Lold.gpu, 'slots');
     errs = check(errs, layout_gpu_slots(Lold) == 4, '无 slots 字段的旧布局应按厚度折算槽数');
 
+    % 4c) CPU 双塔散热器：默认双塔 2 扇（前 + 中）；1 扇装中间；单塔 1 扇前置、2 扇前 + 后；旧布局按单塔 1 扇
+    tw = layout_cpu_tower(L0);
+    errs = check(errs, tw.stacks == 2 && tw.gapMm == 24 && tw.fans == 2 && isequal(tw.pos, {'front', 'mid'}), ...
+        '默认应为双塔、间隙 24 mm、2 个塔扇（前 + 中）');
+    errs = check(errs, isequal(layout_set_cpu_fans(L0, 2), L0), 'layout_set_cpu_fans(L0, 2) 应不改默认布局');
+    L1f = layout_set_cpu_fans(L0, 1);
+    tw1 = layout_cpu_tower(L1f);
+    errs = check(errs, tw1.fans == 1 && isequal(tw1.pos, {'mid'}), '双塔 1 扇应装在中间');
+    try
+        layout_set_cpu_fans(L0, 3);
+        errs{end+1} = '塔扇数量 3 应报错';
+    catch
+    end
+    Ls = L0; Ls.cpu = rmfield(Ls.cpu, 'tower');
+    tws = layout_cpu_tower(Ls);
+    errs = check(errs, tws.stacks == 1 && tws.gapMm == 0 && isequal(tws.pos, {'front', 'rear'}), '单塔 2 扇应为前 + 后');
+    Lo = Ls; Lo.cpu.fan = rmfield(Lo.cpu.fan, 'count');
+    two = layout_cpu_tower(Lo);
+    errs = check(errs, two.fans == 1 && isequal(two.pos, {'front'}), '无 tower、无 count 的旧布局应为单塔 1 个前置塔扇');
+    Lbad = L0; Lbad.cpu.tower.gapMm = 200;
+    try
+        layout_cpu_tower(Lbad);
+        errs{end+1} = '间隙超过鳍片外廓宽时应报错';
+    catch
+    end
+    for gs = [0.5 1]
+        sv = CFDSolverFEM([], [], [], L0, gs);
+        hs = sv.CPU_HEATSINK; fin = hs.fin_area; st = hs.stacks; gp = hs.gap;
+        tag = sprintf('（网格 %d）', sv.GRID.W);
+        errs = check(errs, numel(st) == 2 && st(1).w == st(2).w && st(1).x == fin.x && ...
+            gp.x == st(1).x + st(1).w && st(2).x == gp.x + gp.w && st(2).x + st(2).w == fin.x + fin.w, ...
+            ['双塔：两组鳍片等宽、间隙夹在中间、合起来正好是外廓' tag]);
+        cf = sv.builtInFans(cellfun(@(f) strcmp(f.role, 'cpu'), sv.builtInFans));
+        errs = check(errs, numel(cf) == 2 && strcmp(cf{1}.pos, 'front') && strcmp(cf{2}.pos, 'mid') && ...
+            cf{1}.cols(1) == fin.x + fin.w && cf{2}.cols(1) >= gp.x && cf{2}.cols(2) <= gp.x + gp.w - 1 && ...
+            isequal(cf{1}.rows, cf{2}.rows) && all([cf{1}.normal cf{2}.normal] == [-1 0 -1 0]), ...
+            ['塔扇：前扇贴鳍片前侧、中扇在间隙内，同行、都向后吹' tag]);
+        pz = sv.porousZones(1:3);
+        errs = check(errs, isequal([pz.zetaThru], [4 4 0]) && isequal([pz.zetaCross], [60 60 60]) && ...
+            isequal(pz(3).rect, gp), ['多孔区：两组鳍片穿流 ζ 各 4，间隙只有横流阻力' tag]);
+        errs = check(errs, numel(sv.cpuFinIdx) == 2 * st(1).w * st(1).h && ...
+            ~any(ismember(sv.cpuFinIdx, sv.rectCells(gp))), ['CPU 散热体应为两组鳍片、不含间隙' tag]);
+        inX = ceil(sv.cpuInletIdx / sv.GRID.W);
+        errs = check(errs, min(inX) == cf{1}.cols(2) + 1, ['进风带应在前扇前' tag]);
+    end
+    sv1 = CFDSolverFEM([], [], [], L1f, 0.5);
+    cf1 = sv1.builtInFans(cellfun(@(f) strcmp(f.role, 'cpu'), sv1.builtInFans));
+    fin1 = sv1.CPU_HEATSINK.fin_area;
+    inX = ceil(sv1.cpuInletIdx / sv1.GRID.W);
+    errs = check(errs, numel(cf1) == 1 && strcmp(cf1{1}.id, 'cpu_fan_mid') && min(inX) == fin1.x + fin1.w, ...
+        '双塔 1 扇：只有中扇，进风带在鳍片前');
+    svs = CFDSolverFEM([], [], [], Ls, 0.5);
+    cfs = svs.builtInFans(cellfun(@(f) strcmp(f.role, 'cpu'), svs.builtInFans));
+    fins = svs.CPU_HEATSINK.fin_area;
+    errs = check(errs, numel(cfs) == 2 && cfs{2}.cols(2) == fins.x - 1 && isempty(svs.CPU_HEATSINK.gap) && ...
+        svs.porousZones(1).zetaThru == 8 && isequal(svs.porousZones(1).rect, fins), ...
+        '单塔推拉：后扇贴鳍片后侧，鳍片为一个多孔区（ζ 8）');
+    fl = svs.fanStatusList();
+    names = {fl.name};
+    Lw = Ls; Lw.cpu.fins.x = 6;                                   % 单塔推拉：鳍片离后壁太近，后扇压到后壁
+    try
+        CFDSolverFEM([], [], [], Lw, 0.5);
+        errs{end+1} = '后置塔扇压到后壁时应报错';
+    catch ME
+        errs = check(errs, strcmp(ME.identifier, 'CFDSolverBase:cpuFans'), ['后扇压壁的错误标识：' ME.identifier]);
+    end
+    Lfr = L0; Lfr.cpu.fins.x = 204;                               % 鳍片贴前壁：前扇压到前壁
+    Ltw = L0; Ltw.cpu.tower.gapMm = 110;                          % 间隙太宽：两组鳍片在网格上放不下
+    ids = {'CFDSolverBase:cpuFans', 'CFDSolverBase:cpuTower'};
+    Lerr = {Lfr, Ltw};
+    for k = 1:2
+        try
+            CFDSolverFEM([], [], [], Lerr{k}, 0.5);
+            errs{end+1} = ['应报错：' ids{k}]; %#ok<AGROW>
+        catch ME
+            errs = check(errs, strcmp(ME.identifier, ids{k}), ['错误标识应为 ' ids{k} '：' ME.identifier]);
+        end
+    end
+    Lgn = L0; Lgn.cpu.tower.gapMm = 8;                            % 间隙（预览 2 格）比执行盘（3 格）窄：盘厚截到间隙宽
+    svg = CFDSolverFEM([], [], [], Lgn, 0.5);
+    gpn = svg.CPU_HEATSINK.gap;
+    cfm = svg.builtInFans(cellfun(@(q) strcmp(q.pos, 'mid'), svg.builtInFans));
+    errs = check(errs, gpn.w == 2 && isequal(cfm{1}.cols, [gpn.x, gpn.x + 1]) && abs(cfm{1}.thickM - 0.008) < 1e-15, ...
+        '间隙比执行盘窄时，中扇应占满间隙、盘厚 = 间隙宽');
+    Ln = L0; Ln.cpu.fan = [];                                     % 无塔扇（JSON 里存为 "fan":[]）
+    layout_json('save', Ln, f);
+    Lnj = layout_json('load', f);
+    delete(f);
+    svn = CFDSolverFEM([], [], [], Lnj, 0.5);
+    twn = layout_cpu_tower(Lnj);
+    errs = check(errs, ~any(cellfun(@(q) strcmp(q.role, 'cpu'), svn.builtInFans)) && twn.fans == 0, ...
+        'cpu.fan = [] 的布局应没有塔扇');
+    errs = check(errs, any(strcmp(names, 'CPU 塔扇（后）')), '两台塔扇时风扇表名称应带位置');
+    layout_json('save', L1f, f);
+    Lj = layout_json('load', f);
+    delete(f);
+    errs = check(errs, isequal(layout_cpu_tower(Lj), tw1), 'JSON 往返应保留双塔与塔扇数量');
+
     % 5) JSON 字段取值检查
     Lb = L0; Lb.caseFans(1).type = 'Intake';
     layout_json('save', Lb, f);

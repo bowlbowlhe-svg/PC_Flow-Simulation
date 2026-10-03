@@ -19,6 +19,7 @@ function [rowNames, data] = scenario_table(snaps)
         '布局',          @(s) shortLabel(s.label); ...
         '挡板前部开孔',  @(s) yesNo(hasGap(s.layout)); ...
         '显卡厚度',      @(s) slotsText(s.layout); ...
+        'CPU 散热器',    @(s) towerText(s.layout); ...
         '功率 C/G/P W',  @(s) sprintf('%g/%g/%g', s.powers(1), s.powers(2), s.powers(3)); ...
         '网格 · 步数',   @(s) sprintf('%s · %d', gridName(s.gridScale), s.summary.steps); ...
         '稳态',          @(s) yesNo(s.steady)};
@@ -58,6 +59,14 @@ end
 function t = slotsText(L)
     sl = layout_gpu_slots(L);
     if isnan(sl), t = '—'; else, t = sprintf('%g 槽', sl); end
+end
+
+function t = towerText(L)
+    % 如"双塔·2 扇"
+    if ~isfield(L, 'cpu') || isempty(L.cpu), t = '—'; return; end
+    tw = layout_cpu_tower(L);
+    if tw.stacks == 2, t = '双塔'; else, t = '单塔'; end
+    if tw.fans == 0, t = [t '·无扇']; else, t = sprintf('%s·%d 扇', t, tw.fans); end
 end
 
 function tf = hasGap(L)

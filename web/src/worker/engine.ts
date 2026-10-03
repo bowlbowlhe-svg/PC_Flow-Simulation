@@ -175,7 +175,7 @@ export class SimEngine {
       insideIdx: Int32Array.from(inside),
       caseOuter: g.CASE2D.outer,
       motherboardTray: g.CASE2D.motherboardTray,
-      cpu: g.cpu,
+      cpu: g.cpu ? { base: g.cpu.base, finArea: g.cpu.finArea, stacks: g.cpu.stacks } : undefined,
       gpu,
       psu: g.psu ? { body: g.psu.body } : undefined,
       ram: g.ram,

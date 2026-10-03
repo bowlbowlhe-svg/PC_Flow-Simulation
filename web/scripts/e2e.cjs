@@ -64,6 +64,8 @@ function check(cond, msg) {
     els[0].value = 'exhaust';
     els[0].dispatchEvent(new Event('change', { bubbles: true }));
   });
+  check((await p.$eval('select.cpu-fans', (e) => e.value)) === '2', '默认双塔 2 个塔扇');
+  await p.selectOption('select.cpu-fans', '1');
   await p.waitForTimeout(300);
   check((await text('.layout-info')).includes('待应用：自定义'), '编辑后显示"待应用：自定义"');
   check((await text('.tabs')).includes('风扇布局 •'), '标签页显示未应用标记');
@@ -85,9 +87,11 @@ function check(cond, msg) {
   await p.selectOption('.tab-body .row select >> nth=0', '1');
   await p.click('text=保存当前');
   const rows = await p.$$eval('.scenario-table tbody tr', (r) => r.length);
-  check(rows === 17, `方案表 17 行（${rows}）`);
+  check(rows === 18, `方案表 18 行（${rows}）`);
   const fansRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('机箱风扇数')).textContent);
   check(/机箱风扇数\s*6\s*4\s*6/.test(fansRow.replace(/\s+/g, ' ')), `风扇数：当前 6、A 4、B 6（${fansRow.replace(/\s+/g, ' ')}）`);
+  const towerRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('CPU 散热器')).textContent.replace(/\s+/g, ' '));
+  check(/双塔·1 扇\s*双塔·2 扇\s*双塔·1 扇/.test(towerRow), `CPU 散热器：当前 1 扇、A 2 扇、B 1 扇（${towerRow}）`);
   await shot('e2e_scenarios');
 
   // 4. 温差视图；重存参考方案后温差归零（W2–W4 审计：暂停中重存要立即重画）
@@ -116,6 +120,7 @@ function check(cond, msg) {
   const L = JSON.parse(fs.readFileSync(js, 'utf8'));
   const fanStr = L.caseFans.map((f) => `${f.mount}${f.alongMm}:${f.type}`).join(' ');
   check(fanStr.includes('bottom232:intake') && fanStr.includes('front100:exhaust'), `保存的 JSON 含点击与表格的修改（${fanStr}）`);
+  check(L.cpu.fan.count === 1 && L.cpu.tower.stacks === 2, `保存的 JSON 含塔扇数量（${JSON.stringify(L.cpu.fan)}）`);
 
   // 6. 载入预设再载入 JSON
   await p.selectOption('.tab-body .row select >> nth=0', 'positive');
@@ -124,6 +129,14 @@ function check(cond, msg) {
   await p.setInputFiles('input[type=file]', js);
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：配置'), null, { timeout: 30000 });
   check(true, '载入 JSON 后显示"当前：配置 …"');
+  // 6b. 单塔旧配置（v1.3 之前，无 cpu.tower、无 cpu.fan.count）：塔扇下拉项为"前侧 / 前 + 后"
+  const Lst = JSON.parse(fs.readFileSync(js, 'utf8'));
+  delete Lst.cpu.tower;
+  delete Lst.cpu.fan.count;
+  await p.setInputFiles('input[type=file]', writeJson('singletower.json', Lst));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('singletower.json'), null, { timeout: 30000 });
+  const towerOpts = await p.$$eval('select.cpu-fans option', (os) => os.map((o) => o.textContent).join(' / '));
+  check(towerOpts === '1 个（前侧） / 2 个（前 + 后）' && (await p.$eval('select.cpu-fans', (e) => e.value)) === '1', `单塔配置的塔扇下拉项（${towerOpts}）`);
 
   // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）
   const Lgap = JSON.parse(fs.readFileSync(js, 'utf8'));

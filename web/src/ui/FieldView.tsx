@@ -429,12 +429,15 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
   }
   if (info.cpu) {
     rect(info.cpu.base, 'rgb(0,191,255)', base * 1.2, [5, 3]); // 虚线：只显示、不挡风（底座在鳍片内侧）
-    label(info.cpu.base, 'CPU', 'rgb(102,230,255)', 8);
+    // 标签放在底座下半部：中间塔扇的箭头横穿底座中部
+    label({ ...info.cpu.base, y: info.cpu.base.y + info.cpu.base.h / 2, h: info.cpu.base.h / 2 }, 'CPU', 'rgb(102,230,255)', 8);
+    // 各组鳍片分别画框（双塔 2 组，中间间隙放塔扇）
+    for (const st of info.cpu.stacks) rect({ ...st, w: Math.min(info.H, st.x + st.w - 1) - st.x + 1 }, 'rgb(0,153,255)', base * 1.2);
     const f = info.cpu.finArea;
     const fw: Rect = { ...f, w: Math.min(info.H, f.x + f.w - 1) - f.x + 1 };
-    rect(fw, 'rgb(0,153,255)', base * 1.2);
     // 标签放在散热器上沿（底座在散热器中部，避免重叠）
-    label({ x: fw.x, y: fw.y + 1, w: fw.w, h: Math.max(3, Math.min(6, info.cpu.base.y - fw.y - 1)) }, '塔式散热器', 'rgb(77,204,255)', 6);
+    const name = info.cpu.stacks.length === 2 ? '双塔散热器' : '塔式散热器';
+    label({ x: fw.x, y: fw.y + 1, w: fw.w, h: Math.max(3, Math.min(6, info.cpu.base.y - fw.y - 1)) }, name, 'rgb(77,204,255)', 6);
   }
   if (info.gpu) {
     const { pcb: gp, heatsink: gh } = info.gpu;
@@ -480,7 +483,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     rect(info.psu.body, 'rgb(224,204,0)', base * 1.2);
     label(info.psu.body, 'PSU', 'rgb(255,242,77)', 8);
   }
-  // 风扇：执行盘矩形 + 送风方向箭头
+  // 风扇：执行盘矩形 + 送风方向箭头。显卡风扇在卡底面朝下，侧视看不到扇叶，执行盘画虚线（同 CPU 底座）
   for (const f of info.fans) {
     let col: string;
     if (f.role === 'case') col = f.type === 'intake' ? 'rgb(0,235,140)' : 'rgb(255,71,71)';
@@ -488,7 +491,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, info: StaticInfo, sc: numbe
     else if (f.role === 'gpu') col = 'rgb(255,140,38)';
     else col = 'rgb(242,217,51)';
     const r: Rect = { x: f.cols[0], y: f.rows[0], w: f.cols[1] - f.cols[0] + 1, h: f.rows[1] - f.rows[0] + 1 };
-    rect(r, col, Math.max(1, base * 0.8));
+    rect(r, col, Math.max(1, base * 0.8), f.role === 'gpu' ? [4, 3] : undefined);
     const cx = E(r.x) + (r.w * sc) / 2;
     const cy = E(r.y) + (r.h * sc) / 2;
     const len = 0.35 * Math.max(r.w, r.h) * sc;

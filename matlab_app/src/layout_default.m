@@ -43,20 +43,23 @@ function L = layout_default(name)
     % ---- 噪音模型经验参数（见 acoustics_default、fan_noise_terms）----
     L.acoustics = acoustics_default();
 
-    % ---- CPU：底座（只显示，不挡风）+ 塔式鳍片（多孔介质，穿流方向 x）+ 塔扇 ----
-    % 2D 侧视里底座画在鳍片中间；真实机箱里底座贴主板、鳍片在它外侧，所以底座不是障碍（v4.4.0 起）。
-    % 热阻：带顶盖的小面积芯片结-壳热阻较大（公开评测里 120mm 单塔风冷
-    % 满载总热阻约 0.25–0.4 K/W）。塔扇装在鳍片前侧，从前向后吹，热风直接对着后排风扇；
-    % 鳍片后端距后排风扇执行盘约 20 mm。
+    % ---- CPU：底座（只显示，不挡风）+ 双塔风冷（两组鳍片，多孔介质，穿流方向 x）+ 塔扇 ----
+    % 侧视看到的是塔的侧面：前后两组鳍片（各 44 mm 厚、120 mm 高，与 120 风扇同高），中间 24 mm 间隙放风扇。
+    % 塔扇 1 个（装在中间）或 2 个（前侧 + 中间），用 layout_set_cpu_fans 切换；都从前向后吹，
+    % 热风直接对着后排风扇；鳍片后端距后排风扇执行盘约 22 mm，下沿距显卡 PCB 16 mm。
+    % 2D 侧视里底座画在两组鳍片之间；真实机箱里底座贴主板、鳍片在它外侧，所以底座不是障碍（v4.4.0 起）。
+    % 热阻：带顶盖的小面积芯片结-壳热阻较大（公开评测里 120mm 风冷满载总热阻约 0.25–0.4 K/W）。
+    % 穿流 ζ 为整个散热器（两组鳍片合计），横流 ζ 也施加在中间间隙（风扇框围住，空气不从间隙上下漏走）。
     L.cpu = struct();
-    L.cpu.base = rect(70, 114, 48, 48);
-    L.cpu.fins = rect(34, 86, 120, 104);
+    L.cpu.base = rect(68, 112, 48, 48);
+    L.cpu.fins = rect(36, 76, 112, 120);           % 鳍片外廓（两组鳍片 + 中间间隙）
+    L.cpu.tower = struct('stacks', 2, 'gapMm', 24);
     L.cpu.porous = struct('zetaThru', 8, 'zetaCross', 60, 'thru', 'x');
     L.cpu.thermal = struct('R_junction_to_case', 0.15, 'R_tim', 0.04, 'R_base', 0.05, ...
         'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.15);
     L.cpu.tjmax = 100;
     L.cpu.throttleTemp = 95;
-    L.cpu.fan = struct('model', 'Tower120', 'side', 'front');
+    L.cpu.fan = struct('model', 'Tower120', 'count', 2);
 
     % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条（固体）+ 鳍片（多孔，穿流 x）+ 卡下 3 风扇 ----
     % 4 槽时显卡风扇下沿到电源仓挡板留 21 mm 进风。鳍片阻力取偏低值：真实显卡的热风
@@ -68,7 +71,7 @@ function L = layout_default(name)
     % 挡板端在后面板。散热片后端离后壁约 26 mm（挡板端的视频接口区，不画散热片；这条通道让散热片后端的热风
     % 沿后壁上行到后排风扇，也代表 2D 里没有的挡板通风孔与侧向出风），前端伸出主板前缘约 16 mm。
     % 通道只有约 12 mm 时，预览网格（4 mm）只有 2 格，GPU 结温比精确网格高约 7°C；26 mm 时约高 2.4°C
-    % （v4.3.0；v4.4.0 起 CPU 底座不挡风，流型改变后约高 4°C）。
+    % （v4.3.0；v4.4.0 约高 4°C；v4.5.0 双塔散热器约高 1.3°C）。
     L.gpu = struct();
     L.gpu.slots = 4;
     L.gpu.pcb = rect(38, 212, 216, 12);

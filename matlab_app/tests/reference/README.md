@@ -2,10 +2,12 @@
 
 网页版（或其它移植）对照用的参考数据，由 `tools/make_reference_dataset` 生成；
 算法说明见 [`../../../docs/ALGORITHM.md`](../../../docs/ALGORITHM.md)。每个文件记录生成环境
-（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.4.0 在
+（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.5.0 在
 GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱（深 320 mm × 高 400 mm、主板贴后壁），机箱尺寸可为
 `[深 高]`，嵌入的 `layout` 里 `chassis.sizeMm`、`chassis.originMm` 是两个数的数组；v4.4.0 起 CPU 底座不是障碍
-（`geometry.obstacleType` 里没有类型码 3）。
+（`geometry.obstacleType` 里没有类型码 3）；v4.5.0 起 CPU 为双塔散热器（`cpu.tower = {stacks: 2, gapMm: 24}`、
+`cpu.fan.count = 2`）：两组鳍片与中间间隙各为一个多孔区（体现在 `uDragCoef`/`vDragCoef`），`fans` 里有两台塔扇（前、中），
+`cht.cpuFin` 不含间隙的格。
 
 | 文件 | 内容 |
 |---|---|
@@ -61,10 +63,10 @@ GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱�
    结温 ≤ 0.2°C、风量 ≤ 1%、风扇工作点静压 ≤ 2%；场只看 RMS 或 p95 差，作诊断用。这些阈值是建议值，
    尚未有单精度实现验证过。
 4. **稳态**（`steady_*.json`）：在 280²、同样推进 3000 步，比较 1000 步之后的均值。结温与内温
-   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.07°C、风量 σ ≤ 0.7 CFM）。
+   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.11°C、风量 σ ≤ 0.4 CFM）。
    **精确模式对照值**（`forceReassemble = true`，全部冻结算子每步重装，1000 步之后的均值；供选择精确模式的移植实现验收，
-   容差同上）：默认 74.34 / 64.25 / 53.03°C、63.12 CFM；正压 67.51 / 70.54°C、47.86 CFM；底进顶出 78.85 / 75.76°C、
-   42.43 CFM（v4.4.0，由网页版以 `forceReassemble` 计算；与本目录冻结算子数据的均值相差 ≤ 0.1°C、≤ 0.3%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
+   容差同上）：默认 69.61 / 67.66 / 53.03°C、53.74 CFM；正压 66.45 / 71.25°C、49.52 CFM；底进顶出 76.53 / 75.67°C、
+   38.77 CFM（v4.5.0，由网页版以 `forceReassemble` 计算；与本目录冻结算子数据的均值相差 ≤ 0.04°C、≤ 0.1%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
 5. **基准**（`bench.json`）：Nu 与风道流量的相对差 ≤ 1%（本数据与解析解/文献值的偏差：Nu +2.5/+2.1%，
    风道 +1.1/+0.6/+0.4%）。
 

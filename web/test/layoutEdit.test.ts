@@ -1,6 +1,6 @@
 // 界面布局编辑逻辑（W2–W4 审计：自定义挡板缺口不能被默认值覆盖）。
 import { describe, expect, it } from 'vitest';
-import { buildPending, layoutNotes, pendingFromLayout } from '../src/ui/layoutEdit';
+import { buildPending, cpuFanItems, layoutCpuFans, layoutNotes, pendingFromLayout } from '../src/ui/layoutEdit';
 import { layoutDefault } from '../src/model/layoutDefault';
 import { layoutFromJson, layoutToJson } from '../src/model/layoutJson';
 import { layoutSetGpuSlots } from '../src/model/gpuSlots';
@@ -43,6 +43,26 @@ describe('待应用布局', () => {
     const st = pendingFromLayout(L, L.shroud!.gaps);
     expect(() => buildPending(L, st.slots, true, 4, st.defaultGaps, P)).toThrow(/放不下/);
     expect(buildPending(layoutDefault(), st.slots, true, null, st.defaultGaps, { cpu: 1, gpu: 2, psu: 3 }).power).toEqual({ cpu: 1, gpu: 2, psu: 3 });
+  });
+});
+
+describe('CPU 塔扇数量', () => {
+  it('默认双塔 2 扇；改 1 扇只改 cpu.fan.count；null 不改；无塔扇时下拉框禁用', () => {
+    const L = layoutDefault();
+    const st = pendingFromLayout(L, L.shroud!.gaps);
+    expect(st.cpuFans).toBe(2);
+    const one = buildPending(L, st.slots, true, st.gpuSlots, st.defaultGaps, P, 1);
+    expect(one.cpu!.fan).toEqual({ model: 'Tower120', count: 1 });
+    expect({ ...one.cpu, fan: L.cpu!.fan }).toEqual(L.cpu);
+    expect(buildPending(L, st.slots, true, st.gpuSlots, st.defaultGaps, P, null).cpu).toEqual(L.cpu);
+    const N = layoutDefault();
+    delete N.cpu!.fan;
+    expect(layoutCpuFans(N)).toBeNull();
+    expect(buildPending(N, st.slots, true, st.gpuSlots, st.defaultGaps, P, 2).cpu!.fan).toBeUndefined();
+  });
+  it('下拉项文字：双塔"中间 / 前 + 中间"，单塔"前侧 / 前 + 后"', () => {
+    expect(cpuFanItems(2)).toEqual(['1 个（中间）', '2 个（前 + 中间）']);
+    expect(cpuFanItems(1)).toEqual(['1 个（前侧）', '2 个（前 + 后）']);
   });
 });
 

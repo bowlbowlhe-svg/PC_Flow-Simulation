@@ -75,6 +75,7 @@ classdef PCAirflowSimulatorApp < handle
         LoadPresetBtn      matlab.ui.control.Button
         ShroudGapCheck     matlab.ui.control.CheckBox
         GpuSlotsDrop       matlab.ui.control.DropDown
+        CpuFansDrop        matlab.ui.control.DropDown
         LayoutInfoLabel    matlab.ui.control.Label
         LayoutWarnArea     matlab.ui.control.TextArea
         ApplyLayoutBtn     matlab.ui.control.Button
@@ -397,9 +398,15 @@ classdef PCAirflowSimulatorApp < handle
                 'Value', app.GPU_SLOT_ITEMS{end}, 'FontSize', 10, ...
                 'ValueChangedFcn', @(src,event)app.layoutEdited(false));
 
-            app.LayoutInfoLabel = uilabel(tab, 'Position', [10 258 380 46], 'Text', '', ...
+            uilabel(tab, 'Position', [10 280 240 22], 'Text', 'CPU 散热器塔扇', 'FontColor', fg, 'FontSize', 10);
+            ci = app.cpuFanItems(2);
+            app.CpuFansDrop = uidropdown(tab, 'Position', [252 280 136 22], 'Items', ci, ...
+                'Value', ci{2}, 'FontSize', 10, ...
+                'ValueChangedFcn', @(src,event)app.layoutEdited(false));
+
+            app.LayoutInfoLabel = uilabel(tab, 'Position', [10 230 380 46], 'Text', '', ...
                 'FontColor', [0 0.83 1], 'FontSize', 11, 'VerticalAlignment', 'top');
-            app.LayoutWarnArea = uitextarea(tab, 'Position', [10 170 378 86], 'Editable', 'off', ...
+            app.LayoutWarnArea = uitextarea(tab, 'Position', [10 170 378 56], 'Editable', 'off', ...
                 'BackgroundColor', [0.07 0.07 0.12], 'FontColor', [1 0.75 0.3], 'FontSize', 10);
 
             app.ApplyLayoutBtn = uibutton(tab, 'Position', [10 128 185 32], 'Text', '应用布局', 'FontSize', 11, ...
@@ -507,17 +514,21 @@ classdef PCAirflowSimulatorApp < handle
                 lb(chip.x, chip.y, chip.w, chip.h, '芯', [0.90 0.90 0.90], 5);
             end
 
-            % CPU 底座与塔式散热器
+            % CPU 底座与塔式散热器（双塔画两组鳍片，中间间隙放塔扇）
             if s.hasCpu
                 cb = s.CPU_HEATSINK.base;                        % 虚线：只显示、不挡风（底座在鳍片内侧）
                 plot(ax, [cb.x cb.x+cb.w cb.x+cb.w cb.x cb.x], [cb.y cb.y cb.y+cb.h cb.y+cb.h cb.y], '--', ...
                     'Color', [0.00 0.75 1.0], 'LineWidth', 2.0, 'PickableParts', 'none');
-                lb(cb.x, cb.y, cb.w, cb.h, 'CPU', [0.40 0.90 1.0], 8);
+                lb(cb.x, cb.y + cb.h/2, cb.w, cb.h/2, 'CPU', [0.40 0.90 1.0], 8);   % 下半部：中间塔扇的箭头横穿底座中部
+                for k = 1:numel(s.CPU_HEATSINK.stacks)
+                    st = s.CPU_HEATSINK.stacks(k);
+                    plotRect(st.x, st.y, min(W, st.x+st.w-1) - st.x, st.h, [0.00 0.60 1.0], 2.0);
+                end
                 cf = s.CPU_HEATSINK.fin_area;
                 cfW = min(W, cf.x+cf.w-1) - cf.x;
-                plotRect(cf.x, cf.y, cfW, cf.h, [0.00 0.60 1.0], 2.0);
+                if s.CPU_HEATSINK.tower.stacks == 2, tName = '双塔散热器'; else, tName = '塔式散热器'; end
                 th = max(3, min(6, cb.y - cf.y - 1));          % 标签放在散热器上沿（同网页），不与底座的"CPU"重叠
-                text(ax, cf.x+cfW/2, cf.y+0.5+th/2, '塔式散热器', 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
+                text(ax, cf.x+cfW/2, cf.y+0.5+th/2, tName, 'Color', [0.30 0.80 1.0], 'FontSize', 7, 'FontWeight', 'bold', ...
                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'none', 'PickableParts', 'none');
             end
 
@@ -555,7 +566,8 @@ classdef PCAirflowSimulatorApp < handle
                 lb(psu.x, psu.y, psu.w, psu.h, 'PSU', [1.0 0.95 0.30], 8);
             end
 
-            % 风扇：执行盘矩形 + 送风方向箭头（机箱进气绿、排气红，内置风扇青/橙/黄）
+            % 风扇：执行盘矩形 + 送风方向箭头（机箱进气绿、排气红，内置风扇青/橙/黄）。
+            % 显卡风扇在卡底面朝下，侧视看不到扇叶，执行盘画虚线（同 CPU 底座）
             allF = s.allFans();
             for k = 1:numel(allF)
                 f = allF{k};
@@ -567,7 +579,10 @@ classdef PCAirflowSimulatorApp < handle
                     case 'gpu', col = [1.00 0.55 0.15];
                     otherwise,  col = [0.95 0.85 0.20];
                 end
-                plotRect(bnd.x - 0.5, bnd.y - 0.5, bnd.w, bnd.h, col, 1.2);
+                if strcmp(f.role, 'gpu'), ls = '--'; else, ls = '-'; end
+                bx = bnd.x - 0.5; by = bnd.y - 0.5;
+                plot(ax, [bx bx+bnd.w bx+bnd.w bx bx], [by by by+bnd.h by+bnd.h by], ls, 'Color', col, ...
+                    'LineWidth', 1.2, 'PickableParts', 'none');
                 cx = bnd.x + (bnd.w - 1)/2; cy = bnd.y + (bnd.h - 1)/2;
                 len = 0.35 * max(bnd.w, bnd.h);
                 quiver(ax, cx - f.normal(1)*len/2, cy - f.normal(2)*len/2, f.normal(1)*len, f.normal(2)*len, ...
@@ -1663,9 +1678,26 @@ classdef PCAirflowSimulatorApp < handle
                 app.GpuSlotsDrop.Value = app.GPU_SLOT_ITEMS{i};
                 app.GpuSlotsDrop.Enable = 'on';
             end
+            if isfield(L, 'cpu') && ~isempty(L.cpu) && isfield(L.cpu, 'fan') && ~isempty(L.cpu.fan)
+                tw = layout_cpu_tower(L);
+                app.CpuFansDrop.Items = app.cpuFanItems(tw.stacks);
+                app.CpuFansDrop.Value = app.CpuFansDrop.Items{tw.fans};
+                app.CpuFansDrop.Enable = 'on';
+            else
+                app.CpuFansDrop.Enable = 'off';
+            end
             if isfield(L, 'shroud') && isfield(L.shroud, 'gaps')
                 if ~isempty(L.shroud.gaps), app.DefaultGaps = L.shroud.gaps; end
                 app.ShroudGapCheck.Value = ~isempty(L.shroud.gaps);
+            end
+        end
+
+        function items = cpuFanItems(~, stacks)
+            % 塔扇数量下拉项（第 k 项 = k 个塔扇，位置见 layout_cpu_tower）
+            if stacks == 2
+                items = {'1 个（中间）', '2 个（前 + 中间）'};
+            else
+                items = {'1 个（前侧）', '2 个（前 + 后）'};
             end
         end
 
@@ -1683,6 +1715,13 @@ classdef PCAirflowSimulatorApp < handle
                 sl = app.GPU_SLOT_VALUES(strcmp(app.GPU_SLOT_ITEMS, app.GpuSlotsDrop.Value));
                 if ~isempty(sl) && sl ~= layout_gpu_slots(L)
                     L = layout_set_gpu_slots(L, sl);
+                end
+            end
+            if isfield(L, 'cpu') && ~isempty(L.cpu) && isfield(L.cpu, 'fan') && ~isempty(L.cpu.fan)
+                n = find(strcmp(app.CpuFansDrop.Items, app.CpuFansDrop.Value), 1);
+                tw = layout_cpu_tower(L);
+                if ~isempty(n) && n ~= tw.fans
+                    L = layout_set_cpu_fans(L, n);
                 end
             end
             p = app.Solver.powerW;

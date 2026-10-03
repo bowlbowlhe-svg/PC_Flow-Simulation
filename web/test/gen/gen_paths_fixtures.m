@@ -5,7 +5,7 @@ function gen_paths_fixtures(outFile)
 %   标准答案数据集只覆盖默认布局与风道（k-ω、湍流逐步更新、自动温控）。这里补充其余分支的小算例（≤ 20 步）：
 %   方腔（层流、DT 0.02、压力参考点）、LVEL、层流、湍流每 3 步更新、手动转速与全局转速、环境温度/定温壁/物性覆盖/
 %   节流/超温/中途改功率/精确模式、只有电源、无电源、散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域、
-%   被动通风口（矩形机箱各壁的沿壁夹紧）。
+%   被动通风口（矩形机箱各壁的沿壁夹紧）、CPU 塔扇（双塔 1 扇、单塔推拉、v4.4.0 及以前的单塔 1 扇旧布局）。
 %   每个快照记录各场的指纹（和、绝对值和、平方和、极值、固定权重的加权和、均匀抽样点与机箱内 200 个抽样点，全精度）、
 %   装配步、热网络与风扇状态。
 %   场景定义取自 W0/W1 审计脚本（audit_run.m）。
@@ -14,7 +14,7 @@ function gen_paths_fixtures(outFile)
         outFile = fullfile(here, '..', 'fixtures', 'paths.json');
     end
     names = {'cavity', 'lvel', 'laminar140', 'tue3', 'manual', 'misc', 'onlypsu', 'nopsu', 'blockfins', ...
-             'full140', 'gpu2slot', 'empty', 'vents'};
+             'full140', 'gpu2slot', 'empty', 'vents', 'cpu1fan', 'cpupushpull', 'cpulegacy'};
     C = cell(1, numel(names));
     for c = 1:numel(names)
         t0 = tic;
@@ -73,6 +73,17 @@ function R = runCase(caseName)
             L.vents = [struct('mount', 'rear', 'alongMm', 250, 'lengthMm', 80, 'zeta', 3); ...
                        struct('mount', 'top', 'alongMm', 290, 'lengthMm', 80, 'zeta', 1.5); ...
                        struct('mount', 'front', 'alongMm', 60, 'lengthMm', 40, 'zeta', 2)];
+            snaps = [1 5 10];
+        case 'cpu1fan'
+            % 双塔 1 个塔扇（中间）：进风带在鳍片前
+            L = layout_set_cpu_fans(L, 1); snaps = [1 5 10];
+        case 'cpupushpull'
+            % 单塔推拉：鳍片为一个多孔区，前 + 后两个塔扇
+            L.cpu = rmfield(L.cpu, 'tower'); snaps = [1 5 10];
+        case 'cpulegacy'
+            % v4.4.0 及以前的布局：无 tower、无 count（单塔 1 个前置塔扇），鳍片 120×104 mm
+            L.cpu = rmfield(L.cpu, 'tower'); L.cpu.fan = rmfield(L.cpu.fan, 'count');
+            L.cpu.fins = struct('x', 34, 'y', 86, 'w', 120, 'h', 104); L.cpu.base = struct('x', 70, 'y', 114, 'w', 48, 'h', 48);
             snaps = [1 5 10];
     end
     s = CFDSolverFEM(P(1), P(2), P(3), L, gs, DT);

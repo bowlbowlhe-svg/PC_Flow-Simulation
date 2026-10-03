@@ -93,7 +93,7 @@ function pass = test_ui()
         'pressure', '压力视图中固体应透明（不画成最负压色）');
     errs = act(errs, 'mode velocity', @() ui_press(app.ModeVelocityBtn));
     errs = act(errs, 'side pq', @() ui_choose(app.SideModeDrop, '风扇工作点'));
-    errs = expect(errs, strcmp(app.SideMode, 'pq') && numel(app.hPQ) == 5, 'side pq', '工作点图应有 4 台机箱风扇 + CPU 塔扇');
+    errs = expect(errs, strcmp(app.SideMode, 'pq') && numel(app.hPQ) == 6, 'side pq', '工作点图应有 4 台机箱风扇 + 2 个 CPU 塔扇');
     errs = act(errs, 'onTimer pq', @() app.runTestHook('onTimer'));
     pq = app.hPQ{1}{1};
     errs = expect(errs, numel(pq.XData) == 21 && all(isfinite(pq.YData)), 'side pq', 'P-Q 曲线应已绘制');
@@ -164,7 +164,12 @@ function pass = test_ui()
     errs = expect(errs, sum(~strcmp({app.SlotStates.type}, 'none')) == 4, 'preset', '前进顶出应有 4 个安装位');
     errs = act(errs, 'shroud gap off', @() ui_check(app.ShroudGapCheck, false));
     errs = act(errs, 'gpu 3 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{2}));
+    errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（中间）', '2 个（前 + 中间）'}) && ...
+        strcmp(app.CpuFansDrop.Value, app.CpuFansDrop.Items{2}), 'cpu fans', '默认双塔 2 个塔扇');
+    errs = act(errs, 'cpu 1 fan', @() ui_choose(app.CpuFansDrop, app.CpuFansDrop.Items{1}));
     errs = act(errs, 'apply preset', @() ui_press(app.ApplyLayoutBtn));
+    nCpuF = sum(cellfun(@(f) strcmp(f.role, 'cpu'), app.Solver.builtInFans));
+    errs = expect(errs, nCpuF == 1 && app.Solver.layout.cpu.fan.count == 1, 'cpu fans', '应用后应只有 1 个塔扇（中间）');
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply preset', '应用后应有 4 台机箱风扇');
     errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 3 && app.Solver.layout.gpu.heatsink.h == 37, ...
         'gpu slots', '显卡应改为 3 槽（散热片 37 mm）');
@@ -188,6 +193,7 @@ function pass = test_ui()
     errs = act(errs, 'save A', @() ui_press(app.SaveScenarioBtn));
     errs = expect(errs, ~isempty(app.Scenarios{1}), 'save A', '方案 A 应已保存');
     errs = expect(errs, strcmp(app.ScenarioTable.Data{12, 2}, ft.short), 'save A', '方案表 A 列布局名（简称）');
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{15, 2}, '双塔·1 扇'), 'save A', '方案表 A 列 CPU 散热器应为"双塔·1 扇"');
 
     %% 6. 另一布局 → 方案 B → 温差视图
     fprintf('[6] 默认布局 → 方案 B → 温差视图\n');
@@ -196,7 +202,10 @@ function pass = test_ui()
     errs = act(errs, 'load balanced', @() ui_press(app.LoadPresetBtn));
     errs = act(errs, 'shroud gap on', @() ui_check(app.ShroudGapCheck, true));
     errs = act(errs, 'gpu 4 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{end}));
+    errs = act(errs, 'cpu 2 fans', @() ui_choose(app.CpuFansDrop, app.CpuFansDrop.Items{2}));
     errs = act(errs, 'apply+steady', @() ui_press(app.ApplySteadyBtn));
+    nCpuF = sum(cellfun(@(f) strcmp(f.role, 'cpu'), app.Solver.builtInFans));
+    errs = expect(errs, nCpuF == 2, 'cpu fans', '应恢复 2 个塔扇');
     errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 4, 'gpu slots', '显卡应恢复 4 槽');
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply+steady', '默认布局应有 4 台机箱风扇');
     errs = expect(errs, ~isempty(app.Solver.layout.shroud.gaps), 'apply+steady', '挡板开孔应已恢复');
@@ -249,11 +258,20 @@ function pass = test_ui()
     errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
     errs = checkState(app, errs, 'no-gpu', it0 + 5);
     errs = expect(errs, strcmp(app.ScenarioTable.Data{2, 1}, '—'), 'no-gpu', '无显卡时方案表 GPU 应为 —');
+    % 单塔旧配置（v4.4.0 及以前，无 cpu.tower、无 cpu.fan.count）：塔扇下拉项变为"前侧 / 前 + 后"
+    Lst = layout_default(); Lst.cpu = rmfield(Lst.cpu, 'tower'); Lst.cpu.fan = rmfield(Lst.cpu.fan, 'count');
+    layout_json('save', Lst, f);
+    errs = act(errs, 'single-tower json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（前侧）', '2 个（前 + 后）'}) && ...
+        strcmp(app.CpuFansDrop.Value, '1 个（前侧）') && isempty(app.Solver.CPU_HEATSINK.gap) && ~app.LayoutDirty, ...
+        'single-tower json', '单塔配置：塔扇下拉项应为"前侧 / 前 + 后"、选中 1 个');
     if exist(f, 'file'), delete(f); end
     errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
     errs = act(errs, 'load A', @() ui_press(app.LoadScenarioBtn));
     errs = expect(errs, numel(app.Solver.fans) == 4 && isempty(app.Solver.layout.shroud.gaps), 'load A', ...
         '载入方案 A 后应为 4 台风扇且挡板无开孔');
+    errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（中间）', '2 个（前 + 中间）'}) && ...
+        strcmp(app.CpuFansDrop.Value, '1 个（中间）'), 'load A', '方案 A 为双塔 1 扇，下拉项应恢复为双塔');
     errs = act(errs, 'clear B', @() ui_choose(app.ScenarioDrop, 'B'));
     errs = act(errs, 'clear B', @() ui_press(app.ClearScenarioBtn));
     errs = expect(errs, isempty(app.Scenarios{2}), 'clear B', '方案 B 应已清除');

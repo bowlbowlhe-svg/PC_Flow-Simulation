@@ -1,5 +1,5 @@
 // 布局工具函数与 Octave 对照（fixtures/layout.json，由 test/gen/gen_layout_fixtures.m 生成）：
-// 风扇布局静态检查与标称风量、安装位状态、显卡槽数设置。
+// 风扇布局静态检查与标称风量、安装位状态、显卡槽数设置、CPU 塔式散热器结构与塔扇数量。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -9,6 +9,8 @@ import { getSlotStates } from '../src/model/fans';
 import { layoutGpuSlots, layoutSetGpuSlots, LayoutError } from '../src/model/gpuSlots';
 import { layoutDefault } from '../src/model/layoutDefault';
 import { normalizeLayout } from '../src/model/layoutJson';
+import { layoutCpuTower, layoutSetCpuFans } from '../src/model/cpuTower';
+import { buildGeometry, GeometryError } from '../src/solver/geometry';
 import type { Ref } from './refdata';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +60,80 @@ describe('显卡槽数', () => {
     expect(err).toBeInstanceOf(LayoutError);
     expect((err as LayoutError).id).toBe(FX.shroudTooHigh.id);
     expect((err as LayoutError).message).toBe(FX.shroudTooHigh.message);
+  });
+});
+
+describe('CPU 塔式散热器（layout_cpu_tower / layout_set_cpu_fans）', () => {
+  for (const c of FX.cpuTower as Ref[]) {
+    it(c.name, () => {
+      const L = layoutDefault();
+      L.cpu = structuredClone(c.cpu);
+      if (c.ok) {
+        expect(layoutCpuTower(L)).toEqual({ stacks: c.stacks, gapMm: c.gapMm, fans: c.fans, pos: list(c.pos) });
+      } else {
+        let err: unknown;
+        try {
+          layoutCpuTower(L);
+        } catch (e) {
+          err = e;
+        }
+        expect(err).toBeInstanceOf(LayoutError);
+        expect((err as LayoutError).id).toBe(c.id);
+        expect((err as LayoutError).message).toBe(c.message);
+      }
+    });
+  }
+  it('layoutSetCpuFans：改数量；原来没有塔扇时按 Tower120 添加；不改输入', () => {
+    const L = layoutDefault();
+    expect(layoutSetCpuFans(L, 1).cpu).toEqual(FX.setCpuFans.one);
+    const N = layoutDefault();
+    delete N.cpu!.fan;
+    expect(layoutSetCpuFans(N, 2).cpu).toEqual(FX.setCpuFans.addFan);
+    expect(L.cpu!.fan!.count).toBe(2);
+    expect(() => layoutSetCpuFans(L, 3)).toThrow(LayoutError);
+  });
+  it('JSON 里写成 [] 或 null 的塔扇/塔字段按没写处理（同 MATLAB isempty）', () => {
+    const base = layoutDefault() as unknown as Ref;
+    const noFan = structuredClone(base);
+    noFan.cpu.fan = [];
+    const L1 = normalizeLayout(noFan);
+    expect(L1.cpu!.fan).toBeUndefined();
+    expect(buildGeometry(L1, 0.5).fans.filter((f) => f.role === 'cpu')).toHaveLength(0);
+    const noCount = structuredClone(base);
+    noCount.cpu.fan.count = [];
+    noCount.cpu.tower.stacks = null;
+    expect(layoutCpuTower(normalizeLayout(noCount))).toEqual({ stacks: 1, gapMm: 0, fans: 1, pos: ['front'] });
+  });
+  it('塔扇压到机箱壁、双塔放不下：报错同 MATLAB', () => {
+    const rear = layoutDefault();
+    delete rear.cpu!.tower;
+    rear.cpu!.fins.x = 6; // 单塔推拉：鳍片离后壁太近
+    const front = layoutDefault();
+    front.cpu!.fins.x = 204; // 鳍片贴前壁
+    const wide = layoutDefault();
+    wide.cpu!.tower!.gapMm = 110; // 间隙太宽
+    for (const [L, msg] of [
+      [rear, 'CPU 塔扇（后）放不下：执行盘第 29–31 列压到机箱壁（壁内为第 32–109 列）'],
+      [front, 'CPU 塔扇（前）放不下：执行盘第 109–111 列压到机箱壁（壁内为第 32–109 列）'],
+      [wide, '双塔散热器在当前网格上放不下（鳍片外廓宽 28 格、间隙 28 格）'],
+    ] as const) {
+      expect(() => buildGeometry(L, 0.5)).toThrow(GeometryError);
+      expect(() => buildGeometry(L, 0.5)).toThrow(msg);
+    }
+  });
+  it('间隙比执行盘窄（预览 2 格 < 3 格）：中扇占满间隙、盘厚 = 间隙宽（同 MATLAB）', () => {
+    const L = layoutDefault();
+    L.cpu!.tower!.gapMm = 8;
+    const g = buildGeometry(L, 0.5);
+    const mid = g.fans.find((f) => f.pos === 'mid')!;
+    expect(g.cpu!.gap).toEqual({ x: 52, y: 39, w: 2, h: 30 });
+    expect(mid.cols).toEqual([52, 53]);
+    expect(mid.thickM).toBe(0.008);
+  });
+  it('载入取值不合法的 cpu 字段：layout_json:invalid', () => {
+    const L = layoutDefault() as unknown as Ref;
+    L.cpu.fan.count = 3;
+    expect(() => normalizeLayout(L)).toThrow(/CPU 散热器：cpu.fan.count 应为 1 或 2/);
   });
 });
 

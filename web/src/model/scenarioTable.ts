@@ -1,6 +1,7 @@
 // 方案对比表（移植自 scenario_table.m）：行名与各方案的显示文字。
 import { FAN_PRESETS } from './fans';
 import { layoutGpuSlots } from './gpuSlots';
+import { layoutCpuTower } from './cpuTower';
 import type { Layout } from './types';
 
 export interface ScenarioSummaryLike {
@@ -49,6 +50,14 @@ function slotsText(L: Layout): string {
   return Number.isNaN(sl) ? '—' : `${g(sl)} 槽`;
 }
 
+/** 如"双塔·2 扇" */
+function towerText(L: Layout): string {
+  if (!L.cpu) return '—';
+  const tw = layoutCpuTower(L);
+  const t = tw.stacks === 2 ? '双塔' : '单塔';
+  return tw.fans === 0 ? `${t}·无扇` : `${t}·${tw.fans} 扇`;
+}
+
 const hasGap = (L: Layout) => !!L.shroud && Array.isArray(L.shroud.gaps) && L.shroud.gaps.length > 0;
 
 const ROWS: [string, (s: ScenarioSnap) => string][] = [
@@ -66,6 +75,7 @@ const ROWS: [string, (s: ScenarioSnap) => string][] = [
   ['布局', (s) => shortLabel(s.label)],
   ['挡板前部开孔', (s) => yesNo(hasGap(s.layout))],
   ['显卡厚度', (s) => slotsText(s.layout)],
+  ['CPU 散热器', (s) => towerText(s.layout)],
   ['功率 C/G/P W', (s) => `${g(s.powers[0])}/${g(s.powers[1])}/${g(s.powers[2])}`],
   ['网格 · 步数', (s) => `${s.gridScale >= 1 ? '精确' : '预览'} · ${s.summary.steps}`],
   ['稳态', (s) => yesNo(s.steady)],

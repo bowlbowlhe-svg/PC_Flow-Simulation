@@ -34,7 +34,10 @@ export interface CpuSpec {
   thermal: ComponentThermal;
   tjmax: number;
   throttleTemp: number;
-  fan: { model: string; side: 'front' | 'rear' };
+  /** 塔数与双塔中间间隙（缺省：单塔，见 cpuTower.ts） */
+  tower?: { stacks: number; gapMm: number };
+  /** count：塔扇数量 1 或 2（缺省 1） */
+  fan?: { model: string; count?: number };
 }
 
 export interface GpuSpec {

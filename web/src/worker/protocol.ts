@@ -32,7 +32,8 @@ export interface StaticInfo {
   insideIdx: Int32Array;
   caseOuter: Rect; // 1 基格坐标
   motherboardTray?: Rect;
-  cpu?: { base: Rect; finArea: Rect };
+  /** finArea 为鳍片外廓；stacks 为各组鳍片（双塔 2 组，中间间隙放塔扇） */
+  cpu?: { base: Rect; finArea: Rect; stacks: Rect[] };
   gpu?: { pcb: Rect; heatsink: Rect; slots: number; fanBottom: number };
   psu?: { body: Rect };
   ram: Rect[];

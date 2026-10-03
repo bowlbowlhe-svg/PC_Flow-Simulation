@@ -258,6 +258,32 @@ classdef CFDSolverBase < handle
                        'w', max(1, obj.toCell(rm.w)), 'h', max(1, obj.toCell(rm.h)));
         end
 
+        function [stacks, gap] = cpuTowerCells(obj, fin, tw)
+            % 塔式散热器的鳍片组与双塔中间间隙（格矩形）。单塔：鳍片组即外廓、无间隙。
+            % 双塔：间隙 g = toCell(gapMm) 格居中，两组鳍片等宽 sw = floor((fin.w − g)/2)，奇数格并入间隙
+            if tw.stacks == 1
+                stacks = fin; gap = [];
+                return;
+            end
+            g = obj.toCell(tw.gapMm);
+            sw = floor((fin.w - g) / 2);
+            if g < 1 || sw < 1
+                error('CFDSolverBase:cpuTower', '双塔散热器在当前网格上放不下（鳍片外廓宽 %d 格、间隙 %d 格）', fin.w, g);
+            end
+            rr = @(x, w) struct('x', x, 'y', fin.y, 'w', w, 'h', fin.h);
+            stacks = [rr(fin.x, sw); rr(fin.x + fin.w - sw, sw)];     % 后组、前组
+            gap = rr(fin.x + sw, fin.w - 2*sw);
+        end
+
+        function idx = cpuFinCells(obj)
+            % CPU 鳍片格（外廓内去掉双塔中间间隙，按外廓的列主序）
+            hs = obj.CPU_HEATSINK;
+            idx = obj.rectCells(hs.fin_area);
+            if ~isempty(hs.gap)
+                idx = idx(~ismember(idx, obj.rectCells(hs.gap)));
+            end
+        end
+
         function idx = rectCells(obj, r)
             % 格坐标矩形内的全部格（裁剪到计算域）
             W = obj.GRID.W; H = obj.GRID.H;
@@ -282,8 +308,12 @@ classdef CFDSolverBase < handle
             obj.hasPsu = isfield(L, 'psu') && ~isempty(L.psu);
             obj.CPU_HEATSINK = []; obj.GPU_HEATSINK = []; obj.PSU2D = [];
             if obj.hasCpu
-                obj.CPU_HEATSINK = struct('base', obj.rectToGrid(L.cpu.base), ...
-                    'fin_area', obj.rectToGrid(L.cpu.fins), 'thermal', L.cpu.thermal);
+                % fin_area 为鳍片外廓（双塔含中间间隙）；stacks 为各组鳍片，gap 为双塔中间放塔扇的间隙
+                fin = obj.rectToGrid(L.cpu.fins);
+                tw = layout_cpu_tower(L);
+                [stacks, gap] = obj.cpuTowerCells(fin, tw);
+                obj.CPU_HEATSINK = struct('base', obj.rectToGrid(L.cpu.base), 'fin_area', fin, ...
+                    'stacks', stacks, 'gap', gap, 'tower', tw, 'thermal', L.cpu.thermal);
             end
             if obj.hasGpu
                 obj.GPU_HEATSINK = struct('pcb', obj.rectToGrid(L.gpu.pcb), ...
@@ -357,10 +387,19 @@ classdef CFDSolverBase < handle
 
             if obj.hasCpu
                 % CPU 底座只显示、不挡风（v4.4.0 起）：真实机箱里底座贴在主板上，塔式鳍片在它外侧（Z 向），
-                % 气流从鳍片中穿过；2D 侧视的投影把底座画在鳍片中间，若作为固体会挡住约一半的过风截面
+                % 气流从鳍片中穿过；2D 侧视的投影把底座画在鳍片中间，若作为固体会挡住约一半的过风截面。
+                % 各组鳍片为一个多孔区，穿流 ζ 按组数均分（整个散热器的穿流阻力不变）；双塔中间间隙是
+                % 塔扇框围住的风道：只有横向阻力（同鳍片，空气不会从间隙上下漏走），没有穿流阻力
                 pz = L.cpu.porous;
-                obj.porousZones(end+1) = struct('rect', obj.CPU_HEATSINK.fin_area, ...
-                    'zetaThru', pz.zetaThru, 'zetaCross', pz.zetaCross, 'thru', pz.thru);
+                hs = obj.CPU_HEATSINK;
+                for k = 1:numel(hs.stacks)
+                    obj.porousZones(end+1) = struct('rect', hs.stacks(k), ...
+                        'zetaThru', pz.zetaThru / numel(hs.stacks), 'zetaCross', pz.zetaCross, 'thru', pz.thru);
+                end
+                if ~isempty(hs.gap)
+                    obj.porousZones(end+1) = struct('rect', hs.gap, ...
+                        'zetaThru', 0, 'zetaCross', pz.zetaCross, 'thru', 'x');
+                end
             end
             if obj.hasGpu
                 setIfFree(obj.rectCells(obj.GPU_HEATSINK.pcb), OB.GPU_PCB);
@@ -602,18 +641,39 @@ classdef CFDSolverBase < handle
                     obj.fans{end+1} = fan;
                 end
             end
-            if obj.hasCpu && isfield(L.cpu, 'fan')
-                fin = obj.CPU_HEATSINK.fin_area;
-                fan = Fan(struct('id', 'cpu_tower_fan', 'role', 'cpu', 'model', L.cpu.fan.model, 'sensor', 'cpu'));
-                n = obj.toCell(cat.(fan.model).size);
+            if obj.hasCpu && isfield(L.cpu, 'fan') && ~isempty(L.cpu.fan)
+                % 塔扇（自前向后，位置见 layout_cpu_tower）：前 = 鳍片前侧，后 = 鳍片后侧（单塔推拉），
+                % 中 = 双塔中间间隙内居中（盘厚不超过间隙）。都从前向后吹
+                hs = obj.CPU_HEATSINK;
+                fin = hs.fin_area;
+                n = obj.toCell(cat.(L.cpu.fan.model).size);
                 cy = round(fin.y + (fin.h-1)/2);
                 r0 = cy - floor(n/2);
-                fan.rows = [r0, r0 + n - 1];
-                fan.cols = [fin.x + fin.w, fin.x + fin.w + t - 1];   % 鳍片前侧
-                fan.normal = [-1 0];                                 % 从前向后吹
-                fan.thickM = t * obj.GRID.cell_size_mm / 1000;
-                fan.positionDb = obj.acoustics.positionDb.cpu;
-                obj.builtInFans{end+1} = fan;
+                for k = 1:numel(hs.tower.pos)
+                    pos = hs.tower.pos{k};
+                    fan = Fan(struct('id', ['cpu_fan_' pos], 'role', 'cpu', 'pos', pos, ...
+                        'model', L.cpu.fan.model, 'sensor', 'cpu'));
+                    tt = t;
+                    switch pos
+                        case 'front', c0 = fin.x + fin.w;
+                        case 'rear',  c0 = fin.x - t;
+                        otherwise
+                            tt = min(t, hs.gap.w);
+                            c0 = hs.gap.x + floor((hs.gap.w - tt) / 2);
+                    end
+                    co = obj.CASE2D.outer;
+                    if c0 <= co.x || c0 + tt - 1 >= co.x + co.w - 1
+                        posCN = struct('front', '前', 'mid', '中', 'rear', '后');
+                        error('CFDSolverBase:cpuFans', 'CPU 塔扇（%s）放不下：执行盘第 %d–%d 列压到机箱壁（壁内为第 %d–%d 列）', ...
+                            posCN.(pos), c0, c0 + tt - 1, co.x + 1, co.x + co.w - 2);
+                    end
+                    fan.rows = [r0, r0 + n - 1];
+                    fan.cols = [c0, c0 + tt - 1];
+                    fan.normal = [-1 0];
+                    fan.thickM = tt * obj.GRID.cell_size_mm / 1000;
+                    fan.positionDb = obj.acoustics.positionDb.cpu;
+                    obj.builtInFans{end+1} = fan;
+                end
             end
             if obj.hasGpu && isfield(L.gpu, 'fans')
                 hs = obj.GPU_HEATSINK.heatsink;
@@ -774,8 +834,13 @@ classdef CFDSolverBase < handle
             keepFluid = @(idx) idx(fluid(idx));
             nIn = max(2, obj.toCell(10));   % 进风采样带厚 10 mm
             if obj.hasCpu
-                obj.cpuFinIdx = keepFluid(obj.rectCells(obj.CPU_HEATSINK.fin_area));
-                cf = obj.findFan('cpu');
+                % 散热体 = 各组鳍片（双塔中间间隙没有鳍片，不注热）；进风带在前置塔扇前，无前置塔扇时在鳍片前
+                obj.cpuFinIdx = keepFluid(obj.cpuFinCells());
+                cf = [];
+                for k = 1:numel(obj.builtInFans)
+                    f = obj.builtInFans{k};
+                    if strcmp(f.role, 'cpu') && strcmp(f.pos, 'front'), cf = f; break; end
+                end
                 if isempty(cf)
                     fin = obj.CPU_HEATSINK.fin_area;
                     obj.cpuInletIdx = keepFluid(obj.rectCells(struct('x', fin.x + fin.w, 'y', fin.y, 'w', nIn, 'h', fin.h)));
@@ -1551,14 +1616,17 @@ classdef CFDSolverBase < handle
             [~, perFan, parts] = obj.totalNoise();
             share = 100 * 10.^(perFan/10) / max(sum(10.^(perFan/10)), eps);
             nGpu = 0;
+            nCpu = sum(cellfun(@(f) strcmp(f.role, 'cpu'), allF));
             mountCN = struct('front', '前', 'rear', '后', 'top', '顶', 'bottom', '底', 'internal', '');
+            posCN = struct('front', '前', 'mid', '中', 'rear', '后');
             for k = 1:numel(allF)
                 f = allF{k};
                 switch f.role
                     case 'case'
                         if strcmp(f.type, 'intake'), ty = '进气'; else, ty = '排气'; end
                         name = sprintf('%s%s %s', mountCN.(f.mount), ty, f.model);
-                    case 'cpu', name = 'CPU 塔扇';
+                    case 'cpu'
+                        if nCpu > 1, name = sprintf('CPU 塔扇（%s）', posCN.(f.pos)); else, name = 'CPU 塔扇'; end
                     case 'gpu', nGpu = nGpu + 1; name = sprintf('显卡风扇 %d', nGpu);
                     otherwise,  name = '电源风扇';
                 end

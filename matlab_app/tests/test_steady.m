@@ -6,7 +6,7 @@ function pass = test_steady()
 %   2) 两档网格的差距不明显变大：与精确档比较，CPU ≤ 3.5°C、GPU ≤ 5°C、电源 ≤ 2°C、风量 ≤ 12%，且 runToSteady 判定收敛。
 %   第 2 项是模型在粗网格上的保真度，不是代码正确性：紧凑机箱（v4.3 起）里显卡周围 20–30 mm 的间隙在预览网格上只有
 %   5–6 格，v4.4.0（CPU 底座不挡风）默认布局预览档（runToSteady 判稳值）CPU −2.5°C、GPU +3.9°C、风量 −9%，
-%   超出原来 2°C/3°C/8% 的容差。
+%   超出原来 2°C/3°C/8% 的容差，因此放宽；v4.5.0（双塔散热器）为 0.0/+1.2/+1.3°C、−1%。
 %   实测见 README 的验证表。
     f = fullfile(fileparts(mfilename('fullpath')), 'steady_reference.json');
     ref = jsondecode(fileread(f));

@@ -1,7 +1,8 @@
 // 主界面：左侧主视图 + 工具栏 + 温度曲线/风扇工作点，右侧视图与操作 + 标签页（状态、功率与风扇、风扇布局、方案对比）。
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { FAN_PRESETS, applyPreset, getSlotStates, type SlotState } from '../model/fans';
-import { buildPending, layoutNotes, pendingFromLayout, type Gaps } from './layoutEdit';
+import { buildPending, layoutCpuFans, layoutNotes, pendingFromLayout, type Gaps } from './layoutEdit';
+import { layoutCpuTower } from '../model/cpuTower';
 import { layoutFanReport, type FanReport } from '../model/fanReport';
 import { layoutGpuSlots } from '../model/gpuSlots';
 import { layoutDefault } from '../model/layoutDefault';
@@ -18,7 +19,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -67,6 +68,7 @@ export function App() {
   const [slots, setSlots] = useState<SlotState[]>(() => getSlotStates(initial));
   const [shroudGap, setShroudGap] = useState(true);
   const [gpuSlots, setGpuSlots] = useState<number | null>(() => layoutGpuSlots(initial));
+  const [cpuFans, setCpuFans] = useState<number | null>(() => layoutCpuFans(initial));
   const [dirty, setDirty] = useState(false);
   const [layoutLabel, setLayoutLabel] = useState(FAN_PRESETS[0].label);
   const [appliedLabel, setAppliedLabel] = useState(FAN_PRESETS[0].label);
@@ -113,7 +115,7 @@ export function App() {
   let pending: Layout | null = null;
   let pendingError: string | null = null;
   try {
-    pending = buildPending(pendingBase, slots, shroudGap, gpuSlots, defaultGaps, powers);
+    pending = buildPending(pendingBase, slots, shroudGap, gpuSlots, defaultGaps, powers, cpuFans);
   } catch (e) {
     pendingError = e instanceof Error ? e.message : String(e);
   }
@@ -150,6 +152,7 @@ export function App() {
     setPendingBase(L);
     setSlots(st.slots);
     setGpuSlots(st.gpuSlots);
+    setCpuFans(st.cpuFans);
     setDefaultGaps(st.defaultGaps);
     if (st.shroudGap !== null) setShroudGap(st.shroudGap);
   };
@@ -428,6 +431,8 @@ export function App() {
             shroudGap={shroudGap}
             hasShroud={!!pendingBase.shroud}
             gpuSlots={gpuSlots}
+            cpuFans={cpuFans}
+            cpuStacks={pendingBase.cpu ? layoutCpuTower(pendingBase).stacks : 2}
             notes={layoutNotes(pendingBase)}
             busy={busy}
             onSlot={(k, s) => {
@@ -447,6 +452,10 @@ export function App() {
             }}
             onGpuSlots={(v) => {
               setGpuSlots(v);
+              edited(false);
+            }}
+            onCpuFans={(v) => {
+              setCpuFans(v);
               edited(false);
             }}
             onApply={(s) => applyLayout(s)}

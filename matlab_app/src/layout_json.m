@@ -71,6 +71,13 @@ function L = normalize(L)
         end
     end
     validateFans(L);
+    if isfield(L, 'cpu') && ~isempty(L.cpu)
+        try
+            layout_cpu_tower(L);
+        catch ME
+            error('layout_json:invalid', 'CPU 散热器：%s', ME.message);
+        end
+    end
     % 电源仓挡板缺口：空数组读回为 []
     if isfield(L, 'shroud') && isfield(L.shroud, 'gaps') && isempty(L.shroud.gaps)
         L.shroud.gaps = struct('x0Mm', {}, 'x1Mm', {});

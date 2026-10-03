@@ -41,13 +41,16 @@ export function layoutDefault(): Layout {
     grille: { intakeZeta: 2.0, exhaustZeta: 0.8 },
     acoustics: acousticsDefault(),
     cpu: {
-      base: rect(70, 114, 48, 48),
-      fins: rect(34, 86, 120, 104), // 鳍片后端距后排风扇执行盘约 20 mm
+      // 双塔风冷：前后两组鳍片（各 44 mm 厚、120 mm 高），中间 24 mm 间隙放塔扇；塔扇 1 个（中间）或 2 个（前 + 中间）。
+      // 鳍片后端距后排风扇执行盘约 22 mm，下沿距显卡 PCB 16 mm；底座只显示、不挡风
+      base: rect(68, 112, 48, 48),
+      fins: rect(36, 76, 112, 120), // 鳍片外廓（两组鳍片 + 中间间隙）
+      tower: { stacks: 2, gapMm: 24 },
       porous: { zetaThru: 8, zetaCross: 60, thru: 'x' },
       thermal: { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 },
       tjmax: 100,
       throttleTemp: 95,
-      fan: { model: 'Tower120', side: 'front' },
+      fan: { model: 'Tower120', count: 2 },
     },
     gpu: {
       slots: 4,

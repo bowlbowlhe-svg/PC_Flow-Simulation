@@ -253,6 +253,7 @@ export interface FanStatus {
 }
 
 const MOUNT_CN: Record<string, string> = { front: '前', rear: '后', top: '顶', bottom: '底', internal: '' };
+const POS_CN: Record<string, string> = { front: '前', mid: '中', rear: '后' };
 
 /** 全部风扇的实时状态（机箱风扇在前，内置风扇在后） */
 export function fanStatusList(s: Solver): FanStatus[] {
@@ -260,6 +261,7 @@ export function fanStatusList(s: Solver): FanStatus[] {
   let eSum = 0;
   for (const v of perFan) eSum += 10 ** (v / 10);
   let nGpu = 0;
+  const nCpu = s.fans.filter((f) => f.g.role === 'cpu').length;
   return s.fans.map((f, k) => {
     const g = f.g;
     let name: string;
@@ -268,7 +270,7 @@ export function fanStatusList(s: Solver): FanStatus[] {
         name = `${MOUNT_CN[g.mount]}${g.type === 'intake' ? '进气' : '排气'} ${g.model}`;
         break;
       case 'cpu':
-        name = 'CPU 塔扇';
+        name = nCpu > 1 ? `CPU 塔扇（${POS_CN[g.pos]}）` : 'CPU 塔扇';
         break;
       case 'gpu':
         nGpu++;

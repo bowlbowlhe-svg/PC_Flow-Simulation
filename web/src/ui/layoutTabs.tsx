@@ -1,9 +1,10 @@
-// 风扇布局页（安装位表、预设、挡板开孔、显卡厚度、标称风量与冲突检查、应用/撤销/存取 JSON）
+// 风扇布局页（安装位表、预设、挡板开孔、显卡厚度、CPU 塔扇数量、标称风量与冲突检查、应用/撤销/存取 JSON）
 // 与方案对比页（A/B/C 保存、载入、清除、对比表、温差视图参考）。移植自 MATLAB 界面的 createLayoutTab / createScenarioTab。
 import { useRef } from 'preact/hooks';
 import { FAN_PRESETS, FAN_SLOTS, type SlotState } from '../model/fans';
 import type { FanReport } from '../model/fanReport';
 import { scenarioTable, type ScenarioSnap } from '../model/scenarioTable';
+import { cpuFanItems } from './layoutEdit';
 
 export const STATE_ITEMS: { key: SlotState['type']; label: string }[] = [
   { key: 'none', label: '空' },
@@ -26,12 +27,15 @@ interface LayoutTabProps {
   shroudGap: boolean;
   hasShroud: boolean;
   gpuSlots: number | null; // null = 布局中无显卡
+  cpuFans: number | null; // null = 布局中无 CPU 或无塔扇
+  cpuStacks: number; // 1 单塔 / 2 双塔（下拉项文字用）
   notes: string[]; // 不在安装位上的风扇、非默认机箱尺寸等提示（layoutNotes）
   busy: boolean;
   onSlot: (k: number, st: SlotState) => void;
   onPreset: (name: string) => void;
   onShroudGap: (v: boolean) => void;
   onGpuSlots: (v: number) => void;
+  onCpuFans: (v: number) => void;
   onApply: (steady: boolean) => void;
   onRevert: () => void;
   onSave: () => void;
@@ -131,6 +135,23 @@ export function LayoutTab(p: LayoutTabProps) {
           {GPU_SLOT_VALUES.map((v, k) => (
             <option key={v} value={String(v)}>
               {GPU_SLOT_ITEMS[k]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div class="row">
+        <span title={p.cpuStacks === 2 ? '双塔散热器：1 个塔扇装在两组鳍片中间，2 个时再加一个在前侧' : '单塔散热器：1 个塔扇在前侧，2 个时再加一个在后侧（推拉）'}>CPU 散热器塔扇</span>
+        <span class="grow" />
+        <select
+          class="cpu-fans"
+          value={p.cpuFans === null ? '' : String(p.cpuFans)}
+          disabled={p.cpuFans === null}
+          onChange={(e) => p.onCpuFans(Number((e.target as HTMLSelectElement).value))}
+        >
+          {p.cpuFans === null && <option value="">—</option>}
+          {cpuFanItems(p.cpuStacks).map((t, k) => (
+            <option key={k} value={String(k + 1)}>
+              {t}
             </option>
           ))}
         </select>

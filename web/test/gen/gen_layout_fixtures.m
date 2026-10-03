@@ -3,7 +3,8 @@ function gen_layout_fixtures(outFile)
 %   用法（在 matlab_app 目录下）：
 %     octave-cli --no-gui --eval "setup_paths(); addpath('../web/test/gen'); gen_layout_fixtures"
 %   覆盖：layout_fan_report（默认、各预设、含超出壁面/同壁重叠/角部相碰/与电源重叠/手动转速的自造布局）、
-%   layout_set_gpu_slots（2–4.5 槽的散热片尺寸与鳍片面积；放不下时的报错）、layout_slots 'get'。
+%   layout_set_gpu_slots（2–4.5 槽的散热片尺寸与鳍片面积；放不下时的报错）、layout_slots 'get'、
+%   layout_cpu_tower / layout_set_cpu_fans（双塔/单塔/旧布局的塔扇位置；取值不合法时的报错）。
     if nargin < 1
         here = fileparts(mfilename('fullpath'));
         outFile = fullfile(here, '..', 'fixtures', 'layout.json');
@@ -54,8 +55,37 @@ function gen_layout_fixtures(outFile)
         err = struct('ok', false, 'id', ME.identifier, 'message', ME.message);
     end
 
+    % CPU 塔式散热器：各算例的 cpu 字段（在默认布局上替换）与 layout_cpu_tower 的结果或报错
+    ct = {};
+    c0 = L0.cpu;
+    noTower = rmfield(c0, 'tower');
+    legacy = noTower; legacy.fan = rmfield(legacy.fan, 'count');
+    noFan = rmfield(c0, 'fan');
+    variants = {'default', c0; 'dual1', setfield(c0, 'fan', setfield(c0.fan, 'count', 1)); ...
+        'pushpull', noTower; 'legacy', legacy; 'noFan', noFan; ...
+        'stacks3', setfield(c0, 'tower', setfield(c0.tower, 'stacks', 3)); ...
+        'gap0', setfield(c0, 'tower', setfield(c0.tower, 'gapMm', 0)); ...
+        'gapWide', setfield(c0, 'tower', setfield(c0.tower, 'gapMm', 112)); ...
+        'count3', setfield(c0, 'fan', setfield(c0.fan, 'count', 3)); ...
+        'thruY', setfield(c0, 'porous', setfield(c0.porous, 'thru', 'y'))};
+    for k = 1:size(variants, 1)
+        Lc = L0; Lc.cpu = variants{k, 2};
+        try
+            t = layout_cpu_tower(Lc);
+            ct{end+1} = struct('name', variants{k, 1}, 'cpu', Lc.cpu, 'ok', true, 'stacks', t.stacks, ...
+                'gapMm', t.gapMm, 'fans', t.fans, 'pos', {t.pos}); %#ok<AGROW>
+        catch ME
+            ct{end+1} = struct('name', variants{k, 1}, 'cpu', Lc.cpu, 'ok', false, 'id', ME.identifier, ...
+                'message', ME.message); %#ok<AGROW>
+        end
+    end
+    L1 = layout_set_cpu_fans(L0, 1);
+    L2 = layout_set_cpu_fans(setfield(L0, 'cpu', noFan), 2);
+    setFans = struct('one', L1.cpu, 'addFan', L2.cpu);
+
     R = struct('generator', struct('tool', 'octave', 'version', version(), 'script', 'web/test/gen/gen_layout_fixtures.m'), ...
-        'reports', {cases}, 'gpuSlots', {gs}, 'shroudTooHigh', err, 'shroudYMm', Ls.shroud.yMm);
+        'reports', {cases}, 'gpuSlots', {gs}, 'shroudTooHigh', err, 'shroudYMm', Ls.shroud.yMm, ...
+        'cpuTower', {ct}, 'setCpuFans', setFans);
     fid = fopen(outFile, 'w');
     fwrite(fid, unicode2native(jsonencode(R), 'UTF-8'));
     fclose(fid);

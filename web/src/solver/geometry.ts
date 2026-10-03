@@ -10,6 +10,7 @@ import { chassisOriginMm, chassisSizeMm } from '../model/chassis';
 import { mround } from '../model/mround';
 import { mergeAcoustics } from '../model/layoutJson';
 import { edtNearest } from '../numerics/edtNearest';
+import { layoutCpuTower, type CpuFanPos, type CpuTower } from '../model/cpuTower';
 
 export const OBSTACLE = Object.freeze({
   WALL: 1,
@@ -39,6 +40,8 @@ export type FanRole = 'case' | 'cpu' | 'gpu' | 'psu';
 export interface FanGeom {
   id: string;
   role: FanRole;
+  /** CPU 塔扇位置（其它风扇为空串） */
+  pos: CpuFanPos | '';
   mount: Mount | 'internal';
   type: 'intake' | 'exhaust';
   model: string;
@@ -78,7 +81,8 @@ export interface Geometry {
   caseOffsetX: number;
   caseOffsetY: number;
   CASE2D: { outer: Rect; enabled: boolean; motherboardTray?: Rect };
-  cpu?: { base: Rect; finArea: Rect };
+  /** finArea 为鳍片外廓（双塔含中间间隙）；stacks 为各组鳍片（后组在前），gap 为双塔中间放塔扇的间隙 */
+  cpu?: { base: Rect; finArea: Rect; stacks: Rect[]; gap?: Rect; tower: CpuTower };
   gpu?: { pcb: Rect; heatsink: Rect };
   psu?: { body: Rect; interior: Rect };
   ram: Rect[];
@@ -170,7 +174,26 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const cR = outer.x + outer.w - 1;
   const cT = outer.y;
   const cB = outer.y + outer.h - 1;
-  const cpu = L.cpu ? { base: rectToGrid(L.cpu.base), finArea: rectToGrid(L.cpu.fins) } : undefined;
+  let cpu: Geometry['cpu'];
+  if (L.cpu) {
+    // 塔式散热器的鳍片组与双塔中间间隙（同 MATLAB cpuTowerCells）：双塔间隙 g = toCell(gapMm) 格居中，
+    // 两组鳍片等宽 sw = floor((fin.w − g)/2)，奇数格并入间隙
+    const fin = rectToGrid(L.cpu.fins);
+    const tower = layoutCpuTower(L);
+    let stacks: Rect[] = [fin];
+    let gap: Rect | undefined;
+    if (tower.stacks === 2) {
+      const g = toCell(tower.gapMm);
+      const sw = floor((fin.w - g) / 2);
+      if (g < 1 || sw < 1) {
+        throw new GeometryError(`双塔散热器在当前网格上放不下（鳍片外廓宽 ${fin.w} 格、间隙 ${g} 格）`);
+      }
+      const rr = (x: number, w: number): Rect => ({ x, y: fin.y, w, h: fin.h });
+      stacks = [rr(fin.x, sw), rr(fin.x + fin.w - sw, sw)];
+      gap = rr(fin.x + sw, fin.w - 2 * sw);
+    }
+    cpu = { base: rectToGrid(L.cpu.base), finArea: fin, stacks, gap, tower };
+  }
   const gpu = L.gpu ? { pcb: rectToGrid(L.gpu.pcb), heatsink: rectToGrid(L.gpu.heatsink) } : undefined;
   let psu: Geometry['psu'];
   if (L.psu) {
@@ -208,8 +231,13 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const addZone = (rect: Rect, pz: Porous) =>
     porousZones.push({ rect, zetaThru: pz.zetaThru, zetaCross: pz.zetaCross, thru: pz.thru });
   if (cpu && L.cpu) {
-    // CPU 底座只显示、不挡风（v4.4.0 起，同 MATLAB）：2D 侧视里底座画在鳍片中间，真实机箱里它贴主板、在鳍片内侧
-    addZone(cpu.finArea, L.cpu.porous);
+    // CPU 底座只显示、不挡风（v4.4.0 起，同 MATLAB）：2D 侧视里底座画在鳍片中间，真实机箱里它贴主板、在鳍片内侧。
+    // 各组鳍片为一个多孔区，穿流 ζ 按组数均分；双塔中间间隙只有横向阻力（塔扇框围住），没有穿流阻力
+    const pz = L.cpu.porous;
+    for (const st of cpu.stacks) {
+      porousZones.push({ rect: st, zetaThru: pz.zetaThru / cpu.stacks.length, zetaCross: pz.zetaCross, thru: pz.thru });
+    }
+    if (cpu.gap) porousZones.push({ rect: cpu.gap, zetaThru: 0, zetaCross: pz.zetaCross, thru: 'x' });
   }
   if (gpu && L.gpu) {
     setIfFree(rectCells(gpu.pcb), OBSTACLE.GPU_PCB);
@@ -275,6 +303,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     fans.push({
       id: `case_${cf.mount}_${k + 1}`,
       role: 'case',
+      pos: '',
       mount: cf.mount,
       type: cf.type,
       model: cf.model,
@@ -294,6 +323,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   const builtIn = (id: string, role: FanRole, model: string, sensor: FanGeom['sensor']): FanGeom => ({
     id,
     role,
+    pos: '',
     mount: 'internal',
     type: 'exhaust',
     model,
@@ -309,16 +339,35 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     grilleZeta: 0,
   });
   if (cpu && L.cpu && L.cpu.fan) {
+    // 塔扇（自前向后）：前 = 鳍片前侧，后 = 鳍片后侧（单塔推拉），中 = 双塔中间间隙内居中（盘厚不超过间隙）。都从前向后吹
     const fin = cpu.finArea;
-    const f = builtIn('cpu_tower_fan', 'cpu', L.cpu.fan.model, 'cpu');
-    const n = toCell(f.spec.size);
+    const model = L.cpu.fan.model;
+    const n = toCell(specOf(model).size);
     const cy = mround(fin.y + (fin.h - 1) / 2);
     const r0 = cy - floor(n / 2);
-    f.rows = [r0, r0 + n - 1];
-    f.cols = [fin.x + fin.w, fin.x + fin.w + t - 1]; // 鳍片前侧
-    f.normal = [-1, 0]; // 从前向后吹
-    f.positionDb = acoustics.positionDb.cpu;
-    fans.push(f);
+    for (const pos of cpu.tower.pos) {
+      const f = builtIn(`cpu_fan_${pos}`, 'cpu', model, 'cpu');
+      f.pos = pos;
+      let tt = t;
+      let c0: number;
+      if (pos === 'front') c0 = fin.x + fin.w;
+      else if (pos === 'rear') c0 = fin.x - t;
+      else {
+        const g = cpu.gap!;
+        tt = Math.min(t, g.w);
+        c0 = g.x + floor((g.w - tt) / 2);
+      }
+      if (c0 <= outer.x || c0 + tt - 1 >= outer.x + outer.w - 1) {
+        const posCN = { front: '前', mid: '中', rear: '后' }[pos];
+        throw new GeometryError(`CPU 塔扇（${posCN}）放不下：执行盘第 ${c0}–${c0 + tt - 1} 列压到机箱壁（壁内为第 ${outer.x + 1}–${outer.x + outer.w - 2} 列）`);
+      }
+      f.rows = [r0, r0 + n - 1];
+      f.cols = [c0, c0 + tt - 1];
+      f.normal = [-1, 0];
+      f.thickM = (tt * cellMm) / 1000;
+      f.positionDb = acoustics.positionDb.cpu;
+      fans.push(f);
+    }
   }
   if (gpu && L.gpu && L.gpu.fans) {
     const hs = gpu.heatsink;
@@ -481,8 +530,10 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   let psuInteriorIdx = new Int32Array(0);
   let psuInletIdx = new Int32Array(0);
   if (cpu) {
-    cpuFinIdx = keepFluid(rectCells(cpu.finArea));
-    const cf = findFan('cpu');
+    // 散热体 = 各组鳍片（双塔中间间隙没有鳍片，不注热；按外廓的列主序）；进风带在前置塔扇前，无前置塔扇时在鳍片前
+    const gapSet = new Set(cpu.gap ? rectCells(cpu.gap) : []);
+    cpuFinIdx = keepFluid(rectCells(cpu.finArea).filter((i) => !gapSet.has(i)));
+    const cf = fans.find((f) => f.role === 'cpu' && f.pos === 'front');
     const fin = cpu.finArea;
     cpuInletIdx = cf
       ? keepFluid(rectCells({ x: cf.cols[1] + 1, y: cf.rows[0], w: nIn, h: cf.rows[1] - cf.rows[0] + 1 }))
