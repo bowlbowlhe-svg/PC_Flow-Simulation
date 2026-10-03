@@ -544,3 +544,352 @@ button.pending {
   color: #fff;
   font-weight: 600;
 }
+
+/* ---- 顶部导航（仿真 / 方案对比展示） ---- */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 8px 12px 0;
+}
+
+.topnav-title {
+  color: #4588ff;
+  font-weight: 600;
+  font-size: 16px;
+  margin-right: auto;
+}
+
+.topnav-title .ver {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+/* ---- 方案对比展示页 ---- */
+.compare-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.cmp-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cmp-title h2 {
+  margin: 0 0 2px;
+  font-size: 17px;
+  color: #ccccff;
+}
+
+.cmp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.seg {
+  display: inline-flex;
+}
+
+.seg button {
+  border-radius: 0;
+}
+
+.seg button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.seg button:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.cmp-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cmp-legend-bar {
+  display: inline-block;
+  width: 110px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #3a2a10;
+  color: #ffbf66;
+  font-size: 11px;
+}
+
+.cmp-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmp-matrix th,
+.cmp-matrix td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #1e1e36;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.cmp-matrix thead th {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.cmp-matrix td {
+  cursor: pointer;
+  color: #eee;
+}
+
+.cmp-matrix td b {
+  font-size: 15px;
+}
+
+.cmp-matrix td.cur {
+  outline: 2px solid rgba(0, 212, 255, 0.55);
+  outline-offset: -2px;
+}
+
+.cmp-matrix tr.sel th {
+  color: var(--accent);
+}
+
+.cmp-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.cmp-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cmp-card.sel {
+  border-width: 2px;
+}
+
+.cmp-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thumb-canvas {
+  width: 100%;
+  aspect-ratio: 4 / 5; /* 缺省；组件按缩略图实际宽高比覆盖 */
+  image-rendering: auto;
+  border-radius: 3px;
+  background: #111;
+}
+
+.thumb-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.cmp-badges {
+  min-height: 20px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #0d3a2a;
+  color: #7dffc0;
+  font-size: 11px;
+}
+
+.cmp-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmp-score {
+  grid-column: 1 / -1;
+  text-align: center;
+  border-radius: 3px;
+  color: #fff;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.cmp-metric {
+  margin-left: 8px;
+  margin-right: 8px;
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-svg .grid {
+  stroke: rgba(100, 100, 128, 0.35);
+  stroke-width: 1;
+}
+
+.chart-svg .tick,
+.chart-svg .bar-value {
+  fill: rgb(150, 150, 170);
+  font-size: 11px;
+}
+
+.chart-svg .axis-label {
+  fill: rgb(170, 170, 190);
+  font-size: 12px;
+}
+
+.chart-svg .bar-label {
+  fill: var(--fg);
+  font-size: 12px;
+}
+
+.chart-svg .bar-row,
+.chart-svg .trade-line {
+  cursor: pointer;
+}
+
+.chart-svg .bar-row.sel .bar-label {
+  fill: var(--accent);
+  font-weight: 600;
+}
+
+.chart-svg .guide {
+  stroke: #ffffff;
+  stroke-dasharray: 4 3;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.cmp-fair-ctrl {
+  margin-bottom: 6px;
+}
+
+.cmp-fair tr {
+  cursor: pointer;
+}
+
+.cmp-fair tr.sel td {
+  color: var(--accent);
+}
+
+.cmp-job {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.cmp-job progress {
+  flex: 1;
+  min-width: 160px;
+}
+
+.cmp-two {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .cmp-two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cmp-two .chart-svg {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.cmp-fair-ctrl .slider-val {
+  min-width: 64px;
+  white-space: nowrap;
+}
+
+.cmp-fair th:nth-child(2),
+.cmp-fair td:nth-child(2) {
+  text-align: left;
+}
+
+.cmp-card .thumb-canvas {
+  max-width: 240px;
+  align-self: center;
+}
+
+.lbl-short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .lbl-long {
+    display: none;
+  }
+  .lbl-short {
+    display: inline;
+  }
+}
+
+/* 窄屏：图表保持可读的最小宽度，在容器内横向滚动 */
+.chart-scroll {
+  overflow-x: auto;
+}
+
+.chart-scroll .chart-svg {
+  min-width: 520px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.link-btn:hover:not(:disabled) {
+  color: #ff8080;
+}

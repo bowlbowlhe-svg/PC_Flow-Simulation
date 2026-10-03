@@ -280,12 +280,56 @@ function check(cond, msg) {
   const cpu1 = await cpuOf();
   check(cpu1 >= cpu0 + 3, `满载后 CPU 结温上升（${cpu0} → ${cpu1}°C）`);
 
+  // 13. 方案对比展示页：总览、缩略图、切换场景与指标、自定义方案（开始后取消）、在仿真页打开
+  //     （仿真页先开始跑稳态：仿真页忙时"在仿真页打开"也要生效，L5 审计）
+  await p.click('text=⏩ 跑到稳态');
+  await p.click('.topnav >> text=方案对比展示');
+  await p.waitForSelector('.cmp-matrix tbody tr', { timeout: 10000 });
+  const nRows = await p.$$eval('.cmp-matrix tbody tr', (r) => r.length);
+  check(nRows === 8, `对比总览 8 个方案（${nRows}）`);
+  await p.waitForFunction(() => document.querySelectorAll('canvas.thumb-canvas').length >= 8, null, { timeout: 10000 });
+  const lit = await p.$eval('canvas.thumb-canvas', (c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let s = 0;
+    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
+    return s / (d.length / 4);
+  });
+  check(lit > 20, `缩略图已绘制（平均亮度 ${lit.toFixed(0)}）`);
+  await p.click('.cmp-controls >> text=满载');
+  check((await text('.compare-page')).includes('满载场景：各方案'), '切换到满载场景');
+  await p.selectOption('select.cmp-metric', 'noiseDb');
+  check((await text('.compare-page')).includes('按噪音排序'), '按噪音排序');
+  const fairRows = await p.$$eval('.cmp-fair tbody tr', (r) => r.length);
+  check(fairRows === 8, `公平比较表 8 行（${fairRows}）`);
+  await shot('e2e_compare');
+  await p.selectOption('select.cmp-grid', '0.5');
+  await p.click('button.cmp-add');
+  await p.waitForFunction(() => document.querySelector('.cmp-job')?.textContent?.includes('正在计算'), null, { timeout: 30000 });
+  check(true, '自定义方案开始后台计算');
+  await p.click('button.cmp-cancel');
+  await p.waitForTimeout(500);
+  check((await p.$('.cmp-job')) === null, '取消后台计算');
+  const cardTitle = await p.$$eval('.cmp-card .cmp-card-title b', (els) => els[0].textContent);
+  await p.click('.cmp-card >> nth=0 >> button.cmp-open');
+  await p.waitForFunction(() => document.querySelector('.run-btns')?.textContent?.includes('停止'), null, { timeout: 60000 });
+  await p.click('.tabs >> text=风扇布局');
+  const openedInfo = await text('.layout-info');
+  check(openedInfo.includes(`当前：${cardTitle}`), `在仿真页打开（仿真页原在跑稳态）：载入"${cardTitle}"并跑到稳态（${openedInfo.split('\n')[0]}）`);
+  await p.click('.tabs >> text=功率与风扇');
+  check((await text('.tab-body')).includes('180 W') && (await text('.tab-body')).includes('320 W'), '仿真页功率为满载 180/320 W');
+  await p.click('.run-btns >> text=停止');
+
   // 12. 窄屏
   await p.setViewportSize({ width: 390, height: 900 });
   await p.waitForTimeout(800);
   await p.screenshot({ path: `${OUT}/e2e_mobile.png` });
   const overflow = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(overflow <= 0, `窄屏无横向溢出（${overflow}px）`);
+  await p.click('.topnav >> text=方案对比展示');
+  await p.waitForTimeout(800);
+  await p.screenshot({ path: `${OUT}/e2e_compare_mobile.png` });
+  const overflow2 = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  check(overflow2 <= 0, `对比展示页窄屏无横向溢出（${overflow2}px）`);
 
   check(logs.length === 0, `控制台无错误${logs.length ? '：\n' + logs.join('\n') : ''}`);
   await b.close();

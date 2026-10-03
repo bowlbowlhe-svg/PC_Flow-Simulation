@@ -127,7 +127,8 @@ export function FieldView(p: Props) {
   useEffect(() => {
     const wrap = wrapRef.current!;
     const ro = new ResizeObserver(() => {
-      const c = canvasRef.current!;
+      const c = canvasRef.current;
+      if (!c) return; // 已卸载（切到对比展示页）
       const css = Math.floor(wrap.clientWidth);
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       c.style.width = `${css}px`;
@@ -187,7 +188,7 @@ export function FieldView(p: Props) {
         s.imgKey = key;
         P.onSpec({ title: spec.title, unit: spec.unit, cmap: spec.cmap, clim: spec.clim });
       }
-      draw(canvasRef.current!, s, P);
+      if (canvasRef.current) draw(canvasRef.current, s, P);
     };
     s.raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(s.raf);

@@ -19,8 +19,15 @@ import { LayoutTab, SCENARIO_NAMES, ScenarioTab } from './layoutTabs';
 import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
+import type { CompareClient } from './compareClient';
+import type { AddOptions, CompareJob } from './compare/ComparePage';
+import type { CustomScheme, SchemeView } from './compare/schemes';
+import { COMPARE_SCENARIOS, type ScenarioKey } from '../compare/scenarios';
 
-export const APP_VERSION = '1.4.0';
+/** 对比展示页（含预计算数据与对比 Worker）按需加载 */
+type CompareMod = typeof import('./compare/lazy');
+
+export const APP_VERSION = '1.5.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -33,6 +40,7 @@ const MODES: { key: ViewMode; label: string }[] = [
 
 const MAX_HISTORY = 600;
 type Tab = 'status' | 'fans' | 'layout' | 'scenario';
+type Page = 'sim' | 'compare';
 
 interface Scenario extends ScenarioSnap {
   autoFan: boolean;
@@ -51,6 +59,14 @@ export function App() {
   const [labels, setLabels] = useState(true);
   const [side, setSide] = useState<'temp' | 'pq'>('temp');
   const [tab, setTab] = useState<Tab>('status');
+  const [page, setPage] = useState<Page>('sim');
+  // ---- 对比展示页：自定义方案（后台计算，只保存在当前页面）----
+  const [cmp, setCmp] = useState<CompareMod | null>(null);
+  const compareClientRef = useRef<CompareClient | null>(null);
+  const [customs, setCustoms] = useState<CustomScheme[]>([]);
+  const [job, setJob] = useState<CompareJob | null>(null);
+  const jobRef = useRef<{ id: number; scheme: string } | null>(null);
+  const customSeq = useRef(0);
   const [gridScale, setGridScale] = useState(0.5);
   const initial = useMemo(() => layoutDefault(), []);
   // 挡板"前部开孔"勾选时使用的缺口：载入的布局带非空缺口时随之更新（同 MATLAB setPendingFromLayout）
@@ -90,6 +106,7 @@ export function App() {
     return () => {
       off();
       client.dispose();
+      compareClientRef.current?.dispose();
     };
   }, []);
 
@@ -182,8 +199,9 @@ export function App() {
     setDirty(true);
     if (fansChanged) setLayoutLabel('自定义');
   };
-  const applyLayout = async (runSteady: boolean, L = pending, label = layoutLabel, p = powers, auto = autoFan, pct = fanPct): Promise<boolean> => {
-    if (!L || busy) return false;
+  const applyLayout = async (runSteady: boolean, L = pending, label = layoutLabel, p = powers, auto = autoFan, pct = fanPct, force = false): Promise<boolean> => {
+    // force：跑稳态中也重建（对比展示页"在仿真页打开"；重建会先停止稳态推进）
+    if (!L || building || !sim.info || (steadyActive && !force)) return false;
     if (!(await rebuild(L, gridScale, p, auto, pct))) return false;
     setApplied(L);
     setPendingBase(L);
@@ -251,6 +269,72 @@ export function App() {
     const L = { ...s.layout, power: p };
     if (await applyLayout(false, L, s.label, p, s.autoFan, s.fanPct)) setPendingFromLayout(L);
   };
+  /** 对比展示页：把仿真页当前已应用的布局（含温控曲线）加入对比，后台按同样口径计算 */
+  const addCurrentToCompare = (o: AddOptions) => {
+    if (!sim.info || !cmp) return;
+    if (jobRef.current) cancelCompareJob(); // 同一时刻只算一个
+    const compareClient = (compareClientRef.current ??= new cmp.CompareClient());
+    const COMPARE_DATA = cmp.COMPARE_DATA;
+    const k = ++customSeq.current;
+    const id = `custom-${k}`;
+    const label = `自定义 ${k}（${appliedLabel}）`;
+    const layout: Layout = { ...structuredClone(sim.info.layout), fanCurves: structuredClone(fanCurves) };
+    const proto = { ...COMPARE_DATA.protocol, gridScale: o.gridScale, turbUpdateEvery: o.gridScale >= 1 ? 1 : 2, sweepPct: o.sweep ? COMPARE_DATA.protocol.sweepPct : [] };
+    setCustoms((cs) => [...cs, { id, label, layout, gridScale: o.gridScale, cases: {} }]);
+    // 立即进入"计算中"（Worker 构建求解器要几秒才回第一条进度），避免重复点击
+    setJob({ label, scenario: o.scenarios[0], index: 0, count: o.scenarios.length, done: 0, total: 0 });
+    const dropIfEmpty = () => setCustoms((cs) => cs.filter((c) => c.id !== id || Object.keys(c.cases).length > 0));
+    const jid = compareClient.start({ layout, scenarios: o.scenarios, protocol: proto }, (m) => {
+      switch (m.type) {
+        case 'progress':
+          setJob({ label, scenario: m.scenario, index: m.index, count: m.count, done: m.done, total: m.total });
+          break;
+        case 'case':
+          setCustoms((cs) => cs.map((c) => (c.id === id ? { ...c, cases: { ...c.cases, [m.scenario]: { auto: m.auto, sweep: m.sweep, thumb: m.thumb } } } : c)));
+          break;
+        case 'done':
+        case 'cancelled':
+          jobRef.current = null;
+          setJob(null);
+          break;
+        case 'error':
+          jobRef.current = null;
+          dropIfEmpty();
+          setJob((j) => ({ ...(j ?? { label, scenario: o.scenarios[0], index: 0, count: o.scenarios.length, done: 0, total: 0 }), error: m.message }));
+          break;
+      }
+    });
+    jobRef.current = { id: jid, scheme: id };
+  };
+  const cancelCompareJob = () => {
+    const j = jobRef.current;
+    if (j) {
+      compareClientRef.current?.cancel(j.id);
+      // 没算完任何场景的自定义方案一并移除
+      setCustoms((cs) => cs.filter((c) => c.id !== j.scheme || Object.keys(c.cases).length > 0));
+    }
+    jobRef.current = null;
+    setJob(null);
+  };
+  /** 对比展示页 → 仿真页：载入方案与场景功率，应用并跑到稳态 */
+  const openInSim = async (s: SchemeView, sc: ScenarioKey) => {
+    const scen = COMPARE_SCENARIOS.find((x) => x.key === sc)!;
+    const p = { cpu: scen.powers[0], gpu: scen.powers[1], psu: scen.powers[2] };
+    const base = s.kind === 'preset' ? applyPreset(layoutDefault(), s.id) : structuredClone(s.layout!);
+    const L = { ...base, power: p };
+    if (building || !sim.info) return; // 按钮此时禁用
+    setPage('sim');
+    // 仿真页正在跑稳态也照常载入：重建求解器会先停止原来的稳态推进
+    if (await applyLayout(true, L, s.label, p, true, fanPct, true)) setPendingFromLayout(L);
+  };
+  const goCompare = () => {
+    stopGifRef.current(); // 主视图卸载前停止 GIF 录制（已录的帧照常保存）
+    setPage('compare');
+    if (!cmp) import('./compare/lazy').then(setCmp, (e) => {
+      client.state.error = `对比展示页载入失败：${e instanceof Error ? e.message : String(e)}`;
+      setSim({ ...client.state });
+    });
+  };
   const exportPng = () => {
     const c = fieldCanvas.current;
     if (!c) return;
@@ -286,7 +370,45 @@ export function App() {
   if (steady) note = steady.active ? `跑到稳态中：${steady.steps} 步` : steady.message;
   const diffScenario = scenarios[diffRef];
 
+  const nav = (
+    <nav class="topnav">
+      <span class="topnav-title">
+        PC 风道仿真器 <span class="ver">网页版 {APP_VERSION}</span>
+      </span>
+      <button class={page === 'sim' ? 'active' : ''} onClick={() => setPage('sim')}>
+        仿真
+      </button>
+      <button class={page === 'compare' ? 'active' : ''} onClick={goCompare}>
+        方案对比展示{job && !job.error ? ' ⏳' : ''}
+      </button>
+    </nav>
+  );
+  if (page === 'compare')
+    return (
+      <>
+        {nav}
+        {cmp ? (
+        <cmp.ComparePage
+          data={cmp.COMPARE_DATA}
+          customs={customs}
+          job={job}
+          currentLabel={appliedLabel}
+          canAddCurrent={!!sim.info && !building}
+          canOpen={!!sim.info && !building}
+          onAddCurrent={addCurrentToCompare}
+          onCancelJob={cancelCompareJob}
+          onRemoveCustom={(id) => setCustoms((cs) => cs.filter((c) => c.id !== id))}
+          onOpenInSim={openInSim}
+        />
+        ) : (
+          <div class="compare-page muted">正在载入对比数据…</div>
+        )}
+      </>
+    );
+
   return (
+    <>
+    {nav}
     <div class="app">
       <div class="left">
         <div class="view-title">
@@ -344,9 +466,6 @@ export function App() {
         {side === 'temp' ? <HistoryChart data={history.current.pts} note={note} /> : <PQChart pq={st?.pq ?? []} note={note} />}
       </div>
       <div class="right">
-        <h1>
-          PC 风道仿真器 <span class="ver">网页版 {APP_VERSION}</span>
-        </h1>
         <section class="section">
           <h3>视图与操作</h3>
           <div class="mode-btns">
@@ -516,6 +635,7 @@ export function App() {
         )}
       </div>
     </div>
+    </>
   );
 }
 

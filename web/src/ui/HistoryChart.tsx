@@ -17,7 +17,8 @@ const SERIES: { key: keyof Omit<HistoryPoint, 't'>; name: string; color: string 
 export function HistoryChart({ data, note }: { data: HistoryPoint[]; note: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    const c = ref.current!;
+    const c = ref.current;
+    if (!c) return;
     const css = c.clientWidth;
     const cssH = c.clientHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);

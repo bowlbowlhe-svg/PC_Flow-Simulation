@@ -1,8 +1,8 @@
 {
   "name": "pc-flow-web",
   "private": true,
-  "version": "1.4.0",
-  "description": "PC 机箱风道与散热 2D 仿真（网页版，移植自 MATLAB 版 v4.6.0）",
+  "version": "1.5.0",
+  "description": "PC 机箱风道与散热 2D 仿真（网页版，移植自 MATLAB 版 v4.7.0）",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
     "profile": "vite-node scripts/profile.ts",
     "bench": "vite-node scripts/bench.ts",
     "steady": "vite-node scripts/steady.ts",
+    "compare-data": "vite-node scripts/compareData.ts",
     "build:single": "tsc --noEmit && vite build --mode single",
     "release": "npm run build:single && node -e \"require('fs').mkdirSync('release',{recursive:true});require('fs').copyFileSync('dist-single/index.html','release/pcflow-web.html')\""
   },

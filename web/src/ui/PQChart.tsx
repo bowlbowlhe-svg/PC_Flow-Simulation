@@ -7,7 +7,8 @@ const PAL = ['rgb(89,204,255)', 'rgb(255,153,64)', 'rgb(128,255,128)', 'rgb(255,
 export function PQChart({ pq, note }: { pq: Status['pq']; note: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    const c = ref.current!;
+    const c = ref.current;
+    if (!c) return;
     const css = c.clientWidth;
     const cssH = c.clientHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);

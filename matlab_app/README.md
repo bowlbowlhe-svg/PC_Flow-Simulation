@@ -101,6 +101,8 @@ s.reset();                                % 回到初始态
 L = layout_apply_preset(layout_default(), 'front_top');   % 换风扇布局预设
 s = CFDSolverFEM(125, 250, 450, L, 0.5);                  % 0.5 = 预览网格
 R = compare_presets(0.5);                                 % 全部预设跑到稳态并列表对比
+R = compare_scenarios({'balanced', 'positive'}, {'gaming', 'heavy'});   % 方案 × 场景批量对比（同网页版对比展示页口径）
+plot_compare(R, 'heavy');                                 % 画评分总览、结温与噪音、噪音—温度权衡曲线
 ```
 
 ## 目录
@@ -138,8 +140,9 @@ matlab_app/
 │   ├── reference/         标准答案数据集（见其中的 README）
 │   ├── steady_reference.json  test_steady 的精确档参考值（tools/make_steady_reference 生成）
 │   └── ui_mock/           Octave 界面桩（MockUI 等），test_ui 在 Octave 下自动使用
-├── tools/                 预设对比（compare_presets）、标准答案数据集（make_reference_dataset）、
-│                          长时统计（steady_long_run）、稳态参考值、快照、网格敏感性、耗时剖析
+├── tools/                 预设对比（compare_presets）、方案 × 场景批量对比（compare_scenarios、plot_compare）、
+│                          标准答案数据集（make_reference_dataset）、长时统计（steady_long_run）、稳态参考值、快照、
+│                          网格敏感性、耗时剖析
 ├── compat/octave/         Octave 兼容层（decomposition）
 └── snapshots/             快照输出（旧文件为 v3.3.1 口径，用 tools/generate_snapshots 重新生成）
 ```
@@ -252,6 +255,7 @@ Phanteks T30-120（按 2000 rpm 限速）、机箱原装 120 mm；塔扇按 Ther
 | `test_ui` | 按用户操作触发控件回调：视图、运行/暂停、功率、温控曲线档位、布局编辑与撤销、预设、显卡厚度、CPU 塔扇数量、跑稳态、方案对比、温差、JSON、网格切换、重置；失败路径（取值错误的 JSON、无法构建的布局回滚、无显卡布局） | Octave 桩（带属性白名单）：通过；MATLAB 真实界面：v4.2.1 通过，v4.3.0 起待实测 |
 | `test_visual` | 粒子不进固体、不堆积在域边、多数在机箱内、沿风道方向运动；涡量符号约定；开口标注位置与净风量守恒；配色表 | 通过（域边 0.8%，机箱内 88%） |
 | `test_pressure` | 压力视图口径：风道多孔塞压降 vs ζ·½ρv²（280²，v 取塞中面实际流量）；正压/负压预设机箱内平均静压的符号 | 10.07 vs 10.02 Pa（+0.5%，容差 8%）；正压 +2.7 Pa、负压 −3.4 Pa |
+| `test_compare` | 方案 × 场景批量对比（缩短口径）：字段、场景功率、扫描顺序与转速、JSON 输出、办公场景停转、错误场景名；`plot_compare` 画图 | 通过（画图只在 MATLAB 下检查：Octave 无界面环境不能创建坐标轴） |
 | `test_reference` | 复算标准答案 `fixed_default` 与 `fixed_duct`（140²，200 步）逐场比较；跨平台超出舍入时提示反馈 | 最大差 ≤ 存储舍入（5e−5°C） |
 | `test_advection` / `test_reset` / `test_turbulence` | 平流方向、reset 与新建一致、k-ω 正性与 ν_t 量级、LVEL 回退 | 通过（ν_t/ν p95 129） |
 
@@ -361,6 +365,15 @@ v4.5.0 时 560² 的 GPU 比 280² 低 4.7°C、CPU 高 2.4°C（1600 步，网�
 - 自动温控下温度越低风扇越慢，所以散热好的布局往往也更安静。GPU 偏热的布局里，跟随最高温的机箱风扇都转得更快，
   噪音最多高 12 dB；评分（游戏档）因此从 49 到 74 拉开。
 - 预览档与精确档的差别因布局而异：CPU −2.6 至 +1.9°C，GPU −4.8 至 +5.0°C，风量 −13% 至 +2%。
+
+### 方案 × 场景批量对比（v4.7.0）
+
+`compare_scenarios(presets, scenarios, protocol, outFile)` 按网页版"方案对比展示"页的口径（`docs/ALGORITHM.md` §13）计算
+风扇布局预设 × 办公 / 游戏 / 满载：每个算例从静止推进 1600 步（自动温控），取后 800 步均值；再把全部风扇固定在全局 40 / 70 / 100%
+各接续推进 800 步（"同噪音 / 同温度"的公平比较用）。精确 280² 每个算例约 4000 步，8 × 3 个算例在 Octave 下约 20 小时，
+可只算关心的方案与场景，或用 `struct('gridScale', 0.5)` 改预览网格。`plot_compare(R, scenario)` 画评分总览、所选场景的结温与噪音、
+噪音—温度权衡曲线。网页版内置了全部 24 个算例的预计算结果（`web/src/compare/data.json`），打开"方案对比展示"页即可查看；
+MATLAB 与网页的结果逐项相同（`web/test/fixtures/compare.json` 对照）。
 
 ## 已知局限
 
