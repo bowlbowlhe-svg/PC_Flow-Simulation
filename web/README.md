@@ -1,6 +1,6 @@
 # 网页版
 
-MATLAB 版 v4.3.0 的浏览器移植。规格见 [`../docs/ALGORITHM.md`](../docs/ALGORITHM.md)，验收数据见
+MATLAB 版 v4.3.1 的浏览器移植。规格见 [`../docs/ALGORITHM.md`](../docs/ALGORITHM.md)，验收数据见
 [`../matlab_app/tests/reference/`](../matlab_app/tests/reference/)，阶段计划见 [`../docs/ROADMAP.md`](../docs/ROADMAP.md)（W0–W5）。
 
 当前进度：W0–W5 完成（求解器、诊断与稳态、主界面、布局编辑与方案对比、性能与定稿）。

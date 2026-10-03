@@ -126,6 +126,11 @@ h1 .ver {
   font-size: 13px;
 }
 
+.toolbar .pending-note {
+  flex-basis: 100%;
+  color: var(--warn);
+}
+
 .toolbar .hover {
   flex: 1;
   min-width: 240px;

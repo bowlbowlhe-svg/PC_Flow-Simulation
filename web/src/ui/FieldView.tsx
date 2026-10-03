@@ -572,12 +572,29 @@ function slotFlow(P: Props, k: number): number {
   return m >= 0 ? P.status.markerCfm[m] : NaN;
 }
 
+/** 安装位 k 上已应用（正在计算）的机箱风扇类型：'intake' | 'exhaust' | 'none' */
+function slotApplied(P: Props, k: number): string {
+  const sl = P.info.slots[k];
+  const along = FAN_SLOTS[k].alongMm;
+  const f = (P.info.layout.caseFans ?? []).find((c) => c.mount === sl.mount && Math.abs(c.alongMm - along) < 1);
+  return f ? f.type : 'none';
+}
+
+const SLOT_WORD: Record<string, string> = { intake: '进', exhaust: '出', none: '空' };
+
+/**
+ * 安装位标记：颜色为待应用的状态（绿 = 进气，红 = 排气，灰虚线 = 空），文字附已应用风扇的开口净风量。
+ * 待应用状态与正在计算的不同时，边框与文字改为琥珀色虚线，文字写成"T1 出 ↑32 → 空（待应用）"：
+ * 流场仍按已应用的布局计算，点"应用布局"后才生效。
+ */
 function drawSlots(ctx: CanvasRenderingContext2D, P: Props, sc: number): void {
   const E = (v: number) => (v - 1) * sc;
   ctx.font = `${Math.max(10, Math.round(sc * 3))}px system-ui, sans-serif`;
   P.info.slots.forEach((sl, k) => {
     const b = slotBox(sl, P.info.fanDiskCells);
     const type = P.slotTypes[k] ?? 'none';
+    const applied = slotApplied(P, k);
+    const changed = applied !== type;
     let col: string;
     let fill: string;
     let cap: string;
@@ -598,15 +615,18 @@ function drawSlots(ctx: CanvasRenderingContext2D, P: Props, sc: number): void {
     const y = E(b.r0);
     const w = (b.c1 - b.c0 + 1) * sc;
     const h = (b.r1 - b.r0 + 1) * sc;
+    const pendingCol = 'rgb(255,170,0)';
     ctx.fillStyle = fill;
     ctx.fillRect(x, y, w, h);
-    ctx.setLineDash(type === 'none' ? [4, 3] : []);
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1;
+    ctx.setLineDash(changed ? [5, 3] : type === 'none' ? [4, 3] : []);
+    ctx.strokeStyle = changed ? pendingCol : col;
+    ctx.lineWidth = changed ? 1.5 : 1;
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
     const q = slotFlow(P, k);
-    if (P.labels && Number.isFinite(q) && Math.abs(q) >= 0.5) cap += ` ${flowText(sl.mount, q)}`;
+    const flow = P.labels && Number.isFinite(q) && Math.abs(q) >= 0.5 ? ` ${flowText(sl.mount, q)}` : '';
+    if (changed) cap = `${sl.id} ${SLOT_WORD[applied] ?? applied}${flow} → ${SLOT_WORD[type] ?? type}（待应用）`;
+    else cap += flow;
     let tx: number;
     let ty: number;
     if (sl.mount === 'front') {
@@ -634,7 +654,7 @@ function drawSlots(ctx: CanvasRenderingContext2D, P: Props, sc: number): void {
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.55)';
     ctx.strokeText(cap, tx, ty);
-    ctx.fillStyle = type === 'none' ? 'rgb(191,191,204)' : col;
+    ctx.fillStyle = changed ? pendingCol : type === 'none' ? 'rgb(191,191,204)' : col;
     ctx.fillText(cap, tx, ty);
   });
 }

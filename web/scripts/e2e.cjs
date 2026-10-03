@@ -67,15 +67,17 @@ function check(cond, msg) {
   await p.waitForTimeout(300);
   check((await text('.layout-info')).includes('待应用：自定义'), '编辑后显示"待应用：自定义"');
   check((await text('.tabs')).includes('风扇布局 •'), '标签页显示未应用标记');
+  check((await p.$('.toolbar .pending-note')) !== null, '主视图下方提示"布局有未应用的修改"');
   await shot('e2e_layout_edit');
 
   // 3. 保存方案 A → 应用布局 → 运行 → 保存 B
   await p.click('.tabs >> text=方案对比');
   await p.click('text=保存当前');
   await p.click('.tabs >> text=风扇布局');
-  await p.click('text=应用布局');
+  await p.click('button:text-is("应用布局")');
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：自定义'), null, { timeout: 30000 });
   check(true, '应用布局后显示"当前：自定义"');
+  check((await p.$('.toolbar .pending-note')) === null, '应用后不再提示未应用的修改');
   await p.click('text=▶ 开始仿真');
   await p.waitForTimeout(4000);
   await p.click('text=⏸ 暂停仿真');

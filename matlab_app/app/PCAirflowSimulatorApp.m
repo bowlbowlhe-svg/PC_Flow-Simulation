@@ -720,8 +720,11 @@ classdef PCAirflowSimulatorApp < handle
 
         function updateSlotMarkers(app)
             % 标记颜色反映待应用的状态（绿 = 进气，红 = 排气，灰虚线 = 空）；
-            % 文字附已应用风扇的开口净风量
+            % 文字附已应用风扇的开口净风量。待应用状态与正在计算的不同时，边框与文字改为琥珀色虚线，
+            % 文字写成"T1 出 ↑32 → 空（待应用）"：流场仍按已应用的布局计算，点"应用布局"后才生效。
             slots = fan_slots();
+            word = struct('intake', '进', 'exhaust', '出', 'none', '空');
+            amber = [1.00 0.67 0.00];
             for k = 1:numel(app.hSlot)
                 h = app.hSlot{k};
                 if isempty(h) || ~isvalid(h), continue; end
@@ -731,17 +734,39 @@ classdef PCAirflowSimulatorApp < handle
                     case 'exhaust', col = [1.00 0.28 0.28]; a = 0.30; ls = '-';  cap = [st.id ' 出'];
                     otherwise,      col = [0.55 0.55 0.60]; a = 0.10; ls = '--'; cap = st.id;
                 end
-                set(h, 'FaceColor', col, 'FaceAlpha', a, 'EdgeColor', col, 'LineStyle', ls);
+                applied = app.slotApplied(k);
+                changed = ~strcmp(applied, st.type);
+                if changed
+                    set(h, 'FaceColor', col, 'FaceAlpha', a, 'EdgeColor', amber, 'LineStyle', '--');
+                else
+                    set(h, 'FaceColor', col, 'FaceAlpha', a, 'EdgeColor', col, 'LineStyle', ls);
+                end
                 t = app.hSlotText{k};
                 if ~isempty(t) && isvalid(t)
+                    ft = '';
                     q = app.slotFlow(k);
                     if ~isnan(q) && app.LabelCheck.Value && abs(q) >= 0.5
                         [ft, ~] = app.flowText(slots(k).mount, q);
-                        cap = [cap ' ' ft]; %#ok<AGROW>
+                        ft = [' ' ft]; %#ok<AGROW>
                     end
-                    set(t, 'String', cap, 'Color', col);
+                    if changed
+                        cap = sprintf('%s %s%s → %s（待应用）', st.id, word.(applied), ft, word.(st.type));
+                        set(t, 'String', cap, 'Color', amber);
+                    else
+                        set(t, 'String', [cap ft], 'Color', col);
+                    end
                 end
             end
+        end
+
+        function type = slotApplied(app, k)
+            % 安装位 k 上已应用（正在计算）的机箱风扇类型：'intake' | 'exhaust' | 'none'
+            type = 'none';
+            if ~isfield(app.Solver.layout, 'caseFans') || isempty(app.Solver.layout.caseFans), return; end
+            slots = fan_slots();
+            cf = app.Solver.layout.caseFans;
+            j = find(strcmp({cf.mount}, slots(k).mount) & abs([cf.alongMm] - slots(k).alongMm) < 1, 1);
+            if ~isempty(j), type = cf(j).type; end
         end
 
         function q = slotFlow(app, k)
@@ -1687,7 +1712,7 @@ classdef PCAirflowSimulatorApp < handle
                 R.warnings = [{['布局无效：' ME.message]}, R.warnings];
             end
             if app.LayoutDirty
-                st = sprintf('待应用：%s', app.LayoutLabel);
+                st = sprintf('待应用：%s（点"应用布局"后生效）', app.LayoutLabel);
                 app.ApplyLayoutBtn.BackgroundColor = [0.75 0.45 0.05];
             else
                 st = sprintf('当前：%s', app.AppliedLabel);

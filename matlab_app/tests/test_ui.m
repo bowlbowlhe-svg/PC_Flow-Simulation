@@ -132,6 +132,9 @@ function pass = test_ui()
     errs = expect(errs, strcmp(app.SlotStates(1).type, 'intake'), 'click F1', 'F1 应变为进气');
     errs = expect(errs, app.LayoutDirty, 'click F1', '应标记为未应用');
     errs = expect(errs, strcmp(app.SlotTable.Data{1, 3}, '进气'), 'click F1', '表格应同步为 进气');
+    capF1 = app.hSlotText{1}.String;
+    errs = expect(errs, ~isempty(strfind(capF1, '空 → 进（待应用）')), 'click F1', ...
+        sprintf('F1 文字应标明待应用、流场仍按已应用布局（%s）', capF1));
     errs = act(errs, 'click F1 again', @() ui_click(app.hSlot{1}));
     errs = expect(errs, strcmp(app.SlotStates(1).type, 'exhaust'), 'click F1', 'F1 应变为排气');
     errs = act(errs, 'edit T1 speed', @() ui_edit(app.SlotTable, [4 5], '70%'));
@@ -150,6 +153,9 @@ function pass = test_ui()
     errs = act(errs, 'edit T1 speed', @() ui_edit(app.SlotTable, [4 5], '70%'));
     errs = act(errs, 'apply custom', @() ui_press(app.ApplyLayoutBtn));
     errs = expect(errs, numel(app.Solver.fans) == 6 && ~app.LayoutDirty, 'apply custom', '应用后应有 6 台机箱风扇');
+    capF1 = app.hSlotText{1}.String;
+    errs = expect(errs, isempty(strfind(capF1, '待应用')) && strncmp(capF1, 'F1 出', 4), 'apply custom', ...
+        sprintf('应用后 F1 文字不应再标待应用（%s）', capF1));
 
     P = fan_presets();
     ft = P(strcmp({P.name}, 'front_top'));

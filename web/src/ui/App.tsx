@@ -18,7 +18,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -296,6 +296,7 @@ export function App() {
           </div>
         </div>
         <div class="toolbar">
+          {dirty && <span class="pending-note">⚠ 布局有未应用的修改：流场仍按已应用的布局计算，点"应用布局"后生效</span>}
           <span class="hover">{hover || '移动鼠标查看读数；点击安装位切换风扇'}</span>
           <select value={side} onChange={(e) => setSide((e.target as HTMLSelectElement).value as 'temp' | 'pq')}>
             <option value="temp">温度曲线</option>
