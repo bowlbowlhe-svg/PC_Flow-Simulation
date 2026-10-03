@@ -8,8 +8,7 @@ export interface FanSpec {
   rpm_min: number;
   rpm_max: number;
   cfm_max: number; // 满速自由风量
-  noise_idle: number; // dB(A)
-  noise_max: number;
+  noise_max: number; // 满速噪音 dB(A)；低于满速按风扇定律 noise_max + 50·log10(n/n_max)
   pmax_pa: number; // 满速最大静压
   pq_curve: number[]; // P/Pmax 在 Q/Qmax = 0, 0.2, …, 1.0 处
   price: number;
@@ -17,47 +16,31 @@ export interface FanSpec {
 }
 
 const generic = [1.0, 0.92, 0.79, 0.6, 0.36, 0.0];
+const mmH2O = 9.80665; // 1 mmH₂O = 9.80665 Pa
 
-function spec(
-  size: number,
-  rmin: number,
-  rmax: number,
-  cfm: number,
-  nIdle: number,
-  nMax: number,
-  pmax: number,
-  pq: number[],
-  price: number,
-  label: string,
-): FanSpec {
-  return {
-    size,
-    rpm_min: rmin,
-    rpm_max: rmax,
-    cfm_max: cfm,
-    noise_idle: nIdle,
-    noise_max: nMax,
-    pmax_pa: pmax,
-    pq_curve: pq,
-    price,
-    label,
-  };
+function spec(size: number, rmin: number, rmax: number, cfm: number, nMax: number, pmax: number, pq: number[], price: number, label: string): FanSpec {
+  return { size, rpm_min: rmin, rpm_max: rmax, cfm_max: cfm, noise_max: nMax, pmax_pa: pmax, pq_curve: pq, price, label };
 }
 
-/** 风扇型号库（顺序与 MATLAB struct 字段顺序一致） */
+/** 风扇型号库（顺序与 MATLAB struct 字段顺序一致；满速参数取自厂家/零售商规格，见 fan_catalog.m） */
 export const FAN_CATALOG: Readonly<Record<string, FanSpec>> = Object.freeze({
-  NF_A14: spec(140, 300, 1500, 82.52, 12, 24.6, 20.4, [1.0, 0.91, 0.78, 0.59, 0.34, 0.0], 249, 'Noctua NF-A14'),
-  NF_A12: spec(120, 450, 2000, 60.1, 15, 22.6, 22.9, [1.0, 0.93, 0.8, 0.62, 0.36, 0.0], 229, 'Noctua NF-A12x25'),
-  NF_A9: spec(92, 400, 2500, 46, 14, 24, 22.4, [1.0, 0.89, 0.74, 0.55, 0.32, 0.0], 129, 'Noctua NF-A9'),
-  RX140: spec(140, 300, 1700, 95.7, 10, 36, 20.0, [1.0, 0.95, 0.85, 0.7, 0.45, 0.0], 219, 'Phanteks T30/RX 140'),
-  RX120: spec(120, 400, 2100, 74.2, 10, 36, 22.0, [1.0, 0.94, 0.83, 0.67, 0.42, 0.0], 189, 'Phanteks RX 120'),
-  P14: spec(140, 200, 1700, 72.8, 12, 22.5, 23.5, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 68, 'Arctic P14'),
-  P12: spec(120, 200, 1800, 56, 14, 26, 21.6, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 55, 'Arctic P12'),
-  Stock120: spec(120, 600, 2200, 65, 18, 32, 20.0, generic, 0, '机箱原装 120mm'),
-  Tower120: spec(120, 800, 2200, 60, 17, 31, 20.0, generic, 0, 'CPU 塔式散热器风扇'),
-  GPU80: spec(80, 800, 2600, 45, 16, 34, 20.0, generic, 0, '显卡 80mm 风扇'),
-  PSU120: spec(120, 500, 1800, 50, 15, 30, 20.0, generic, 0, '电源 120mm 风扇'),
+  NF_A14: spec(140, 300, 1500, 82.52, 24.6, 2.08 * mmH2O, [1.0, 0.91, 0.78, 0.59, 0.34, 0.0], 249, 'Noctua NF-A14 PWM'),
+  NF_A12: spec(120, 450, 2000, 60.1, 22.6, 2.34 * mmH2O, [1.0, 0.93, 0.8, 0.62, 0.36, 0.0], 229, 'Noctua NF-A12x25 PWM'),
+  NF_A9: spec(92, 400, 2000, 46.44, 22.8, 2.28 * mmH2O, [1.0, 0.89, 0.74, 0.55, 0.32, 0.0], 129, 'Noctua NF-A9 PWM'),
+  M25_140: spec(140, 350, 1800, 101.78, 36.4, 2.23 * mmH2O, [1.0, 0.95, 0.85, 0.7, 0.45, 0.0], 139, 'Phanteks M25 Gen2 140'),
+  T30: spec(120, 400, 2000, 67, 27.3, 7.11 * mmH2O * (2000 / 3000) ** 2, [1.0, 0.94, 0.83, 0.67, 0.42, 0.0], 219, 'Phanteks T30-120'),
+  P14: spec(140, 200, 1700, 72.8, 22.5, 2.4 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 68, 'Arctic P14 PWM'),
+  P12: spec(120, 200, 1800, 56.3, 22.5, 2.2 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 55, 'Arctic P12 PWM'),
+  Stock120: spec(120, 600, 2200, 65, 32, 20.0, generic, 0, '机箱原装 120mm'),
+  Tower120: spec(120, 300, 1550, 66.17, 25.6, 1.53 * mmH2O, generic, 0, 'CPU 塔扇（Thermalright TL-C12C）'),
+  GPU80: spec(80, 800, 2600, 45, 34, 20.0, generic, 0, '显卡 80mm 风扇'),
+  PSU120: spec(120, 500, 1800, 50, 30, 20.0, generic, 0, '电源 120mm 风扇'),
 });
+
+/** 旧型号名 → 新型号名（同 fan_model_alias.m）：v4.5 及以前的 RX120、RX140 并非真实型号 */
+export function fanModelAlias(m: string): string {
+  return m === 'RX120' ? 'T30' : m === 'RX140' ? 'M25_140' : m;
+}
 
 /** 型号是否在型号库中（只认自有属性：'constructor'、'toString' 等原型链上的键不算，同 MATLAB isfield） */
 export function hasModel(model: unknown): model is string {

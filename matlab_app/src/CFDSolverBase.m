@@ -103,6 +103,7 @@ classdef CFDSolverBase < handle
         fanSpeedRatio = 40    % 全局手动转速 [%]
         fanDiskCells = 6      % 执行盘厚 [格]（由 layout.fanDiskMm 换算）
         acoustics             % 噪音模型参数（layout.acoustics 覆盖 acoustics_default）
+        fanCurves             % 自动温控风扇曲线（layout_fan_curves）
 
         % ===== 模型开关与参数 =====
         spongeDamping = 0.8   % 远场海绵环速度保留比例（每步）
@@ -201,7 +202,12 @@ classdef CFDSolverBase < handle
                 net.power = watts;
             end
             net.actual_power = net.power;
-            net.throttling_ratio = 0;
+        end
+
+        function r = psuLoadRatio(obj)
+            % 电源负载率（输出负载 / 额定功率）；无电源时为 0
+            r = 0;
+            if obj.hasPsu, r = obj.powerW.psu / obj.layout.psu.ratedW; end
         end
 
         function loss = psuLossW(obj, loadW)
@@ -220,11 +226,16 @@ classdef CFDSolverBase < handle
                 obj.acoustics = struct_merge(obj.acoustics, obj.layout.acoustics);
                 acoustics_validate(obj.acoustics);
             end
+            obj.fanCurves = layout_fan_curves(obj.layout);
             obj.initGeometry();
             obj.initFields();
             obj.initObstacles();
             obj.initHeatSources();
             obj.initFans();
+            allF = obj.allFans();                 % 停转状态按初始温度先判一次（与第 1 步施力前的判定相同，
+            for k = 1:numel(allF)                 % 只为让推进前的状态显示一致；回差判定对同一温度幂等）
+                allF{k}.updateControl(obj);
+            end
             obj.initOpenings();
             obj.updateObstacleSets();
             obj.initCHTRegions();
@@ -313,11 +324,11 @@ classdef CFDSolverBase < handle
                 tw = layout_cpu_tower(L);
                 [stacks, gap] = obj.cpuTowerCells(fin, tw);
                 obj.CPU_HEATSINK = struct('base', obj.rectToGrid(L.cpu.base), 'fin_area', fin, ...
-                    'stacks', stacks, 'gap', gap, 'tower', tw, 'thermal', L.cpu.thermal);
+                    'stacks', stacks, 'gap', gap, 'tower', tw, 'thermal', L.cpu.thermal, 'dvfs', layout_dvfs(L, 'cpu'));
             end
             if obj.hasGpu
                 obj.GPU_HEATSINK = struct('pcb', obj.rectToGrid(L.gpu.pcb), ...
-                    'heatsink', obj.rectToGrid(L.gpu.heatsink), 'thermal', L.gpu.thermal);
+                    'heatsink', obj.rectToGrid(L.gpu.heatsink), 'thermal', L.gpu.thermal, 'dvfs', layout_dvfs(L, 'gpu'));
             end
             if obj.hasPsu
                 % 电源贴后壁/底壁安装：与壁内侧的间隙 ≤ 6 mm 时对齐到壁内侧
@@ -597,7 +608,7 @@ classdef CFDSolverBase < handle
             end
             for f = fieldnames(obj.thermalNetworks)'
                 obj.thermalNetworks.(f{1}).T_junction = obj.T_amb;
-                obj.thermalNetworks.(f{1}).T_theory_f = obj.T_amb;
+                obj.thermalNetworks.(f{1}).freq_ratio = 1;
             end
         end
 
@@ -1024,6 +1035,7 @@ classdef CFDSolverBase < handle
             vIdx = zeros(0,1); vVal = zeros(0,1);
             for k = 1:numel(allF)
                 fan = allF{k};
+                fan.updateControl(obj);                 % 停转状态（显卡低温停转、电源半被动）按回差更新
                 dp = fan.updateOperatingPoint(obj);
                 du = dp / (obj.AIR_DENSITY * fan.thickM) * obj.DT / obj.VEL_SCALE;
                 [RR, CC] = ndgrid(fan.rows(1):fan.rows(2), fan.cols(1):fan.cols(2));
@@ -1496,40 +1508,71 @@ classdef CFDSolverBase < handle
         end
 
         function scores = calculateScores(obj)
-            % 六维评分（锚定节流阈）：
-            %   散热 25%：CPU ≤60°C / GPU ≤70°C 满分 → 节流阈零分，各占一半
-            %   性能 20%：CPU+GPU 实际交付功率/额定，锁 35% 节流时为 0
-            %   均衡 10%：CPU/GPU 温差；余量 15%：距节流阈归一化温差
-            %   噪音 20%：100 − 3·(dB − 20)；性价比 10%：100 − 机箱风扇总价/15
+            % 评分（v4.6.0 起）：按 CPU+GPU 名义功率归入 办公 / 游戏 / 满载 档，四项 0–100 加权：
+            %   性能  频率保持率 φw（CPU、GPU 频率比按名义功率加权）：90% → 0、100% → 100
+            %   温度  各芯片距温度墙 (T_limit − Tj)/(T_limit − T_amb)（环境温度 → 100、降频阈 → 0），CPU、GPU 平均；
+            %         结温超过 tjmax 的芯片记 0；电源超过告警温度再 −20
+            %   噪音  响度 N = 2^((dB − 40)/10) sone：10 dB(A) → 100、45 dB(A) → 0（按响度线性；游戏负载下模型噪音
+            %         约 15–20 dB(A)，满分点取 20 dB 会全部饱和）
+            %   风道  机箱热阻 K = ΔT_eff/(P/100 W)：ΔT_eff = ½·(箱内均温 − 环境) + ½·(CPU、GPU 进风温升的平均)，
+            %         P = CPU+GPU 实际功率；按对数：K ≤ 1 → 100、2 → 75、4 → 50、8 → 25、≥ 16 → 0
+            %         （办公场景风扇都在最低转速，K 常在 5–12，线性锚点会全部截到 0）
+            %   权重（性能/温度/噪音/风道）：办公 10/15/60/15，游戏 25/25/35/15，满载 35/30/20/15。
+            %   档位：CPU+GPU 名义功率 < 187.5 W 办公，< 400 W 游戏，其余满载（三个场景按钮各落一档）。
             temps = obj.computeAirflowTemperatures();
-            tnC = obj.netOrIdle('cpu'); tnG = obj.netOrIdle('gpu');
-            cpuT = tnC.T_junction; gpuT = tnG.T_junction;
-            psuT = obj.junctionOr('psu');
+            clamp01 = @(x) max(0, min(1, x));
             [noiseDb, ~] = obj.totalNoise();
             totalCFM = 0; totalPrice = 0;
             for k = 1:numel(obj.fans)
                 totalCFM = totalCFM + obj.fans{k}.getCFM(obj);
                 totalPrice = totalPrice + obj.fans{k}.price;
             end
-            cpuCool = max(0, min(100, (tnC.throttling_temp-cpuT)/(tnC.throttling_temp-60)*100));
-            gpuCool = max(0, min(100, (tnG.throttling_temp-gpuT)/(tnG.throttling_temp-70)*100));
-            cooling = 0.5*cpuCool + 0.5*gpuCool;
-            pNom = tnC.power + tnG.power;
-            pAct = tnC.actual_power + tnG.actual_power;
-            performance = max(0, min(100, (pAct/max(pNom,eps) - 0.65)/0.35*100));
-            balance = max(0, 100 - abs(cpuT-gpuT)*2);
-            cpuHead = max(0, (tnC.throttling_temp-cpuT)/(tnC.throttling_temp-obj.T_amb));
-            gpuHead = max(0, (tnG.throttling_temp-gpuT)/(tnG.throttling_temp-obj.T_amb));
-            margin = 100*(0.5*cpuHead + 0.5*gpuHead);
-            noise = max(0, min(100, 100 - (noiseDb-20)*3));
-            value = max(0, 100 - totalPrice/15);
-            totalScore = round(cooling*0.25 + performance*0.20 + balance*0.10 + margin*0.15 + noise*0.20 + value*0.10);
-            scores = struct('total',totalScore,'cooling',round(cooling),'performance',round(performance),...
-                'balance',round(balance),'margin',round(margin),'noise',round(noise),'value',round(value),...
-                'cpuTemp',round(cpuT),'gpuTemp',round(gpuT),'psuTemp',round(psuT),...
-                'noiseDb',round(noiseDb),'totalPrice',totalPrice,'totalCFM',round(temps.totalCFM),...
-                'intake',temps.intake,'topExhaust',temps.topExhaust,'internalAmbient',temps.internalAmbient,...
-                'rearExhaust',temps.rearExhaust);
+            chips = {}; if obj.hasCpu, chips{end+1} = 'cpu'; end
+            if obj.hasGpu, chips{end+1} = 'gpu'; end
+            pNom = 0; pAct = 0; wPhi = 0; therm = []; rise = [];
+            freq = struct('cpu', NaN, 'gpu', NaN);
+            for k = 1:numel(chips)
+                net = obj.thermalNetworks.(chips{k});
+                pNom = pNom + net.power; pAct = pAct + net.actual_power;
+                wPhi = wPhi + net.power * net.freq_ratio;
+                freq.(chips{k}) = net.freq_ratio;
+                if net.T_junction > net.tjmax
+                    therm(end+1) = 0; %#ok<AGROW>
+                else
+                    therm(end+1) = 100 * clamp01((net.throttling_temp - net.T_junction) / ...
+                                                 max(net.throttling_temp - obj.T_amb, 1)); %#ok<AGROW>
+                end
+                if strcmp(chips{k}, 'cpu'), inIdx = obj.cpuInletIdx; else, inIdx = obj.gpuInletIdx; end
+                rise(end+1) = mean(obj.T_fluid(inIdx)) - obj.T_amb; %#ok<AGROW>
+            end
+            if pNom > 0, phiW = wPhi / pNom; else, phiW = 1; end
+            perf = 100 * clamp01((phiW - 0.9) / 0.1);
+            if isempty(therm), thermal = 100; else, thermal = mean(therm); end
+            if isfield(obj.thermalNetworks, 'psu') && obj.thermalNetworks.psu.overTemp
+                thermal = max(0, thermal - 20);
+            end
+            nl = @(db) 2^((db - 40) / 10);
+            noise = 100 * clamp01((nl(45) - nl(noiseDb)) / (nl(45) - nl(10)));
+            dInt = temps.internalAmbient - obj.T_amb;
+            if isempty(rise), dEff = dInt; else, dEff = 0.5 * dInt + 0.5 * mean(rise); end
+            if pAct > 1, airK = dEff / (pAct / 100); else, airK = 0; end
+            if airK <= 1, airflow = 100; else, airflow = 100 * clamp01(1 - log2(airK) / 4); end
+            if pNom < 187.5
+                cls = 'office'; clsName = '办公'; w = [0.10 0.15 0.60 0.15];
+            elseif pNom < 400
+                cls = 'gaming'; clsName = '游戏'; w = [0.25 0.25 0.35 0.15];
+            else
+                cls = 'heavy'; clsName = '满载'; w = [0.35 0.30 0.20 0.15];
+            end
+            totalScore = round(w(1)*perf + w(2)*thermal + w(3)*noise + w(4)*airflow);
+            scores = struct('total', totalScore, 'perf', round(perf), 'thermal', round(thermal), ...
+                'noise', round(noise), 'airflow', round(airflow), 'cls', cls, 'clsName', clsName, ...
+                'perfPct', round(1000 * phiW) / 10, 'freqCpu', freq.cpu, 'freqGpu', freq.gpu, 'airK', airK, ...
+                'cpuTemp', round(obj.junctionOr('cpu')), 'gpuTemp', round(obj.junctionOr('gpu')), ...
+                'psuTemp', round(obj.junctionOr('psu')), ...
+                'noiseDb', round(noiseDb), 'totalPrice', totalPrice, 'totalCFM', round(temps.totalCFM), ...
+                'intake', temps.intake, 'topExhaust', temps.topExhaust, 'internalAmbient', temps.internalAmbient, ...
+                'rearExhaust', temps.rearExhaust);
         end
 
         function S = scenarioSummary(obj)
@@ -1550,7 +1593,8 @@ classdef CFDSolverBase < handle
             end
             S = struct('cpu', tj(1), 'gpu', tj(2), ...
                 'psu', tj(3), 'interior', t.internalAmbient, 'cfm', t.totalCFM, ...
-                'noiseDb', db, 'score', sc.total, 'intakeCfm', qin, 'exhaustCfm', qout, ...
+                'noiseDb', db, 'score', sc.total, 'scoreCls', sc.clsName, 'perfPct', sc.perfPct, ...
+                'intakeCfm', qin, 'exhaustCfm', qout, ...
                 'pressure', fan_pressure_label(qin, qout), 'deadZonePct', 100*obj.deadZoneRatio, ...
                 'nCaseFans', numel(obj.fans), 'steps', obj.iteration);
         end
@@ -1612,7 +1656,7 @@ classdef CFDSolverBase < handle
             % 的中间流场求得，后者流量约低 4%，因此工作点图上的点略偏离曲线。
             allF = obj.allFans();
             list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, ...
-                          'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {});
+                          'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {}, 'stopped', {});
             [~, perFan, parts] = obj.totalNoise();
             share = 100 * 10.^(perFan/10) / max(sum(10.^(perFan/10)), eps);
             nGpu = 0;
@@ -1633,7 +1677,7 @@ classdef CFDSolverBase < handle
                 list(end+1) = struct('name', name, 'role', f.role, 'rpm', f.getRPM(obj), ...
                     'cfm', abs(obj.diskFlow(f)) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
                     'dp', f.lastDp, 'qRatio', f.noiseQRatio, 'noiseDb', perFan(k), ...
-                    'noise', parts(k), 'sharePct', share(k)); %#ok<AGROW>
+                    'noise', parts(k), 'sharePct', share(k), 'stopped', f.isStopped(obj)); %#ok<AGROW>
             end
         end
 
@@ -1642,11 +1686,11 @@ classdef CFDSolverBase < handle
             %   L = 10·log10(Σ 10^(Li/10))。parts 为各扇分项（fan_noise_terms）。
             allF = obj.allFans();
             perFan = zeros(1, numel(allF));
-            parts = struct('base', {}, 'op', {}, 'grille', {}, 'pos', {}, 'total', {});
+            parts = struct('base', {}, 'op', {}, 'grille', {}, 'fin', {}, 'pos', {}, 'total', {});
             for k = 1:numel(allF)
                 [perFan(k), parts(k)] = allF{k}.getNoise(obj); %#ok<AGROW>
             end
-            if any(~isfinite(perFan))
+            if any(isnan(perFan) | perFan == Inf)            % 停转的风扇为 −Inf，不计入
                 error('CFDSolverBase:noise', '风扇噪音出现非有限值，检查布局 acoustics 参数');
             end
             dbTotal = 10*log10(max(sum(10.^(perFan/10)), 1));
@@ -1655,20 +1699,25 @@ classdef CFDSolverBase < handle
         function recs = getRecommendations(obj)
             scores = obj.calculateScores();
             recs = {};
-            tnC = obj.netOrIdle('cpu'); tnG = obj.netOrIdle('gpu');
-            if ~obj.hasCpu
-                % 布局中无 CPU：不给 CPU 建议
-            elseif scores.cpuTemp > tnC.throttling_temp - 5
-                recs{end+1} = struct('title','CPU温度过高','desc',sprintf('当前%d°C，接近降频阈值，建议提高 CPU 风扇/机箱排风',scores.cpuTemp),'level','warning');
-            elseif scores.cpuTemp < 60
-                recs{end+1} = struct('title','CPU散热余量充足','desc',sprintf('当前%d°C，可适当降低风扇转速以减少噪音',scores.cpuTemp),'level','good');
-            end
-            if ~obj.hasGpu
-                % 布局中无显卡：不给 GPU 建议
-            elseif scores.gpuTemp > tnG.throttling_temp - 5
-                recs{end+1} = struct('title','GPU温度过高','desc',sprintf('当前%d°C，建议改善显卡下方进风或增加机箱排风',scores.gpuTemp),'level','warning');
-            elseif scores.gpuTemp < 65
-                recs{end+1} = struct('title','GPU散热良好','desc',sprintf('当前%d°C，散热配置合理',scores.gpuTemp),'level','good');
+            chipRec = {'cpu', 'CPU', obj.hasCpu, 60, '建议提高 CPU 塔扇/机箱排风'; ...
+                       'gpu', 'GPU', obj.hasGpu, 65, '建议改善显卡下方进风或增加机箱排风'};
+            for k = 1:2
+                if ~chipRec{k, 3}, continue; end                 % 布局中无此元件：不给建议
+                net = obj.thermalNetworks.(chipRec{k, 1}); nm = chipRec{k, 2};
+                T = round(net.T_junction); fpct = round(100 * net.freq_ratio);
+                if net.overTemp
+                    recs{end+1} = struct('title', [nm '过热'], 'desc', sprintf('当前%d°C，超过 %d°C，降到最低频率仍压不住，%s', ...
+                        T, round(net.tjmax), chipRec{k, 5}), 'level', 'warning'); %#ok<AGROW>
+                elseif net.throttled
+                    recs{end+1} = struct('title', [nm '触发温度墙降频'], 'desc', sprintf('当前%d°C，频率降到 %d%%（功率 %.0f W），%s', ...
+                        T, fpct, net.actual_power, chipRec{k, 5}), 'level', 'warning'); %#ok<AGROW>
+                elseif T > net.throttling_temp - 5
+                    recs{end+1} = struct('title', [nm '接近温度墙'], 'desc', sprintf('当前%d°C，距降频阈 %d°C 不到 5°C，%s', ...
+                        T, round(net.throttling_temp), chipRec{k, 5}), 'level', 'warning'); %#ok<AGROW>
+                elseif T < chipRec{k, 4}
+                    recs{end+1} = struct('title', [nm '散热余量充足'], 'desc', sprintf('当前%d°C，频率 %d%%，可适当降低风扇转速以减少噪音', ...
+                        T, fpct), 'level', 'good'); %#ok<AGROW>
+                end
             end
             if isfield(obj.thermalNetworks, 'psu') && obj.thermalNetworks.psu.overTemp
                 recs{end+1} = struct('title','电源温度过高','desc',sprintf('当前%d°C，超过告警阈值，检查电源进风',scores.psuTemp),'level','warning');
@@ -1681,8 +1730,8 @@ classdef CFDSolverBase < handle
             elseif scores.noiseDb < 25
                 recs{end+1} = struct('title','运行安静','desc',sprintf('当前约%ddB，噪音控制优秀',scores.noiseDb),'level','good');
             end
-            if scores.balance < 70 && obj.hasCpu && obj.hasGpu
-                recs{end+1} = struct('title','CPU/GPU温度不均衡','desc','温差较大，建议优化风道使热量均匀排出','level','warning');
+            if scores.airK > 3 && ~strcmp(scores.cls, 'office')   % 办公档风扇都在最低转速，K 偏大属正常
+                recs{end+1} = struct('title','机箱风道效率偏低','desc',sprintf('每 100 W 发热，箱内与进风平均升温 %.1f°C，建议增加进/排风或避免气流短路',scores.airK),'level','warning');
             end
             % 主要噪音来源（能量占比超过 40% 的风扇）
             fl = obj.fanStatusList();
@@ -1690,9 +1739,10 @@ classdef CFDSolverBase < handle
                 [mx, i] = max([fl.sharePct]);
                 if mx > 40
                     p = fl(i).noise;
+                    finTxt = ''; if p.fin ~= 0, finTxt = sprintf('、鳍片 %+.1f', p.fin); end
                     recs{end+1} = struct('title','主要噪音来源','desc',sprintf( ...
-                        '%s 占总噪音能量 %.0f%%（%.1f dB：转速 %.1f、工作点 %+.1f、格栅 %+.1f、位置 %+.1f）', ...
-                        fl(i).name, mx, p.total, p.base, p.op, p.grille, p.pos),'level','info');
+                        '%s 占总噪音能量 %.0f%%（%.1f dB：转速 %.1f、工作点 %+.1f、格栅 %+.1f%s、位置 %+.1f）', ...
+                        fl(i).name, mx, p.total, p.base, p.op, p.grille, finTxt, p.pos),'level','info');
                 end
             end
             if isempty(recs)

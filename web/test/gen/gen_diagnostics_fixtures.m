@@ -69,7 +69,8 @@ function D = dump(s)
     for k = 1:numel(nm)
         n = s.thermalNetworks.(nm{k});
         D.(['Tj_' nm{k}]) = n.T_junction;
-        D.(['throttle_' nm{k}]) = n.throttling_ratio;
+        D.(['freq_' nm{k}]) = n.freq_ratio;
+        D.(['throttled_' nm{k}]) = n.throttled;
         D.(['overTemp_' nm{k}]) = n.overTemp;
     end
     D.temps = s.lastTemps;

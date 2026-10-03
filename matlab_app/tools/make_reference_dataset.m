@@ -184,8 +184,9 @@ function S = scalars(s)
         S.(['Tsink_' nm{k}]) = n.T_sink_base;
         S.(['power_' nm{k}]) = n.actual_power;
         S.(['hConv_' nm{k}]) = n.h_conv;
-        S.(['throttle_' nm{k}]) = n.throttling_ratio;
-        S.(['Ttheory_' nm{k}]) = n.T_theory_f;
+        S.(['freq_' nm{k}]) = n.freq_ratio;
+        S.(['throttled_' nm{k}]) = n.throttled;
+        S.(['overTemp_' nm{k}]) = n.overTemp;
     end
     t = s.computeAirflowTemperatures();
     S.internalAmbient = t.internalAmbient;
@@ -198,7 +199,7 @@ function S = scalars(s)
         f = F{k};
         fans{k} = struct('name', fl(k).name, 'rpm', fl(k).rpm, 'cfm', fl(k).cfm, 'dp', fl(k).dp, ...
             'noiseDb', fl(k).noiseDb, 'lastQ_m3s', f.lastQ, 'lastQRatio', f.lastQRatio, ...
-            'flowFactor', f.lastFlowFactor, 'noiseQRatio', f.noiseQRatio);
+            'flowFactor', f.lastFlowFactor, 'noiseQRatio', f.noiseQRatio, 'stopped', fl(k).stopped);
     end
     S.fans = fans;
     M = s.openingMarkers();

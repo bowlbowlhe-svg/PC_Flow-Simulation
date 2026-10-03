@@ -2,6 +2,7 @@
 import { FAN_PRESETS } from './fans';
 import { layoutGpuSlots } from './gpuSlots';
 import { layoutCpuTower } from './cpuTower';
+import { FAN_PROFILE_LABELS, layoutFanCurves } from './fanCurves';
 import type { Layout } from './types';
 
 export interface ScenarioSummaryLike {
@@ -15,6 +16,8 @@ export interface ScenarioSummaryLike {
   pressure: string;
   noiseDb: number;
   score: number;
+  scoreCls: string;
+  perfPct: number;
   deadZonePct: number;
   nCaseFans: number;
   steps: number;
@@ -58,6 +61,12 @@ function towerText(L: Layout): string {
   return tw.fans === 0 ? `${t}·无扇` : `${t}·${tw.fans} 扇`;
 }
 
+/** 温控曲线档位名（不是三档之一时为"自定义"） */
+function curveText(L: Layout): string {
+  const p = layoutFanCurves(L).profile;
+  return Object.hasOwn(FAN_PROFILE_LABELS, p) ? FAN_PROFILE_LABELS[p] : '自定义';
+}
+
 const hasGap = (L: Layout) => !!L.shroud && Array.isArray(L.shroud.gaps) && L.shroud.gaps.length > 0;
 
 const ROWS: [string, (s: ScenarioSnap) => string][] = [
@@ -69,13 +78,15 @@ const ROWS: [string, (s: ScenarioSnap) => string][] = [
   ['标称进/排 CFM', (s) => `${s.summary.intakeCfm.toFixed(0)} / ${s.summary.exhaustCfm.toFixed(0)}`],
   ['压力', (s) => s.summary.pressure],
   ['噪音 dB(A)', (s) => s.summary.noiseDb.toFixed(1)],
-  ['总分', (s) => String(s.summary.score)],
+  ['性能 %', (s) => s.summary.perfPct.toFixed(1)],
+  ['评分（档）', (s) => `${s.summary.score}（${s.summary.scoreCls}）`],
   ['死区 %', (s) => s.summary.deadZonePct.toFixed(1)],
   ['机箱风扇数', (s) => String(s.summary.nCaseFans)],
   ['布局', (s) => shortLabel(s.label)],
   ['挡板前部开孔', (s) => yesNo(hasGap(s.layout))],
   ['显卡厚度', (s) => slotsText(s.layout)],
   ['CPU 散热器', (s) => towerText(s.layout)],
+  ['风扇曲线', (s) => curveText(s.layout)],
   ['功率 C/G/P W', (s) => `${g(s.powers[0])}/${g(s.powers[1])}/${g(s.powers[2])}`],
   ['网格 · 步数', (s) => `${s.gridScale >= 1 ? '精确' : '预览'} · ${s.summary.steps}`],
   ['稳态', (s) => yesNo(s.steady)],

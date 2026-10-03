@@ -5,6 +5,7 @@ import { layoutBenchmark } from '../src/model/layoutBenchmark';
 import { layoutDefault } from '../src/model/layoutDefault';
 import type { WorkerMessage } from '../src/worker/protocol';
 import { Solver } from '../src/solver/solver';
+import { fanCurveProfiles } from '../src/model/fanCurves';
 
 function setup(layout = layoutBenchmark('duct', 20)) {
   const msgs: WorkerMessage[] = [];
@@ -63,6 +64,22 @@ describe('SimEngine', () => {
     e.handle({ type: 'setFan', auto: false, pct: 70 });
     expect(e.solver!.autoFanEnabled).toBe(false);
     expect(e.solver!.fanSpeedRatio).toBe(70);
+  });
+
+  it('setFanCurves 作用于求解器，重置后档位不回退；状态带频率比与降频标记', () => {
+    const { e, msgs } = setup(layoutDefault());
+    e.handle({ type: 'setFanCurves', curves: fanCurveProfiles('quiet') });
+    expect(e.solver!.fanCurves.profile).toBe('quiet');
+    e.handle({ type: 'reset' });
+    expect(e.solver!.fanCurves.profile).toBe('quiet');
+    expect(e.solver!.fanCurves.gpu.stopBelowC).toBe(55);
+    const st = frames(msgs).at(-1)!.status;
+    expect(st.freq.cpu).toBe(1);
+    expect(st.freq.gpu).toBe(1);
+    expect(st.freq).not.toHaveProperty('psu');
+    expect(st.hot).toEqual({ cpu: false, gpu: false, psu: false });
+    // 推进前即按室温判定停转：显卡低温停转；电源负载 450/850 W ≥ 40%，不进入半被动
+    expect(st.fans.filter((f) => f.stopped).map((f) => f.role)).toEqual(['gpu', 'gpu', 'gpu']);
   });
 
   it('跑到稳态：分段推进直到最大步数，状态消息；中途可停止；重置回到 0 步', () => {

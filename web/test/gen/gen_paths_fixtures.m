@@ -5,7 +5,9 @@ function gen_paths_fixtures(outFile)
 %   标准答案数据集只覆盖默认布局与风道（k-ω、湍流逐步更新、自动温控）。这里补充其余分支的小算例（≤ 20 步）：
 %   方腔（层流、DT 0.02、压力参考点）、LVEL、层流、湍流每 3 步更新、手动转速与全局转速、环境温度/定温壁/物性覆盖/
 %   节流/超温/中途改功率/精确模式、只有电源、无电源、散热体被固体覆盖（NaN 语义）、全装预设、2 槽显卡 + LVEL、空域、
-%   被动通风口（矩形机箱各壁的沿壁夹紧）、CPU 塔扇（双塔 1 扇、单塔推拉、v4.4.0 及以前的单塔 1 扇旧布局）。
+%   被动通风口（矩形机箱各壁的沿壁夹紧）、CPU 塔扇（双塔 1 扇、单塔推拉、v4.4.0 及以前的单塔 1 扇旧布局）、
+%   办公功率 + 静音曲线（显卡风扇低温停转、电源半被动）、性能曲线 + 自定义频率/漏电参数（降频、显卡风扇重新起转）、
+%   散热片与进风带全被固体盖住（结温 NaN 时温控曲线取最低占空比）。
 %   每个快照记录各场的指纹（和、绝对值和、平方和、极值、固定权重的加权和、均匀抽样点与机箱内 200 个抽样点，全精度）、
 %   装配步、热网络与风扇状态。
 %   场景定义取自 W0/W1 审计脚本（audit_run.m）。
@@ -14,7 +16,7 @@ function gen_paths_fixtures(outFile)
         outFile = fullfile(here, '..', 'fixtures', 'paths.json');
     end
     names = {'cavity', 'lvel', 'laminar140', 'tue3', 'manual', 'misc', 'onlypsu', 'nopsu', 'blockfins', ...
-             'full140', 'gpu2slot', 'empty', 'vents', 'cpu1fan', 'cpupushpull', 'cpulegacy'};
+             'full140', 'gpu2slot', 'empty', 'vents', 'cpu1fan', 'cpupushpull', 'cpulegacy', 'office', 'dvfs', 'blockinlet'};
     C = cell(1, numel(names));
     for c = 1:numel(names)
         t0 = tic;
@@ -85,6 +87,21 @@ function R = runCase(caseName)
             L.cpu = rmfield(L.cpu, 'tower'); L.cpu.fan = rmfield(L.cpu.fan, 'count');
             L.cpu.fins = struct('x', 34, 'y', 86, 'w', 120, 'h', 104); L.cpu.base = struct('x', 70, 'y', 114, 'w', 48, 'h', 48);
             snaps = [1 5 10];
+        case 'office'
+            % 办公功率 + 静音曲线：显卡风扇低温停转、电源半被动停转
+            P = [40 35 200]; L.fanCurves = fan_curve_profiles('quiet'); snaps = [1 5 10];
+        case 'dvfs'
+            % 性能曲线 + 自定义频率/漏电参数 + 低温度墙：降频、显卡风扇过 startAboveC 后重新起转
+            P = [250 400 1000]; L.fanCurves = fan_curve_profiles('performance');
+            L.cpu.dvfs = struct('softStartC', 30, 'softSlope', 0.01, 'minFreq', 0.6, 'powerExp', 2.5, ...
+                                'leakShare', 0.2, 'leakRefC', 60, 'leakDoubleC', 20);
+            L.cpu.throttleTemp = 45; L.gpu.dvfs = struct('minFreq', 0.7);
+            snaps = [1 10 20 30];
+        case 'blockinlet'
+            % 固体块盖住 CPU 散热片与进风带：CPU 结温为 NaN，塔扇按温控曲线最低占空比（NaN 语义）；
+            % 机箱风扇的传感器 max(CPU, GPU) 按 MATLAB max 忽略 NaN，跟随 GPU
+            L.solidBlocks = struct('x', L.cpu.fins.x - 5, 'y', L.cpu.fins.y - 5, 'w', L.cpu.fins.w + 60, 'h', L.cpu.fins.h + 10);
+            snaps = [1 3 5];
     end
     s = CFDSolverFEM(P(1), P(2), P(3), L, gs, DT);
     fn = fieldnames(props);
@@ -124,14 +141,14 @@ function S = snapshot(s)
     for j = 1:numel(nm)
         n = tn.(nm{j});
         nets.(nm{j}) = struct('Tj', n.T_junction, 'Tsink', n.T_sink_base, 'power', n.power, 'actual', n.actual_power, ...
-            'h', n.h_conv, 'thr', n.throttling_ratio, 'Tth', n.T_theory_f, 'over', n.overTemp);
+            'h', n.h_conv, 'freq', n.freq_ratio, 'thd', n.throttled, 'over', n.overTemp);
     end
     S.nets = nets;
     Fa = s.allFans(); fans = cell(1, numel(Fa));
     for j = 1:numel(Fa)
         f = Fa{j};
         fans{j} = struct('rpm', f.getRPM(s), 'dp', f.lastDp, 'Q', f.lastQ, 'qr', f.lastQRatio, ...
-            'ff', f.lastFlowFactor, 'nq', f.noiseQRatio, 'disk', s.diskFlow(f));
+            'ff', f.lastFlowFactor, 'nq', f.noiseQRatio, 'disk', s.diskFlow(f), 'stp', f.isStopped(s));
     end
     S.fans = fans;
 end

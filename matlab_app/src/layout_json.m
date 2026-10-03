@@ -46,7 +46,7 @@ function L = normalize(L)
         cf = struct('mount', {}, 'alongMm', {}, 'type', {}, 'model', {}, 'speedMode', {}, 'manualPct', {});
         for k = 1:numel(L.caseFans)
             if iscell(L.caseFans), f = L.caseFans{k}; else, f = L.caseFans(k); end
-            g = struct('mount', f.mount, 'alongMm', f.alongMm, 'type', f.type, 'model', f.model, ...
+            g = struct('mount', f.mount, 'alongMm', f.alongMm, 'type', f.type, 'model', fan_model_alias(f.model), ...
                        'speedMode', 'auto', 'manualPct', 60);
             if isfield(f, 'speedMode'), g.speedMode = f.speedMode; end
             if isfield(f, 'manualPct'), g.manualPct = f.manualPct; end
@@ -77,6 +77,14 @@ function L = normalize(L)
         catch ME
             error('layout_json:invalid', 'CPU 散热器：%s', ME.message);
         end
+    end
+    try
+        % 温控曲线：数组规整为行、检查取值、档位名与曲线不符时记为 custom（见 layout_fan_curves）
+        if isfield(L, 'fanCurves') && ~isempty(L.fanCurves), L.fanCurves = layout_fan_curves(L); end
+        if isfield(L, 'cpu') && ~isempty(L.cpu), layout_dvfs(L, 'cpu'); end
+        if isfield(L, 'gpu') && ~isempty(L.gpu), layout_dvfs(L, 'gpu'); end
+    catch ME
+        error('layout_json:invalid', '%s', ME.message);
     end
     % 电源仓挡板缺口：空数组读回为 []
     if isfield(L, 'shroud') && isfield(L.shroud, 'gaps') && isempty(L.shroud.gaps)

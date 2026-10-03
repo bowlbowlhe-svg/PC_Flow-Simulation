@@ -4,14 +4,14 @@ import { layoutGpuSlots, layoutSetGpuSlots } from '../model/gpuSlots';
 import { layoutCpuTower, layoutSetCpuFans } from '../model/cpuTower';
 import { chassisSizeMm } from '../model/chassis';
 import { layoutDefault } from '../model/layoutDefault';
-import type { Layout } from '../model/types';
+import type { FanCurves, Layout } from '../model/types';
 
 export type Gaps = { x0Mm: number; x1Mm: number }[];
 export type Powers = { cpu: number; gpu: number; psu: number };
 
 /**
  * 待应用布局：基底 + 安装位状态 + 挡板开孔（勾选时用 defaultGaps）+ 显卡厚度 + CPU 塔扇数量 + 当前功率
- * （显卡放不下时抛错；cpuFans 为 null 时不改塔扇）
+ * + 当前温控曲线（显卡放不下时抛错；cpuFans 为 null 时不改塔扇；fanCurves 为 null 时沿用基底的曲线）
  */
 export function buildPending(
   base: Layout,
@@ -21,12 +21,15 @@ export function buildPending(
   defaultGaps: Gaps,
   powers: Powers,
   cpuFans: number | null = null,
+  fanCurves: FanCurves | null = null,
 ): Layout {
   let L = setSlotStates(base, slots);
   if (L.shroud) L = { ...L, shroud: { ...L.shroud, gaps: gap ? structuredClone(defaultGaps) : [] } };
   if (L.gpu && gpuSlots !== null && gpuSlots !== layoutGpuSlots(L)) L = layoutSetGpuSlots(L, gpuSlots);
   if (L.cpu && L.cpu.fan && cpuFans !== null && cpuFans !== layoutCpuTower(L).fans) L = layoutSetCpuFans(L, cpuFans);
-  return { ...L, power: { cpu: powers.cpu, gpu: powers.gpu, psu: powers.psu } };
+  L = { ...L, power: { cpu: powers.cpu, gpu: powers.gpu, psu: powers.psu } };
+  if (fanCurves) L.fanCurves = structuredClone(fanCurves); // 温控曲线档位随求解器（同功率）
+  return L;
 }
 
 /** 布局的 CPU 塔扇数量；无 CPU 或无塔扇时为 null（界面下拉框禁用） */

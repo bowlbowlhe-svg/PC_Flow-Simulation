@@ -1,27 +1,40 @@
 function pass = test_noise()
-%TEST_NOISE 噪音模型：分项公式、datasheet 端点、能量叠加、位置修正（各安装壁与内置风扇）、
-%   封闭机箱内风扇的工作点修正、acoustics 部分覆盖与取值检查、"主要噪音来源"提示。
+%TEST_NOISE 噪音模型：分项公式（含鳍片附加、可低于 0 dB、停转）、风扇定律、能量叠加、位置修正（各安装壁与内置风扇）、
+%   封闭机箱内风扇的工作点修正、acoustics 部分覆盖与取值检查、"主要噪音来源"提示、
+%   显卡低温停转与电源半被动（回差、办公场景停转、不计噪音）。
     errs = {};
     ac = acoustics_default();
 
     % 1) 分项公式
-    p = fan_noise_terms(20, 1.0, 0, 0, ac);
+    p = fan_noise_terms(20, 1.0, 0, 0, 0, ac);
     errs = check(errs, p.total == 20 && p.op == 0 && p.grille == 0, '自由出风、无格栅应无修正');
-    p = fan_noise_terms(20, 0, 0, 0, ac);
+    p = fan_noise_terms(20, 0, 0, 0, 0, ac);
     errs = check(errs, abs(p.op - ac.stallDb) < 1e-12, '堵死（q=0）应 +stallDb');
-    p = fan_noise_terms(20, ac.stallQ/2, 0, 0, ac);
+    p = fan_noise_terms(20, ac.stallQ/2, 0, 0, 0, ac);
     errs = check(errs, abs(p.op - ac.stallDb/4) < 1e-12, 'q = stallQ/2 应 +stallDb/4');
-    p = fan_noise_terms(20, 1, ac.grilleRefZeta, -3, ac);
+    p = fan_noise_terms(20, 1, ac.grilleRefZeta, 0, -3, ac);
     errs = check(errs, abs(p.grille - 10*log10(2)) < 1e-12 && abs(p.total - (20 + 10*log10(2) - 3)) < 1e-12, ...
         'ζ = ζref 应 +3.01 dB，位置修正直接相加');
+    p = fan_noise_terms(20, 1, 0, ac.finDb, 0, ac);
+    errs = check(errs, abs(p.total - (20 + ac.finDb)) < 1e-12 && p.fin == ac.finDb, '鳍片附加应直接相加');
+    p = fan_noise_terms(-8, 1, 0, 0, -3, ac);
+    errs = check(errs, p.total == -11, '单扇可低于 0 dB(A)（只对总噪音取 0 下限，听不见的风扇不会叠加出声音）');
+    p = fan_noise_terms(-Inf, 0, 0, 2, 0, ac);
+    errs = check(errs, p.total == -Inf, '停转（转速主项 −Inf）总噪音应为 −Inf');
 
-    % 2) 单扇 datasheet 端点：P12 手动 100% 自由出风 = noise_max
+    % 2) 风扇定律：P12 手动 100% 自由出风 = noise_max；半速低 50·log10(2) = 15.05 dB；转速不低于 rpm_min
     stub = struct('acoustics', ac, 'autoFanEnabled', false, 'fanSpeedRatio', 100);
     f = Fan(struct('id', 'x', 'role', 'case', 'model', 'P12', 'speedMode', 'manual', 'manualPct', 100));
     cat = fan_catalog();
     errs = check(errs, abs(f.getNoise(stub) - cat.P12.noise_max) < 1e-12, 'P12 满速自由出风应等于 datasheet 最大噪音');
-    f.manualPct = 0;
-    errs = check(errs, abs(f.getNoise(stub) - cat.P12.noise_idle) < 1e-12, 'P12 最低转速应等于 datasheet 怠速噪音');
+    f.manualPct = 50;
+    errs = check(errs, abs(f.getNoise(stub) - (cat.P12.noise_max - 50*log10(2))) < 1e-12 && f.getRPM(stub) == 900, ...
+        'P12 半速应为 900 rpm、比满速低 15.05 dB');
+    f.manualPct = 5;
+    errs = check(errs, f.getRPM(stub) == cat.P12.rpm_min, '占空比过低时转速应为 rpm_min');
+    nf = Fan(struct('id', 'y', 'role', 'case', 'model', 'NF_A12', 'speedMode', 'manual', 'manualPct', 85));
+    errs = check(errs, abs(nf.getNoise(stub) - 18.8) < 0.5, ...
+        sprintf('NF-A12x25 1700 rpm 应接近低噪适配器标称 18.8 dB(A)（%.2f）', nf.getNoise(stub)));
 
     % 3) 能量叠加与位置修正（无元件的机箱，只有机箱风扇；未推进时 q = 1）
     L = layout_default();
@@ -61,6 +74,12 @@ function pass = test_noise()
     end
     errs = check(errs, posOk, '各扇位置修正应按安装壁 / 内置位置取值');
     errs = check(errs, grOk, '内置风扇不应有格栅修正');
+    finOk = true;
+    for k = 1:numel(fl)
+        if any(strcmp(allF{k}.role, {'cpu', 'gpu'})), want = ac.finDb; else, want = 0; end
+        finOk = finOk && fl(k).noise.fin == want;
+    end
+    errs = check(errs, finOk, '塔扇、显卡风扇应有鳍片附加噪音，其它风扇没有');
 
     % 6) acoustics 部分覆盖：只改 stallDb 与后壁位置，其余保持默认；非法参数报错
     Lp = layout_default();
@@ -86,10 +105,48 @@ function pass = test_noise()
     errs = check(errs, abs(fl1(1).sharePct - 100) < 1e-9 && any(strcmp(titles, '主要噪音来源')), ...
         '单台风扇应占 100% 并提示主要噪音来源');
 
+    % 8) 显卡低温停转、电源半被动：回差；办公场景（40/35/200 W）里都停转、不计入噪音
+    C = fan_curve_profiles('standard');
+    st = struct('autoFanEnabled', true, 'fanSpeedRatio', 40, 'fanCurves', C, 'acoustics', ac);
+    g = Fan(struct('id', 'g', 'role', 'gpu', 'model', 'GPU80', 'sensor', 'gpu'));
+    seq = [45 52 56 52 49]; want = [true true false false true];
+    got = false(size(seq));
+    for k = 1:numel(seq)
+        st.sensorTemp = @(~) seq(k);
+        g.updateControl(st);
+        got(k) = g.isStopped(st);
+    end
+    errs = check(errs, isequal(got, want), sprintf('显卡停转回差：45/52/56/52/49°C 应为 停/停/转/转/停（%s）', mat2str(got)));
+    st.sensorTemp = @(~) 45;
+    errs = check(errs, g.getRPM(st) == 0 && g.getCFM(st) == 0 && g.baseNoise(st) == -Inf, '停转时转速、风量为 0，噪音 −Inf');
+    ps = Fan(struct('id', 'p', 'role', 'psu', 'model', 'PSU120', 'sensor', 'psu'));
+    st.psuLoadRatio = @() 0.2;
+    seqP = [50 62 66 58]; wantP = [true true false true];     % 停转后要升到 65°C 才转，转动中降到 60°C 以下才停
+    gotP = false(size(seqP));
+    for k = 1:numel(seqP)
+        st.sensorTemp = @(~) seqP(k);
+        ps.updateControl(st);
+        gotP(k) = ps.isStopped(st);
+    end
+    errs = check(errs, isequal(gotP, wantP), sprintf('电源半被动回差：50/62/66/58°C 应为 停/停/转/停（%s）', mat2str(gotP)));
+    st.psuLoadRatio = @() 0.5; st.sensorTemp = @(~) 40;
+    ps.updateControl(st);
+    errs = check(errs, ~ps.isStopped(st), '负载率 ≥ 40% 时电源风扇应一直转');
+    so = CFDSolverFEM(40, 35, 200, [], 0.5);
+    fl0 = so.fanStatusList();                  % 推进前即按初始温度判定（与第 1 步相同）
+    errs = check(errs, sum(strcmp({fl0([fl0.stopped]).role}, 'gpu')) == 3 && any(strcmp({fl0([fl0.stopped]).role}, 'psu')), ...
+        '推进前的风扇状态应已按室温判定停转');
+    so.stepMultiple(100);
+    flo = so.fanStatusList();
+    stopRoles = {flo([flo.stopped]).role};
+    [dbo, perFano] = so.totalNoise();
+    errs = check(errs, sum(strcmp(stopRoles, 'gpu')) == 3 && any(strcmp(stopRoles, 'psu')) && ...
+        all(isinf(perFano([flo.stopped]))) && isfinite(dbo), '办公场景：3 台显卡风扇与电源风扇应停转、不计入噪音');
+
     pass = isempty(errs);
     for k = 1:numel(errs), fprintf('  - %s\n', errs{k}); end
     if pass, st = 'PASS'; else, st = 'FAIL'; end
-    fprintf('[noise] 分项公式 / datasheet 端点 / 叠加 / 位置 / 堵死风扇 %+.1f dB / 占比：%s\n', parts(1).op, st);
+    fprintf('[noise] 分项公式 / 风扇定律 / 叠加 / 位置 / 堵死风扇 %+.1f dB / 占比：%s\n', parts(1).op, st);
 end
 
 function errs = check(errs, cond, msg)

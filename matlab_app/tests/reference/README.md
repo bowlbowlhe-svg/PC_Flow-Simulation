@@ -2,12 +2,13 @@
 
 网页版（或其它移植）对照用的参考数据，由 `tools/make_reference_dataset` 生成；
 算法说明见 [`../../../docs/ALGORITHM.md`](../../../docs/ALGORITHM.md)。每个文件记录生成环境
-（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.5.0 在
+（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.6.0 在
 GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱（深 320 mm × 高 400 mm、主板贴后壁），机箱尺寸可为
 `[深 高]`，嵌入的 `layout` 里 `chassis.sizeMm`、`chassis.originMm` 是两个数的数组；v4.4.0 起 CPU 底座不是障碍
 （`geometry.obstacleType` 里没有类型码 3）；v4.5.0 起 CPU 为双塔散热器（`cpu.tower = {stacks: 2, gapMm: 24}`、
 `cpu.fan.count = 2`）：两组鳍片与中间间隙各为一个多孔区（体现在 `uDragCoef`/`vDragCoef`），`fans` 里有两台塔扇（前、中），
-`cht.cpuFin` 不含间隙的格。
+`cht.cpuFin` 不含间隙的格。v4.6.0 起 CPU/GPU 按频率比计功率（温度墙闭环降频）、风扇转速与噪音按厂家数据与风扇定律、
+显卡风扇低温停转、电源风扇半被动（ALGORITHM §3.6、§4、§5），嵌入的 `layout` 带 `fanCurves`、`cpu.dvfs`、`gpu.dvfs`、`acoustics.finDb`。
 
 | 文件 | 内容 |
 |---|---|
@@ -34,7 +35,7 @@ GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱�
 | `geometry` | 几何导出（与步数无关）：`obstacleType`（障碍类型码，码表见 `obstacleCodes`）、`uFaceActive`/`vFaceActive`（W×(H+1) 与 (W+1)×H 的面掩码）、`uDragCoef`/`vDragCoef`（阻力系数 C，β = 1/(1+C·|u|)，网格速度单位）、`uGrilleFace`/`vGrilleFace`、`nearestFluid`（障碍格的最近流体格，平局取线性索引最小；流体格为 0）、`wallDistanceM`、`spongeRing`（海绵环格）、`inside`（机箱内流体格）、`dirichletIdx`/`dirichletT`（定温壁）、`heatObsIdx`（发热元件固体格）、`cht`（共轭传热的进风采样带与散热体格）、`fans`（行/列范围 `[起 止]`、送风方向 `normal`）、`openings`（开口格与格栅 ζ） |
 | `snapshots` | 第 1、10、13、200 步的完整状态（网格单位，与求解器内部一致；第 13 步位于重装区间中途）：`T`（°C，障碍格为显示值）、`uF`/`vF`（面速度，网格速度，×VEL_SCALE 得 m/s）、`p`（第二次即阻力耦合投影的压力）、`pProj1`（第一次投影压力）、`k`、`omega`、`nuStep`（本步 ν_eff）、`nuAssembled`/`alphaAssembled`/`nuTAssembled`（速度、温度、k-ω 扩散算子装配时的 ν_eff、α_eff、ν_t）、`asmStep`（三者上次装配时的 iteration）、`betaRefU`/`betaRefV`（阻力耦合算子的参考 β，形状 W×(H+1) 与 (W+1)×H，列优先展平）、`betaRefStep`、`Tsolid`，以及当步 `scalars`。续算配方见 ALGORITHM §11（p、pProj1 每步被覆盖，不是状态量）。逐步定位移植差异时先比第 1 步，再比第 10、13 步 |
 | `fields` | 第 200 步的显示量：`T`、`u`/`v`（格心速度 m/s，v 向下为正）、`P`（静压 Pa，`P = ρ·VEL_SCALE·Δx·(p + pProj1)/DT`，障碍格为 null）、`obstacle`（0/1） |
-| `scalars` | `Tj_*`（结温）、`Tsink_*`（散热片基座温度）、`Ttheory_*`（节流判据用的无节流理论稳态温度的滤波值）、`power_*`（节流后的发热功率；电源为**损耗**，不是输出负载）、`hConv_*`、`throttle_*`、`internalAmbient`（机箱内均温，含开口格与电源内部流体格）、`totalCFM`、`noiseDb`、`fans`（`cfm` = 推进结束时穿盘中面流量的绝对值 × 2118.88；`dp` = 本步施力前中间流场上的工作点静压；`lastQ_m3s` 为该中间流场上的流量，约低 4%；`lastQRatio` 为其与自由风量之比；`flowFactor` 为代数轨用的低通流量比；`noiseQRatio` 为噪音用的低通流量比，初值 1）、`openings`（净风量，流出机箱为正）、`meanInteriorPressurePa`（机箱内流体格静压均值） |
+| `scalars` | `Tj_*`（结温）、`Tsink_*`（散热片基座温度）、`power_*`（实际发热功率，随频率与漏电变化；电源为**损耗**，不是输出负载）、`hConv_*`、`freq_*`（频率比 φ，电源恒为 1）、`throttled_*`（温度墙在起作用）、`overTemp_*`、`internalAmbient`（机箱内均温，含开口格与电源内部流体格）、`totalCFM`、`noiseDb`、`fans`（`cfm` = 推进结束时穿盘中面流量的绝对值 × 2118.88；`dp` = 本步施力前中间流场上的工作点静压；`lastQ_m3s` 为该中间流场上的流量，约低 4%；`lastQRatio` 为其与自由风量之比；`flowFactor` 为代数轨用的低通流量比；`noiseQRatio` 为噪音用的低通流量比，初值 1；`stopped` 为低温停转/半被动停转，此时 `rpm` = 0、`noiseDb` 为 −∞，JSON 里写作 `null`）、`openings`（净风量，流出机箱为正）、`meanInteriorPressurePa`（机箱内流体格静压均值） |
 
 ## `steady_*.json` 字段
 
@@ -63,10 +64,11 @@ GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱�
    结温 ≤ 0.2°C、风量 ≤ 1%、风扇工作点静压 ≤ 2%；场只看 RMS 或 p95 差，作诊断用。这些阈值是建议值，
    尚未有单精度实现验证过。
 4. **稳态**（`steady_*.json`）：在 280²、同样推进 3000 步，比较 1000 步之后的均值。结温与内温
-   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.11°C、风量 σ ≤ 0.4 CFM）。
+   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.06°C、风量 σ ≤ 0.6 CFM）。
    **精确模式对照值**（`forceReassemble = true`，全部冻结算子每步重装，1000 步之后的均值；供选择精确模式的移植实现验收，
-   容差同上）：默认 69.61 / 67.66 / 53.03°C、53.74 CFM；正压 66.45 / 71.25°C、49.52 CFM；底进顶出 76.53 / 75.67°C、
-   38.77 CFM（v4.5.0，由网页版以 `forceReassemble` 计算；与本目录冻结算子数据的均值相差 ≤ 0.04°C、≤ 0.1%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
+   容差同上）：默认 72.77 / 62.15 / 58.01°C、54.26 CFM；正压 68.02 / 69.31°C、40.13 CFM；底进顶出 79.33 / 77.35°C、
+   40.88 CFM（v4.6.0，由网页版以 `forceReassemble` 计算；正压、底进顶出与本目录冻结算子数据的均值相差 ≤ 0.07°C、≤ 0.4%，
+   默认布局 CPU 0.57°C、GPU 0.36°C、风量 3%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
 5. **基准**（`bench.json`）：Nu 与风道流量的相对差 ≤ 1%（本数据与解析解/文献值的偏差：Nu +2.5/+2.1%，
    风道 +1.1/+0.6/+0.4%）。
 

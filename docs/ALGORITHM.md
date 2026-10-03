@@ -1,4 +1,4 @@
-# 算法规格（v4.5）
+# 算法规格（v4.6）
 
 本文是 MATLAB 定稿版的算法说明，也是网页版移植的"标准答案"依据：方程、离散、每步顺序、
 单位换算、整数几何、参数与判据都以这里和代码为准（代码行为优先；两者不一致时以代码为准并修正本文）。
@@ -142,7 +142,7 @@
 5  u, v ← 面场半拉格朗日平流（cubic）
 6  v += 浮力
 7  u_ref ← u（阻力 β 用）
-8  各风扇：由当前 u, v（施力前的中间流场）的盘中面流量求工作点 → u, v += 风扇体积力
+8  各风扇：按回差更新停转状态（updateControl）→ 由当前 u, v（施力前的中间流场）的盘中面流量求工作点 → u, v += 风扇体积力
 9  p2 ← 阻力耦合投影（冻结参考 β_ref）；限幅
 10 远场海绵环相邻激活面 × spongeDamping（0.8）
 11 若 k-ω 且 mod(iteration, N) == 0：k, ω ← k-ω 一步（生产项用第 1 步的 S，推进时长 N·DT）
@@ -241,26 +241,48 @@ Boussinesq：`Δv = −DT·g·β_T·(T_face − T_amb)/VEL_SCALE`（y 向下为�
   `Q = Σ_{行 r0…r1} sign(n_x)·u(r, xf)·VEL_SCALE·Δx·depthM`；法向为 y 时 `yf = r0 + floor(t/2)`，对列 c0…c1 求和 v 面。
   （t 为偶数时恰为盘的几何中面；预览 t = 3 时为第 1、2 格之间的面。）
   该流量取本步施加风扇力之前的中间流场（第 5–6 步之后），比推进结束时的穿盘流量约低 4%（风道基准）。
-- 转速 `rpm = rpm_min + (rpm_max − rpm_min)·f`（f 见下）；自由风量 `Q_free = cfm_max·(rpm/rpm_max)/2118.88`（m³/s）。
-- `q = clamp(Q/Q_free, 0, 2)`（Q_free ≤ 0 时 q = 0；倒流即 q = 0，取零流量静压）。
+- 转速 `rpm = max(rpm_min, d·rpm_max)`（占空比 d 见下；停转时 rpm = 0）；自由风量 `Q_free = cfm_max·(rpm/rpm_max)/2118.88`（m³/s）。
+- `q = clamp(Q/Q_free, 0, 2)`（Q_free ≤ 0 时 q = 0；倒流即 q = 0，取零流量静压；停转时 Δp = 0，风扇只剩开口阻力）。
 - `f(q)`：q ≤ 1 时为 P-Q 曲线（节点 q = 0, 0.2, …, 1，值 `pq_curve`）的 `pchip_eval`（§3.11）；
   q > 1 时 `f = pq₆ + (pq₆ − pq₅)/0.2·(q − 1)`（末段斜率线性外推为负压）。
 - `Δp = clamp(pmax·(rpm/rpm_max)²·f(q), −pmax, pmax)`。
 - 同时更新状态：`lastQ = Q`、`lastDp = Δp`、`lastQRatio = q`；
   `flowFactor += min(1, DT/0.15)·(clamp(q, 0.2, 1) − flowFactor)`（初值 1，代数轨用）；
-  `noiseQRatio += min(1, DT/0.5)·(q − noiseQRatio)`（初值 1，噪音用）。
+  `noiseQRatio += min(1, DT/0.5)·(q − noiseQRatio)`（初值 1，噪音用；停转期间不更新，重新起转时不出现虚假的近失速噪音）。
 
 **体积力**：`du = Δp/(AIR_DENSITY·thickM)·DT/VEL_SCALE`（网格速度增量）。盘内每个在域内且当前为流体的格：
 法向 (n_x, 0) 时其左面 (xf = x) 与右面 (xf = x+1) 各加 `0.5·du·n_x`；法向 (0, n_y) 时其上面 (yf = y) 与下面 (yf = y+1) 各加 `0.5·du·n_y`。
 所有风扇的增量累加后乘面激活掩码再加到速度上（盘内相邻格共享面合计 1 份，穿盘积分静压升恰为 Δp；贴障碍面不受力）。
 界面显示与对照数据的实测风量用推进结束时的 `diskFlow`（§6）。
 
-**转速比例 f**（查询时按当前结温计算，结温为上一步第 16 步的值；初始结温 = T_amb）：
-- 手动（`speedMode = 'manual'`）：`f = manualPct/100`；
-- 自动且全局温控开（`autoFanEnabled`）：`f = clamp(interp1([25 55 70 80 85], [0.2 0.2 0.5 0.8 1.0], T_sensor, 线性外推), 0.2, 1)`，
+**转速占空比 d**（查询时按当前结温计算，结温为上一步第 16 步的值；初始结温 = T_amb）：
+- 手动（`speedMode = 'manual'`）：`d = manualPct/100`；
+- 自动且全局温控开（`autoFanEnabled`）：`d = curveDuty(C, T_sensor)`，C 为布局 `fanCurves` 中按角色取的曲线
+  （机箱风扇 `caseFan`、塔扇 `cpu`、显卡风扇 `gpu`、电源风扇 `psu`）；`curveDuty` 为点间线性插值、两端取端点值：
+  `!(T > T₁)`（含 T 为 NaN：散热体与进风带都被固体盖住时结温为 NaN）取 d₁，T ≥ T_n 取 d_n，否则取首个满足 `T ≤ T_{i+1}` 的段 i，
+  `d = d_i + (T − T_i)/(T_{i+1} − T_i)·(d_{i+1} − d_i)`。
   传感器：机箱风扇 = max(CPU 结温, GPU 结温)，塔扇 = CPU，显卡风扇 = GPU，电源风扇 = 电源；缺失元件按 T_amb；
-- 自动且全局手动：`f = fanSpeedRatio/100`（默认 40）。
-- 最后 `f ← clamp(f, 0, 1)`。
+- 自动且全局手动：`d = fanSpeedRatio/100`（默认 40）。
+- 最后 `d ← clamp(d, 0, 1)`。
+
+**温控曲线档位**（`fan_curve_profiles`；布局缺 `fanCurves` 时为标准档）：
+
+| 档位 | 机箱 / 塔扇 / 电源 T [°C] → d | 显卡 T [°C] → d | 显卡停转 / 重启 |
+|---|---|---|---|
+| 静音 quiet | 25/60/75/85/90 → 0.2/0.2/0.45/0.75/1 | 60/75/83/90 → 0.3/0.45/0.7/1 | < 55 / ≥ 60 |
+| 标准 standard | 25/55/70/80/85 → 0.2/0.2/0.5/0.8/1 | 55/70/80/87 → 0.3/0.5/0.75/1 | < 50 / ≥ 55 |
+| 性能 performance | 25/45/60/70/80 → 0.3/0.35/0.6/0.85/1 | 50/65/75/85 → 0.35/0.6/0.85/1 | < 45 / ≥ 50 |
+
+电源曲线另带半被动参数 `passiveLoad = 0.4`、`passiveMaxC = 60`、`passiveRestartC = 65`（三档相同）。
+
+**停转（updateControl，第 8 步施力前每台风扇调用一次；构建/重置时按初始温度先调用一次，状态 `stopped` 在此之前为 false）**：
+只对 `speedMode = 'auto'` 且全局温控开的风扇生效，否则 `stopped = false`。同一温度下连续调用结果不变，所以构建时的这次调用
+不影响推进结果，只让推进前的状态（风扇表、噪音）与第 1 步一致。
+- 显卡风扇（曲线有 `stopBelowC`）：停转中 `stopped = T < startAboveC`，转动中 `stopped = T < stopBelowC`（回差）；
+- 电源风扇（曲线有 `passiveLoad`）：负载率 `P_load/ratedW ≥ passiveLoad` 时 `stopped = false`；否则停转中 `stopped = T < passiveRestartC`，
+  转动中 `stopped = T < passiveMaxC`；
+- 其余风扇 `stopped = false`。
+查询"是否停转"为 `stopped ∧ speedMode = 'auto' ∧ autoFanEnabled`（切到手动后立即转动）。
 
 ### 3.7 多孔区与格栅阻力系数
 
@@ -447,12 +469,28 @@ V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 �
      `R_conv = 1/max(h·A·η_o, eps)`；`R_total = R_jc + R_tim + R_base + R_conv`。
    - 电源：`h = 15 + 80·min(v, 4)`，`R_total = R_internal + 1/max(h·0.08, eps)`。
    - V 不设下限：风扇提速 → h 增大 → 结温下降。
-   - `a = min(1, DT/τ)`，τ = 0.25 s（数值平滑）。`T_theory = T_in + P·R_total`，`T_theory_f += a·(T_theory − T_theory_f)`；
-     `excess = T_theory_f − T_throttle`，`overTemp = excess > 0`；可节流（CPU/GPU）且 excess > 0 时 `r = min(0.35, 0.35·excess/5)`，否则 0；
-     `P_actual = P·(1 − r)`；`Tj += a·(T_in + P_actual·R_total − Tj)`；
+   - `a = min(1, DT/τ)`，τ = 0.25 s（数值平滑）。
+   - **频率与功率**（CPU/GPU；参数 `dvfs`，见下表）：频率比 φ（相对最高加速频率，初值 1），
+     漏电因子 `leak(T) = 2^((min(T, tjmax) − T_ref)/T_dbl)`（tjmax 以上不再增加，否则无风时与结温正反馈发散）：
+     - 加速频率 `φ_soft = 1 − s·max(0, Tj − T_soft)`（Tj 为本步开始时的结温）；
+     - 温度墙 `φ_wall`：按当前漏电、稳态结温恰为降频阈 T_limit 时的频率。`rhs = (T_limit − T_in)/(P·R_total) − λ·leak(Tj)`，
+       `rhs > 0` 时 `φ_wall = (rhs/(1 − λ))^(1/k)`，否则 0；P = 0 时 `φ_wall = +∞`。漏电按当前结温计形成负反馈：
+       若按 leak(T_limit) 计，漏电大、散热差（R·P 约 > 120 K）时平衡点不稳定，结温会越过降频阈、停在频率高于 φ_min 的过热状态；
+     - `φ_t = min(1, max(φ_min, min(φ_soft, φ_wall)))`，`φ += a·(φ_t − φ)`；`throttled = φ_wall < φ_soft`；
+     - `P_actual = P·[(1 − λ)·φ^k + λ·leak(Tj)]`（Tj 为本步开始时的结温）。
+     P 为名义功率（界面设定值，含义为最高加速频率、结温 T_ref 时的功率）。
+   - 电源：不降频，`φ = 1`、`throttled = false`、`P_actual = P`（损耗）。
+   - `Tj += a·(T_in + P_actual·R_total − Tj)`；`overTemp = Tj > tjmax`（CPU/GPU：降到最低频率仍压不住），电源为 `Tj > warnTemp`；
      `T_sink_base = Tj − P_actual·(R_jc + R_tim)`（CPU/GPU）或 `Tj − 0.5·P_actual`（电源）。
-   - 初值 `Tj = T_theory_f = T_amb`。节流阈：CPU `cpu.throttleTemp`（95）、GPU `gpu.throttleTemp`（87）；电源取 `psu.warnTemp`（85），
-     不降功率，只置 overTemp。
+   - 初值 `Tj = T_amb`。降频阈：CPU `cpu.throttleTemp`（95）、GPU `gpu.throttleTemp`（87），缺省为 tjmax − 15；电源取 `psu.warnTemp`（85）。
+
+   | dvfs 字段 | 含义 | CPU | GPU |
+   |---|---|---|---|
+   | `softStartC`、`softSlope` | 加速频率开始下降的结温、每 °C 降幅 | 60、0.001 | 50、0.001 |
+   | `minFreq` | 最低频率比 φ_min | 0.5 | 0.5 |
+   | `powerExp` | 动态功耗指数 k（P ∝ f·V²，V 随 f 升） | 3 | 3 |
+   | `leakShare`、`leakRefC`、`leakDoubleC` | 漏电占比 λ（T_ref 时）、T_ref、翻倍温升 T_dbl | 0.15、70、25 | 0.10、70、25 |
+
 3. 注热：`w_i = 0.25 + 0.75·min(1, speed_i/1.5)`（热优先进入运动流体），
    `ΔT_i = P_actual · (w_i/Σw) · DT / (AIR_DENSITY·AIR_CP·Δx²·depthM)`，加到散热体各流体格。
 4. 固体温度：CPU 散热体（各鳍片组的流体格）`T_solid = T_sink_base`，再写 CPU 底座矩形全部格 `T_solid = Tj`（底座在鳍片内，后写的覆盖前者；
@@ -464,15 +502,34 @@ V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 �
 
 ## 5. 噪音模型（听者在机箱前侧约 1 m）
 
-单扇 `L = L_base + ΔL_op + ΔL_grille + ΔL_pos`（dB(A)），查询时按当前转速计算：
-- `L_base = L_idle + (L_max − L_idle)·f³`，`f = (rpm − rpm_min)/max(rpm_max − rpm_min, eps)`。
+单扇 `L = L_base + ΔL_op + ΔL_grille + ΔL_fin + ΔL_pos`（dB(A)，可低于 0：听不见的风扇照常按能量叠加，只对总噪音取下限），查询时按当前转速计算：
+- `L_base = L_max + 50·log10(rpm/rpm_max)`（风扇定律：声功率 ∝ n⁵；L_max 为厂家满速标称噪音）；停转（rpm = 0）时 `L = −∞`，不计入总噪音。
 - `ΔL_op = stallDb·((stallQ − q)/stallQ)²`（q < stallQ，否则 0），`q = clamp(noiseQRatio, 0, 2)`；noiseQRatio 为流量比的低通
   （初值 1，τ = 0.5 s，§3.6）；stallQ = 0.4，stallDb = 6。
 - `ΔL_grille = 10·log10(1 + max(ζ, 0)/ζ_ref)`，ζ 为机箱风扇开口的格栅 ζ（进 2.0 / 排 0.8），内置风扇 0；ζ_ref = 2。
+- `ΔL_fin = finDb`（2 dB）：塔扇、显卡风扇贴着鳍片吹（来流畸变的附加噪音）；其它风扇 0。
 - `ΔL_pos`：前 0、顶 −1、底 −2、后 −3、CPU/GPU 风扇 −3、电源风扇 −4。
 
-总噪音 `L_tot = 10·log10(max(Σ 10^(L/10), 1))`（下限 0 dB）；任何单扇非有限值报错。
+总噪音 `L_tot = 10·log10(max(Σ 10^(L/10), 1))`（下限 0 dB）；单扇为 NaN 或 +∞ 时报错（−∞ 为停转）。
 参数在布局 `acoustics` 字段（缺省 `acoustics_default`，字段合并后校验）。
+
+**风扇型号库**（`fan_catalog`，厂家数据；L_max 为满速标称 dB(A)，pmax 为最大静压）：
+
+| 型号 | 尺寸 | rpm | CFM | dB(A) | pmax [Pa] | 价格 |
+|---|---|---|---|---|---|---|
+| NF_A14（Noctua NF-A14 PWM） | 140 | 300–1500 | 82.52 | 24.6 | 20.4（2.08 mmH₂O） | 249 |
+| NF_A12（Noctua NF-A12x25 PWM） | 120 | 450–2000 | 60.1 | 22.6 | 22.9（2.34 mmH₂O） | 229 |
+| NF_A9（Noctua NF-A9 PWM） | 92 | 400–2000 | 46.44 | 22.8 | 22.4（2.28 mmH₂O） | 129 |
+| M25_140（Phanteks M25 Gen2 140） | 140 | 350–1800 | 101.78 | 36.4 | 21.9（2.23 mmH₂O） | 139 |
+| T30（Phanteks T30-120，限 2000 rpm） | 120 | 400–2000 | 67 | 27.3 | 31.0（7.11 mmH₂O·(2000/3000)²） | 219 |
+| P14（Arctic P14 PWM） | 140 | 200–1700 | 72.8 | 22.5 | 23.5（2.4 mmH₂O） | 68 |
+| P12（Arctic P12 PWM） | 120 | 200–1800 | 56.3 | 22.5 | 21.6（2.2 mmH₂O） | 55 |
+| Stock120（机箱原装） | 120 | 600–2200 | 65 | 32 | 20 | 0 |
+| Tower120（塔扇，Thermalright TL-C12C） | 120 | 300–1550 | 66.17 | 25.6 | 15.0（1.53 mmH₂O） | — |
+| GPU80（显卡风扇） | 80 | 800–2600 | 45 | 34 | 20 | — |
+| PSU120（电源风扇） | 120 | 500–1800 | 50 | 30 | 20 | — |
+
+v4.5 及以前的型号名 RX120、RX140（数据并非真实型号）读取配置时改为 T30、M25_140（`fan_model_alias`）。
 
 ## 6. 诊断与输出
 
@@ -485,7 +542,8 @@ V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 �
   [heat, vol]；`T = T_amb + Σheat/max(ρc_p·Σvol, eps)`，`Σvol ≤ 1e−6` 时取 T_amb。
 - **机箱风量** `totalCFM` = 非电源开口中净 `vol > 0` 者之和 / CFM_TO_M3S。开口标注 = 每个开口的净 cfm（> 0 流出）。
 - **风扇状态表**：rpm、实测 `cfm = |diskFlow|·2118.88`（推进结束时的流场，取绝对值）、自由风量 `cfm_max·rpm/rpm_max`、
-  静压 `lastDp`（施力前流场的工作点，流量约低 4%，所以工作点图上的点略偏离曲线）、流量比 noiseQRatio、单扇噪音与能量占比。
+  静压 `lastDp`（施力前流场的工作点，流量约低 4%，所以工作点图上的点略偏离曲线）、流量比 noiseQRatio、单扇噪音与能量占比、
+  是否停转（界面显示"停"）。
 - **代数热平衡内温**（交叉校验，只用于守恒测试判据 C）：`CFM_ex = Σ_排气机箱风扇 (自由风量·0.75·flowFactor)`；
   `CFM_ex > 0.1` 时 `T_alg = T_amb + (P_cpu + P_gpu)/(CFM_ex·AIR_DENSITY·AIR_CP·CFM_TO_M3S)`（实际功率），否则 T_amb。
 - **死区**：机箱内（insideMask）格心风速 < 0.1 m/s 的格占比（> 30% 告警）。
@@ -494,12 +552,20 @@ V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 �
   `Re = ρVL/μ`，`Gr = gβ_TΔT L³/ν²`，`Ra = Gr·Pr`，`Nu = (Nu_free³ + Nu_forced³)^(1/3)`，`Nu_free = 0.59·max(Ra, 1e−6)^0.25`，
   `Nu_forced = 0.023·max(Re, 1)^0.8·Pr^0.4`；Re < 2300 层流、< 4000 过渡、否则湍流；`Ri = Gr/(Re² + 1)`：> 10 自然对流主导、> 0.1 混合、否则强制；
   机箱内最大 T − T_amb > 30 K 时标注 Boussinesq 超限。
-- **评分**（缺失元件按 T_amb、节流阈 95、功率 0）：
-  散热 `0.5·clamp((T_thr,c − T_c)/(T_thr,c − 60)·100, 0, 100) + 0.5·clamp((T_thr,g − T_g)/(T_thr,g − 70)·100, 0, 100)`；
-  性能 `clamp((P_实/max(P_额, eps) − 0.65)/0.35·100, 0, 100)`（CPU+GPU 实际/名义功率，锁 35% 节流时为 0）；
-  均衡 `max(0, 100 − 2|T_c − T_g|)`；余量 `100·[0.5·max(0, (T_thr,c − T_c)/(T_thr,c − T_amb)) + 0.5·max(0, (T_thr,g − T_g)/(T_thr,g − T_amb))]`；
-  噪音 `clamp(100 − 3(dB − 20), 0, 100)`（dB 为 L_tot）；性价比 `max(0, 100 − 机箱风扇总价/15)`；
-  总分 `round(0.25·散热 + 0.20·性能 + 0.10·均衡 + 0.15·余量 + 0.20·噪音 + 0.10·性价比)`（分项未取整时加权）。
+- **评分**（v4.6 起）：按 CPU+GPU 名义功率 P_nom 分档——< 187.5 W 办公、< 400 W 游戏、其余满载（三个场景按钮各落一档）。四项 0–100：
+  - 性能 `100·clamp((φ_w − 0.9)/0.1, 0, 1)`，`φ_w = Σ P_nom,i·φ_i / Σ P_nom,i`（CPU、GPU；P_nom = 0 时 φ_w = 1）；
+  - 温度：各芯片 `100·clamp((T_limit − Tj)/max(T_limit − T_amb, 1), 0, 1)`（环境温度 → 100、降频阈 → 0），Tj > tjmax 的芯片记 0，
+    CPU、GPU 取平均（都缺时 100）；
+    电源 overTemp 时再 `max(0, · − 20)`；
+  - 噪音：响度 `N(dB) = 2^((dB − 40)/10)`，`100·clamp((N(45) − N(L_tot))/(N(45) − N(10)), 0, 1)`（10 dB(A) → 100、45 dB(A) → 0）；
+  - 风道：机箱热阻 `K = ΔT_eff/(P_act/100)`，`ΔT_eff = ½·(internalAmbient − T_amb) + ½·mean_i(mean(T(进风集合_i)) − T_amb)`
+    （CPU、GPU 的进风温升；都缺时只用箱内温升），P_act 为 CPU+GPU 实际功率（≤ 1 W 时 K = 0）；K ≤ 1 时 100，否则
+    `100·clamp(1 − log2(K)/4, 0, 1)`（K = 2/4/8/16 → 75/50/25/0；办公场景风扇都在最低转速，K 常在 5–12，用对数才有区分）；
+  - 总分 `round(w·[性能 温度 噪音 风道])`（分项未取整时加权），权重：办公 0.10/0.15/0.60/0.15、游戏 0.25/0.25/0.35/0.15、满载 0.35/0.30/0.20/0.15。
+  - 同时输出 `perfPct = round(1000·φ_w)/10`、各芯片 φ、K、档名；结温、电源温度、噪音取整显示（MATLAB `round`）。
+- **智能诊断**（依次）：CPU、GPU 各一条（缺元件跳过）——过热（overTemp）> 温度墙降频（throttled，给出 φ 与实际功率）>
+  接近温度墙（round(Tj) > T_limit − 5）> 散热余量充足（round(Tj) < 60 / 65）；电源超温；死区 > 30%；噪音 > 40 dB 偏高 / < 25 dB 安静；
+  K > 3 风道效率偏低（办公档不提示）；单扇能量占比 > 40% 时给出主要噪音来源与分项（鳍片项非 0 时列出）；都没有时"散热配置均衡"。
 - **压力视图**：见 §1；机箱内平均压 = P 在 insideMask 上有限值的均值（界面标题与数据集 `meanInteriorPressurePa` 同口径），
   界面上 |均值| < 0.05 Pa 显示"≈ 机箱外"。
 - **正负压标签**：机箱风扇当前转速的自由风量合计，进 > 排×1.1 为正压，< 排×0.9 为负压，其余平衡；两者都 ≤ 0 为"无机箱风扇"。
@@ -546,17 +612,19 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 | 湍流 | a₁、β*、β₁、α、σ_k、σ_ω、I、V_ref、ν_t 上限 | 0.31、0.09、0.0708、5/9、0.6、0.5、0.05、2 m/s、2000ν |
 | 湍流下限 | k、ω | k ≥ 1e−10；ω ∈ [1e−6, 1e8]；壁距下限 0.5Δx |
 | LVEL | κ、A⁺、ν_t 上限、ν_eff 上限 | 0.4、26、50ν、30ν |
-| 风扇 | 盘厚、格栅 ζ（进/排）、温控曲线 | 12 mm、2.0/0.8、25/55/70/80/85°C → 20/20/50/80/100% |
+| 风扇 | 盘厚、格栅 ζ（进/排）、温控曲线 | 12 mm、2.0/0.8、标准档（§3.6，另有静音/性能档） |
 | 风扇状态 | flowFactor τ、noiseQRatio τ、代数轨流量效率 | 0.15 s、0.5 s、0.75 |
-| 热网络 | τ、鳍片 k、鳍片 L、节流窗口/上限 | 0.25 s、200 W/mK、25 mm、5°C/35% |
-| CPU | 双塔间隙、塔扇数、热阻 jc/TIM/base、鳍片厚、面积、节流阈 | 24 mm、2（前 + 中）、0.15/0.04/0.05 K/W、0.4 mm、0.15 m²、95°C |
-| GPU | 槽数、热阻 jc/TIM/base、鳍片厚、面积、节流阈 | 4 槽（散热片 57 mm）、0.08/0.02/0.02 K/W、0.35 mm、0.606 m²（= 0.5·57/47）、87°C |
+| 热网络 | τ、鳍片 k、鳍片 L | 0.25 s、200 W/mK、25 mm |
+| 频率与功率 | 加速起点/斜率、最低频率、功耗指数、漏电占比/基准/翻倍 | CPU 60°C/0.001、GPU 50°C/0.001；0.5；3；CPU 0.15、GPU 0.10 / 70°C / 25°C（§4） |
+| CPU | 双塔间隙、塔扇数、热阻 jc/TIM/base、鳍片厚、面积、降频阈 | 24 mm、2（前 + 中）、0.15/0.04/0.05 K/W、0.4 mm、0.15 m²、95°C |
+| GPU | 槽数、热阻 jc/TIM/base、鳍片厚、面积、降频阈 | 4 槽（散热片 57 mm）、0.08/0.02/0.02 K/W、0.35 mm、0.606 m²（= 0.5·57/47）、87°C |
 | 电源 | 额定、内部热阻、告警温度、进/出风 ζ | 850 W、0.25 K/W、85°C、2.0/1.0 |
 | 多孔 ζ（穿流/横流） | CPU 鳍片（整个散热器；双塔每组穿流 4）、GPU 鳍片、电源内部 | 8/60、4/10、6/6 |
 | 几何 | 电源贴壁吸附、进风采样带、无风扇电源进风口 | 6 mm、10 mm（≥ 2 格）、120 mm |
 | 稳态 | runToSteady chunk、window、tolT、tolFlow、min/max | 50 步、1 s、0.3°C、3%、2 s/15 s |
 | 稳态 | steady_long_run 步数、统计起点、采样 | 3000、> 1000 步、每步（轨迹每 10 步存一行） |
-| 噪音 | stallQ、stallDb、ζ_ref | 0.4、6 dB、2 |
+| 噪音 | stallQ、stallDb、ζ_ref、鳍片附加 | 0.4、6 dB、2、2 dB |
+| 评分 | 分档（CPU+GPU 名义功率）、温度项满分点、噪音端点、热阻端点 | 187.5/400 W、环境温度、10/45 dB(A)、1/16 °C/100 W（对数） |
 | 粒子 | 数量、尾迹、寿命、机箱内比例、静止阈值/帧数 | 1500、8 帧、150 帧、0.92、0.03 m/s / 25 帧 |
 
 几何（mm，相对机箱原点）见 `layout_default.m`；风扇型号见 `fan_catalog.m`；安装位见 `fan_slots.m`。
@@ -569,9 +637,10 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 | `domain` | `sizeMm`、`baseCellMm` |
 | `chassis` | `enabled`、`originMm`（标量或 [x y]）、`sizeMm`（标量或 [深 高]）、`depthM`、`wallTempC.{rear,front,top,bottom}`（NaN = 绝热） |
 | `power` | `cpu`、`gpu`、`psu`（电源为输出负载） |
-| `fanDiskMm`、`grille`、`acoustics` | 执行盘厚、机箱风扇格栅 ζ（`intakeZeta`/`exhaustZeta`）、噪音参数 |
-| `cpu` | `base`（仅显示：主视图与固体温度视图）、`fins`（鳍片外廓矩形）、`tower.{stacks, gapMm}`（可缺省 = 单塔）、`porous`、`thermal`、`tjmax`、`throttleTemp`、`fan.{model, count}`（count 可缺省 = 1；无 `fan` 即无塔扇） |
-| `gpu` | `slots`（可缺省，按厚度推断）、`pcb`、`heatsink`、`porous`、`thermal`、`tjmax`、`throttleTemp`、`fans.{model, xs}` |
+| `fanDiskMm`、`grille`、`acoustics` | 执行盘厚、机箱风扇格栅 ζ（`intakeZeta`/`exhaustZeta`）、噪音参数（含 `finDb`） |
+| `fanCurves` | 可选：温控曲线 `profile`、`caseFan`/`cpu`/`gpu`/`psu` 各 `{T, duty}`，显卡另有 `stopBelowC`/`startAboveC`，电源另有 `passiveLoad`/`passiveMaxC`/`passiveRestartC`（缺省 = 标准档） |
+| `cpu` | `base`（仅显示：主视图与固体温度视图）、`fins`（鳍片外廓矩形）、`tower.{stacks, gapMm}`（可缺省 = 单塔）、`porous`、`thermal`、`tjmax`、`throttleTemp`、`dvfs`（可缺省或只给部分字段，§4）、`fan.{model, count}`（count 可缺省 = 1；无 `fan` 即无塔扇） |
+| `gpu` | `slots`（可缺省，按厚度推断）、`pcb`、`heatsink`、`porous`、`thermal`、`tjmax`、`throttleTemp`、`dvfs`、`fans.{model, xs}` |
 | `psu` | `body`、`ratedW`、`effCurve.{load, eff}`、`porous`、`fan.{model, xMm}`、`intakeZeta`、`exhaustZeta`、`R_internal`、`warnTemp` |
 | `ram`、`vrm`、`chipset`、`motherboardTray` | 其它元件（chipset、主板区仅显示） |
 | `shroud` | 电源仓挡板 `yMm`、`hMm`、`gaps.{x0Mm, x1Mm}` |
@@ -585,7 +654,7 @@ cpu/gpu/psu 可整体缺省（该元件不存在）。
 
 - **必须一致**：每步顺序（§3）、单位换算与两个 CFM 常量（§1）、取整规则（四舍五入 0.5 远离零、`floor(n/2)`）与 §2 的全部整数几何公式、
   两次投影与阻力 β 用 u_ref 且算子与速度更新都用冻结的 β_ref、冻结算子的重装策略（§3.10，扩散算子每 5 步重装、阻力耦合算子按判据）、
-  自带插值/距离变换/pchip（§3.11，逐位口径）、风扇工作点取施力前流场、温控、热网络与注热权重、共轭传热 CPU → GPU → 电源的顺序、
+  自带插值/距离变换/pchip（§3.11，逐位口径）、风扇工作点取施力前流场、温控曲线与停转回差（施力前更新）、热网络（频率与功率）与注热权重、共轭传热 CPU → GPU → 电源的顺序、
   常量 AIR_DENSITY/AIR_CP 的使用范围、稳态统计口径（§7）。
 - **线性代数**：压力（Cholesky）、扩散（对称正定/LDL）用直接法或收敛到 1e−10 的迭代法均可；只影响舍入。注意冻结的是
   **系数场**（§3.10），与解法无关：用迭代法时也要按 §3.10 在规定的步数用装配时的 ν/α/ν_t/β_ref，才能复现标准答案。
@@ -598,8 +667,8 @@ cpu/gpu/psu 可整体缺省（该元件不存在）。
      重装与风扇、热网络状态，第 13 步（重装区间中途）查冻结算子的记账，第 200 步查累积。
      **续算配方**（从快照恢复求解器状态后续推）：恢复 T、Tsolid、uF、vF、k、ω、iteration；三个装配场
      （nuAssembled、alphaAssembled、nuTAssembled）与 asmStep；betaRefU/V（形状 W×(H+1)、(W+1)×H，列优先展平）与
-     betaRefStep；各热网络的 Tj、Ttheory；各风扇的 flowFactor、noiseQRatio（`scalars.fans` 与 `geometry.fans` 的顺序同
-     `allFans()`：机箱风扇在前、内置风扇在后，名称可能重复，按下标对应）。Tsink、throttle、lastQ、p、pProj1 每步重算，
+     betaRefStep；各热网络的 Tj、频率比 φ（`freq_*`）；各风扇的 flowFactor、noiseQRatio、停转状态（`stopped`）（`scalars.fans` 与 `geometry.fans` 的顺序同
+     `allFans()`：机箱风扇在前、内置风扇在后，名称可能重复，按下标对应）。Tsink、throttled、lastQ、p、pProj1 每步重算，
      不是必需的状态量。再由装配场重建 **6 个**分解：速度 u、v（ν^装）、温度（α^装）、k、ω（ν + σ_k·ν_t^装、ν + σ_ω·ν_t^装，
      推进时长 `lastTurbDt = N·DT`）、阻力耦合压力（β_ref）。从内存中的精确状态按此续推与原求解器逐位相同（v4.2.1/v4.2.2
      审计）；从 JSON 快照续推时，快照只有 6 位有效数字，预期差在第 2 级容差内（第 13 步续推到第 200 步，温度差 1.1e−4 °C）。

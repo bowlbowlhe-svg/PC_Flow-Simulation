@@ -4,6 +4,8 @@ classdef Fan < handle
     %   盘内流体受均匀体积力 a = Δp/(ρ·t)，穿过盘的静压升恰为 Δp。
     %   Δp 取 P-Q 曲线在实测盘流量处的值，并按风扇定律随转速缩放：
     %     Δp = pmax·(n/n_max)²·f(Q/Q_free)，Q_free = cfm_max·(n/n_max)。
+    %   转速 n = max(rpm_min, duty·rpm_max)，duty 取自按角色区分的温控曲线（fan_curve_profiles）、
+    %   本扇固定转速或全局手动转速；显卡风扇低温停转、电源风扇半被动时 n = 0（不施力、不计噪音）。
     %   格栅/滤网压损不在此扣除，而是作为开口面上的流动阻力（见 CFDSolverBase），
     %   工作点由风扇曲线与系统阻力自然平衡得到。
     %   2D 口径：盘流量 = 盘中面法向速度 × 盘宽 × 机箱 Z 向深度（体积流量守恒）。
@@ -25,7 +27,6 @@ classdef Fan < handle
         rpm_min
         rpm_max
         cfm_max
-        noise_idle
         noise_max
         pmax_pa
         pq_curve
@@ -47,6 +48,8 @@ classdef Fan < handle
         % ---- 噪音修正（由求解器按布局 acoustics 设置）----
         grilleZeta = 0     % 机箱风扇开口的格栅/滤网阻力 ζ（内置风扇为 0）
         positionDb = 0     % 听音位置修正 [dB]（按安装壁或内置位置）
+        % ---- 控制状态 ----
+        stopped = false    % 低温停转（显卡）/ 半被动停转（电源）中；每步由 updateControl 按回差更新
     end
 
     methods
@@ -59,7 +62,6 @@ classdef Fan < handle
             obj.rpm_min = sp.rpm_min;
             obj.rpm_max = sp.rpm_max;
             obj.cfm_max = sp.cfm_max;
-            obj.noise_idle = sp.noise_idle;
             obj.noise_max = sp.noise_max;
             obj.pmax_pa = sp.pmax_pa;
             obj.pq_curve = sp.pq_curve;
@@ -72,23 +74,65 @@ classdef Fan < handle
             end
         end
 
-        function f = speedFraction(obj, solver)
-            % 转速比例 ∈ [0,1]（相对 rpm_min→rpm_max 区间）
+        function d = duty(obj, solver)
+            % 转速占空比 ∈ [0,1]（占满速转速的比例）：本扇固定转速 > 自动温控曲线 > 全局手动转速
             if strcmp(obj.speedMode, 'manual')
-                f = obj.manualPct / 100;
+                d = obj.manualPct / 100;
             elseif solver.autoFanEnabled
-                % 连续温控曲线：55/70/80°C → 20/50/80%，85°C 满速，最低 20%
+                c = solver.fanCurves.(obj.curveKey());
                 T = solver.sensorTemp(obj.sensor);
-                r = interp1([25 55 70 80 85], [0.2 0.2 0.5 0.8 1.0], T, 'linear', 'extrap');
-                f = min(1.0, max(0.2, r));
+                d = Fan.curveDuty(c, T);
             else
-                f = solver.fanSpeedRatio / 100;
+                d = solver.fanSpeedRatio / 100;
             end
-            f = min(1, max(0, f));
+            d = min(1, max(0, d));
+        end
+
+        function tf = isStopped(obj, solver)
+            % 当前是否停转：只在自动温控下、按曲线停转的风扇（显卡低温停转、电源半被动）
+            tf = obj.stopped && strcmp(obj.speedMode, 'auto') && solver.autoFanEnabled;
+        end
+
+        function updateControl(obj, solver)
+            % 每步施力前调用一次：按回差更新停转状态
+            %   显卡：停转中结温 ≥ startAboveC 才重新转；转动中结温 < stopBelowC 才停
+            %   电源：负载率 ≥ passiveLoad 时一直转；否则停转中温度 ≥ passiveRestartC 才转，转动中温度 < passiveMaxC 才停
+            if ~(strcmp(obj.speedMode, 'auto') && solver.autoFanEnabled)
+                obj.stopped = false;
+                return;
+            end
+            c = solver.fanCurves.(obj.curveKey());
+            T = solver.sensorTemp(obj.sensor);
+            if strcmp(obj.role, 'gpu') && isfield(c, 'stopBelowC') && ~isempty(c.stopBelowC)
+                if obj.stopped
+                    obj.stopped = T < c.startAboveC;
+                else
+                    obj.stopped = T < c.stopBelowC;
+                end
+            elseif strcmp(obj.role, 'psu') && isfield(c, 'passiveLoad') && ~isempty(c.passiveLoad)
+                if solver.psuLoadRatio() >= c.passiveLoad
+                    obj.stopped = false;
+                elseif obj.stopped
+                    obj.stopped = T < c.passiveRestartC;
+                else
+                    obj.stopped = T < c.passiveMaxC;
+                end
+            else
+                obj.stopped = false;
+            end
+        end
+
+        function k = curveKey(obj)
+            % 温控曲线：机箱风扇 'caseFan'，内置风扇按角色 'cpu' / 'gpu' / 'psu'
+            if strcmp(obj.role, 'case'), k = 'caseFan'; else, k = obj.role; end
         end
 
         function rpm = getRPM(obj, solver)
-            rpm = obj.rpm_min + (obj.rpm_max - obj.rpm_min) * obj.speedFraction(solver);
+            if obj.isStopped(solver)
+                rpm = 0;
+            else
+                rpm = max(obj.rpm_min, obj.duty(solver) * obj.rpm_max);
+            end
         end
 
         function cfm = getCFM(obj, solver)
@@ -97,14 +141,21 @@ classdef Fan < handle
         end
 
         function noise = baseNoise(obj, solver)
-            % 转速主项：datasheet 怠速/满速两端点间按转速比三次方插值 [dB(A)]
-            f = (obj.getRPM(solver) - obj.rpm_min) / max(obj.rpm_max - obj.rpm_min, eps);
-            noise = obj.noise_idle + (obj.noise_max - obj.noise_idle) * f^3;
+            % 转速主项：风扇定律 L = noise_max + 50·log10(n/n_max) [dB(A)]；停转为 −Inf
+            rpm = obj.getRPM(solver);
+            if rpm <= 0
+                noise = -Inf;
+            else
+                noise = obj.noise_max + 50 * log10(rpm / obj.rpm_max);
+            end
         end
 
         function [noise, parts] = getNoise(obj, solver)
-            % 听音位置的单扇声压级 [dB(A)] = 转速主项 + 工作点 + 格栅 + 位置（见 fan_noise_terms）
-            parts = fan_noise_terms(obj.baseNoise(solver), obj.noiseQRatio, obj.grilleZeta, ...
+            % 听音位置的单扇声压级 [dB(A)] = 转速主项 + 工作点 + 格栅 + 鳍片 + 位置（见 fan_noise_terms）；
+            % 停转的风扇为 −Inf（不计入总噪音）
+            fin = 0;
+            if any(strcmp(obj.role, {'cpu', 'gpu'})), fin = solver.acoustics.finDb; end
+            parts = fan_noise_terms(obj.baseNoise(solver), obj.noiseQRatio, obj.grilleZeta, fin, ...
                                     obj.positionDb, solver.acoustics);
             noise = parts.total;
         end
@@ -133,14 +184,32 @@ classdef Fan < handle
             obj.lastQRatio = qRatio;
             aFF = min(1, solver.DT / 0.15);
             obj.lastFlowFactor = obj.lastFlowFactor + aFF * (min(1, max(0.2, qRatio)) - obj.lastFlowFactor);
-            aN = min(1, solver.DT / 0.5);
-            obj.noiseQRatio = obj.noiseQRatio + aN * (qRatio - obj.noiseQRatio);
+            if ~obj.isStopped(solver)          % 停转期间保持（重新起转时不出现虚假的"近失速"噪音）
+                aN = min(1, solver.DT / 0.5);
+                obj.noiseQRatio = obj.noiseQRatio + aN * (qRatio - obj.noiseQRatio);
+            end
         end
 
         function b = getBounds(obj)
             % 盘的外接矩形（格坐标，绘图用）
             b = struct('x', obj.cols(1), 'y', obj.rows(1), ...
                        'w', obj.cols(2) - obj.cols(1) + 1, 'h', obj.rows(2) - obj.rows(1) + 1);
+        end
+    end
+
+    methods (Static)
+        function d = curveDuty(c, T)
+            % 温控曲线 T → duty：点间线性插值（T 落在 (T_i, T_i+1] 段，t = (T − T_i)/(T_i+1 − T_i)，
+            % d = d_i + t·(d_i+1 − d_i)），两端取端点值；温度为 NaN（散热体与进风带都被固体盖住）时取最低占空比
+            if ~(T > c.T(1))
+                d = c.duty(1);
+            elseif T >= c.T(end)
+                d = c.duty(end);
+            else
+                i = find(T <= c.T(2:end), 1);
+                t = (T - c.T(i)) / (c.T(i+1) - c.T(i));
+                d = c.duty(i) + t * (c.duty(i+1) - c.duty(i));
+            end
         end
     end
 end

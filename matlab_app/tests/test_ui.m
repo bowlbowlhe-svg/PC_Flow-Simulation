@@ -197,8 +197,10 @@ function pass = test_ui()
     errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
     errs = act(errs, 'save A', @() ui_press(app.SaveScenarioBtn));
     errs = expect(errs, ~isempty(app.Scenarios{1}), 'save A', '方案 A 应已保存');
-    errs = expect(errs, strcmp(app.ScenarioTable.Data{12, 2}, ft.short), 'save A', '方案表 A 列布局名（简称）');
-    errs = expect(errs, strcmp(app.ScenarioTable.Data{15, 2}, '双塔·1 扇'), 'save A', '方案表 A 列 CPU 散热器应为"双塔·1 扇"');
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{13, 2}, ft.short), 'save A', '方案表 A 列布局名（简称）');
+    errs = expect(errs, strcmp(app.ScenarioTable.Data{16, 2}, '双塔·1 扇'), 'save A', '方案表 A 列 CPU 散热器应为"双塔·1 扇"');
+    errs = expect(errs, ~isempty(strfind(app.ScenarioTable.Data{10, 2}, '（')) && strcmp(app.ScenarioTable.Data{17, 2}, '标准'), ...
+        'save A', '方案表 A 列应有评分（档位）与风扇曲线"标准"');
 
     %% 6. 另一布局 → 方案 B → 温差视图
     fprintf('[6] 默认布局 → 方案 B → 温差视图\n');
@@ -228,10 +230,20 @@ function pass = test_ui()
     %% 7. JSON 存取与方案载入
     fprintf('[7] JSON 存取、载入方案 A\n');
     f = [tempname() '.json'];
+    % 温控曲线随配置载入：存"性能"档的配置 → 换"静音" → 载入配置应回到"性能"
+    errs = act(errs, 'profile performance', @() ui_choose(app.FanProfileDrop, '性能'));
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'save json', @() app.runTestHook('saveLayoutFile', f));
+    errs = act(errs, 'profile quiet', @() ui_choose(app.FanProfileDrop, '静音'));
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
+    errs = act(errs, 'custom item', @() ui_choose(app.FanProfileDrop, '自定义'));
+    errs = expect(errs, strcmp(app.FanProfileDrop.Value, '静音') && strcmp(app.Solver.fanCurves.profile, 'quiet'), ...
+        'custom item', '"自定义"不能选：下拉框应回显当前档位，求解器不变');
     errs = act(errs, 'click T2', @() ui_click(app.hSlot{5}));
     errs = act(errs, 'load json', @() app.runTestHook('loadLayoutFile', f));
     errs = expect(errs, numel(app.Solver.fans) == 4 && ~app.LayoutDirty, 'load json', '载入后应回到 4 台风扇');
+    errs = expect(errs, strcmp(app.Solver.fanCurves.profile, 'performance') && strcmp(app.FanProfileDrop.Value, '性能'), ...
+        'load json', '载入配置后温控曲线应为配置里的"性能"档');
     errs = expect(errs, strcmp(app.SlotStates(5).type, 'none'), 'load json', 'T2 应为空');
     % 失败路径：字段取值错误的 JSON → 报错、布局不变
     fprintf('    （下面两条报错是故意触发的失败路径测试，属预期）\n');
@@ -271,8 +283,12 @@ function pass = test_ui()
         strcmp(app.CpuFansDrop.Value, '1 个（前侧）') && isempty(app.Solver.CPU_HEATSINK.gap) && ~app.LayoutDirty, ...
         'single-tower json', '单塔配置：塔扇下拉项应为"前侧 / 前 + 后"、选中 1 个');
     if exist(f, 'file'), delete(f); end
+    errs = act(errs, 'profile quiet', @() ui_choose(app.FanProfileDrop, '静音'));
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'choose A', @() ui_choose(app.ScenarioDrop, 'A'));
     errs = act(errs, 'load A', @() ui_press(app.LoadScenarioBtn));
+    errs = expect(errs, strcmp(app.Solver.fanCurves.profile, 'standard') && strcmp(app.FanProfileDrop.Value, '标准'), ...
+        'load A', '载入方案 A 后温控曲线应为保存时的"标准"档');
     errs = expect(errs, numel(app.Solver.fans) == 4 && isempty(app.Solver.layout.shroud.gaps), 'load A', ...
         '载入方案 A 后应为 4 台风扇且挡板无开孔');
     errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（中间）', '2 个（前 + 中间）'}) && ...
@@ -289,6 +305,11 @@ function pass = test_ui()
     errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'fan auto', @() ui_press(app.AutoFanButton));
     errs = expect(errs, app.Solver.autoFanEnabled && app.IsRunning, 'fan auto', '应恢复自动，并自动继续仿真');
+    errs = act(errs, 'pause', @() ui_press(app.RunButton));
+    errs = act(errs, 'profile quiet', @() ui_choose(app.FanProfileDrop, '静音'));
+    errs = expect(errs, strcmp(app.Solver.fanCurves.profile, 'quiet') && strcmp(app.Solver.layout.fanCurves.profile, 'quiet') && ...
+        app.IsRunning, 'profile quiet', '选"静音"后求解器与布局应为静音档，并自动继续仿真');
+    errs = act(errs, 'profile standard', @() ui_choose(app.FanProfileDrop, '标准'));
     errs = act(errs, 'pause', @() ui_press(app.RunButton));
     errs = act(errs, 'heavy', @() ui_press(app.HeavyBtn));
     errs = expect(errs, app.Solver.powerW.cpu == 180 && app.Solver.powerW.psu == 850 && app.IsRunning, 'heavy', ...

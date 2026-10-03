@@ -94,7 +94,12 @@ function checkFingerprint(name: string, x: Float64Array | null, fp: Ref, bad: st
   });
 }
 
-const num = (a: number, b: number, what: string, bad: string[]) => {
+const num = (a: number, b: number | null, what: string, bad: string[]) => {
+  // Octave 把 NaN 写成 null（散热体被固体盖住时结温为 NaN）
+  if (b === null) {
+    if (!Number.isNaN(a)) bad.push(`${what}: ${a} vs NaN`);
+    return;
+  }
   if (!(Math.abs(a - b) <= TOL * Math.max(1, Math.abs(b)))) bad.push(`${what}: ${a} vs ${b}`);
 };
 
@@ -138,8 +143,8 @@ describe('求解器分支路径与 Octave 一致', () => {
           num(net.power, r.power, `${pre}${n}.power`, bad);
           num(net.actualPower, r.actual, `${pre}${n}.actual`, bad);
           num(net.h_conv, r.h, `${pre}${n}.h`, bad);
-          num(net.throttlingRatio, r.thr, `${pre}${n}.thr`, bad);
-          num(net.T_theory_f, r.Tth, `${pre}${n}.Tth`, bad);
+          num(net.freqRatio, r.freq, `${pre}${n}.freq`, bad);
+          if (net.throttled !== r.thd) bad.push(`${pre}${n}.throttled: ${net.throttled} vs ${r.thd}`);
           if (net.overTemp !== r.over) bad.push(`${pre}${n}.overTemp: ${net.overTemp} vs ${r.over}`);
         }
         const fans = list<Ref>(snap.fans);
@@ -154,6 +159,7 @@ describe('求解器分支路径与 Octave 一致', () => {
           num(f.lastFlowFactor, rf.ff, `${pre}fan${k + 1}.ff`, bad);
           num(f.noiseQRatio, rf.nq, `${pre}fan${k + 1}.nq`, bad);
           num(s.diskFlow(f.g), rf.disk, `${pre}fan${k + 1}.disk`, bad);
+          if (f.isStopped(s) !== rf.stp) bad.push(`${pre}fan${k + 1}.stopped: ${f.isStopped(s)} vs ${rf.stp}`);
         });
       }
       expect(bad.slice(0, 20)).toEqual([]);

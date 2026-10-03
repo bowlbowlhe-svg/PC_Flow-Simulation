@@ -1,14 +1,16 @@
 // 机箱风扇布局的静态检查与标称风量（移植自 layout_fan_report.m；不需要求解器）。
 import { FAN_CATALOG, hasModel } from './fans';
+import { layoutFanCurves } from './fanCurves';
 import type { Layout } from './types';
 import { chassisSizeMm } from './chassis';
+import { mmax } from '../numerics/mathx';
 
 export interface FanReport {
   warnings: string[]; // 同壁重叠、相邻壁角部相碰、超出壁面、与电源重叠
   intakeCfm: number; // 进气风扇标称自由风量之和（自动转速按满速计）
   exhaustCfm: number;
   pressure: string;
-  intakeCfmIdle: number; // 自动转速按温控下限（20%）计
+  intakeCfmIdle: number; // 自动转速按机箱风扇温控曲线的最低占空比计（标准档 20%），转速 = max(rpm_min, 占空比·rpm_max)
   exhaustCfmIdle: number;
   pressureIdle: string;
   nIntake: number;
@@ -31,6 +33,7 @@ const g = (x: number) => String(Number(x.toPrecision(6)));
 const f0 = (x: number) => x.toFixed(0);
 
 export function layoutFanReport(L: Layout): FanReport {
+  const dutyIdle = Math.min(...layoutFanCurves(L).caseFan.duty);
   const R: FanReport = {
     warnings: [],
     intakeCfm: 0,
@@ -60,8 +63,8 @@ export function layoutFanReport(L: Layout): FanReport {
     const len = f.mount === 'front' || f.mount === 'rear' ? Sy : Sx;
     if (lo[k] < wallMm - 0.5 || hi[k] > len - wallMm + 0.5)
       R.warnings.push(`${MOUNT_CN[f.mount]}壁 ${f.model}（中心 ${g(f.alongMm)} mm）超出壁面，求解时会被夹到壁内`);
-    const frac = f.speedMode === 'manual' ? [f.manualPct / 100, f.manualPct / 100] : [1, 0.2];
-    const q = frac.map((fr) => (sp.cfm_max * (sp.rpm_min + (sp.rpm_max - sp.rpm_min) * fr)) / sp.rpm_max);
+    const frac = f.speedMode === 'manual' ? [f.manualPct / 100, f.manualPct / 100] : [1, dutyIdle]; // 满速 / 温控下限
+    const q = frac.map((fr) => (sp.cfm_max * mmax(sp.rpm_min, fr * sp.rpm_max)) / sp.rpm_max);
     if (f.type === 'intake') {
       R.intakeCfm += q[0];
       R.intakeCfmIdle += q[1];

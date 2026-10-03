@@ -61,7 +61,8 @@ function checkDump(s: Solver, D: Ref) {
       continue;
     }
     near(net!.T_junction, D[`Tj_${n}`], `Tj_${n}`);
-    near(net!.throttlingRatio, D[`throttle_${n}`], `throttle_${n}`);
+    near(net!.freqRatio, D[`freq_${n}`], `freq_${n}`);
+    expect(net!.throttled, `throttled_${n}`).toBe(D[`throttled_${n}`]);
     expect(net!.overTemp, `overTemp_${n}`).toBe(D[`overTemp_${n}`]);
   }
   // 温度汇总与诊断（stepMultiple 结束时更新）
@@ -117,7 +118,8 @@ describe('诊断量与 Octave 一致', () => {
   it('高功率 120 步（节流、电源超温告警）', async () => {
     const s = mk(layoutDefault(), [300, 500, 1200]);
     await stepYielding(s, 120);
-    expect(FX.hot120.throttle_cpu + FX.hot120.throttle_gpu).toBeGreaterThan(0); // 数据确实覆盖了节流
+    expect(FX.hot120.throttled_cpu || FX.hot120.throttled_gpu).toBe(true); // 数据确实覆盖了温度墙降频
+    expect(Math.min(FX.hot120.freq_cpu, FX.hot120.freq_gpu)).toBeLessThan(1);
     checkDump(s, FX.hot120);
   });
   it('关闭自动温控、全局 70%、1 号机箱风扇手动 30%：40 步', () => {

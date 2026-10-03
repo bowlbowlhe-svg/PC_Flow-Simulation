@@ -2,7 +2,8 @@
 // 线性系统：压力泊松用稀疏 Cholesky 直接解，扩散系统用修正 IC(0) 预条件 PCG（相对残差 1e−12）；冻结与重装策略与 MATLAB 完全相同（§3.10），
 // 因而与标准答案只差线性求解的舍入。
 import { mmax, mmin } from '../numerics/mathx';
-import type { Layout } from '../model/types';
+import type { FanCurves, Layout } from '../model/types';
+import { layoutDvfs, layoutFanCurves } from '../model/fanCurves';
 import { gridInterp2 } from '../numerics/gridInterp2';
 import { SPDSolver } from '../numerics/pcg';
 import { cholAnalyze, nestedDissectionGrid, SparseCholesky, type CholSymbolic } from '../numerics/cholesky';
@@ -95,6 +96,8 @@ export class Solver implements FanControl {
   nuTCapFactor = 50;
   autoFanEnabled = true;
   fanSpeedRatio = 40;
+  /** 自动温控风扇曲线（layoutFanCurves；界面改档位时直接替换） */
+  fanCurves!: FanCurves;
   reassembleEvery = 5;
   forceReassemble = false;
   powerW: { cpu: number; gpu: number; psu: number };
@@ -281,8 +284,11 @@ export class Solver implements FanControl {
     this.presDrag = null;
     this.betaRefU = this.betaRefV = null;
     this.betaRefStep = -Infinity;
+    this.fanCurves = layoutFanCurves(this.layout);
     this.fans = this.geo.fans.map((f) => new FanState(f));
     this.initHeatSources();
+    // 停转状态按初始温度先判一次（与第 1 步施力前的判定相同，只为让推进前的状态显示一致；回差判定对同一温度幂等）
+    for (const f of this.fans) f.updateControl(this);
     this.latestVorticity = new Float64Array(N);
     this.deadZoneRatio = 0;
     this.lastDiag = null;
@@ -292,8 +298,8 @@ export class Solver implements FanControl {
   private initHeatSources(): void {
     const L = this.layout;
     const nets: Solver['thermalNetworks'] = {};
-    if (L.cpu) nets.cpu = new ThermalNetwork('cpu', this.powerW.cpu, L.cpu.tjmax, L.cpu.throttleTemp, L.cpu.thermal);
-    if (L.gpu) nets.gpu = new ThermalNetwork('gpu', this.powerW.gpu, L.gpu.tjmax, L.gpu.throttleTemp, L.gpu.thermal);
+    if (L.cpu) nets.cpu = new ThermalNetwork('cpu', this.powerW.cpu, L.cpu.tjmax, L.cpu.throttleTemp, L.cpu.thermal, layoutDvfs(L, 'cpu'));
+    if (L.gpu) nets.gpu = new ThermalNetwork('gpu', this.powerW.gpu, L.gpu.tjmax, L.gpu.throttleTemp, L.gpu.thermal, layoutDvfs(L, 'gpu'));
     if (L.psu) {
       const net = new ThermalNetwork('psu', this.psuLossW(this.powerW.psu), L.psu.warnTemp + 15, L.psu.warnTemp, null);
       net.canThrottle = false; // 电源不降频：超温只告警
@@ -302,7 +308,7 @@ export class Solver implements FanControl {
     }
     for (const n of Object.values(nets)) {
       n!.T_junction = this.T_amb;
-      n!.T_theory_f = this.T_amb;
+      n!.freqRatio = 1;
     }
     this.thermalNetworks = nets;
   }
@@ -326,7 +332,11 @@ export class Solver implements FanControl {
     if (!net) return;
     net.power = name === 'psu' ? this.psuLossW(watts) : watts;
     net.actualPower = net.power;
-    net.throttlingRatio = 0;
+  }
+
+  /** 电源负载率（输出负载 / 额定功率）；无电源时为 0 */
+  psuLoadRatio(): number {
+    return this.layout.psu ? this.powerW.psu / this.layout.psu.ratedW : 0;
   }
 
   junctionOr(name: 'cpu' | 'gpu' | 'psu'): number {
@@ -701,6 +711,7 @@ export class Solver implements FanControl {
     const dV = new Float64Array((W + 1) * H);
     for (const fan of this.fans) {
       const f = fan.g;
+      fan.updateControl(this); // 停转状态（显卡低温停转、电源半被动）按回差更新
       const dp = fan.updateOperatingPoint(this.diskFlow(f), this, this.DT);
       const du = ((dp / (AIR_DENSITY * f.thickM)) * this.DT) / this.VEL_SCALE;
       for (let c = f.cols[0]; c <= f.cols[1]; c++) {

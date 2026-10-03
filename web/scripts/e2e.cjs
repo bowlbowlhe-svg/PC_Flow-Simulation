@@ -46,6 +46,14 @@ function check(cond, msg) {
   await p.waitForSelector('canvas.field-canvas', { timeout: 30000 });
   log('页面载入');
 
+  // 0. 显卡风扇低温停转：刚载入时显卡结温 = 环境温度，风扇表该行转速显示"停"
+  await p.click('.tabs >> text=功率与风扇');
+  await p.waitForSelector('.fan-table tbody tr');
+  const stopRows = await p.$$eval('.fan-table tbody tr', (rs) => rs.filter((r) => r.children[1].textContent === '停').map((r) => r.children[0].textContent));
+  check(stopRows.filter((n) => n.startsWith('显卡风扇')).length === 3, `显卡风扇低温停转（${stopRows.join('、')}）`);
+  check((await p.$eval('select.fan-profile', (e) => e.value)) === 'standard', '温控曲线默认"标准"');
+  await p.click('.tabs >> text=状态');
+
   // 1. 运行几秒
   await p.click('text=▶ 开始仿真');
   await p.waitForTimeout(6000);
@@ -53,6 +61,15 @@ function check(cond, msg) {
   await p.click('text=⏸ 暂停仿真');
   const it1 = Number((await text('.right')).match(/（(\d+) 步）/)?.[1] ?? 0);
   check(it1 > 5, `推进了若干步（${it1}）`);
+
+  // 1b. 温控曲线：暂停时选"静音"，立即作用并自动继续仿真
+  await p.click('.tabs >> text=功率与风扇');
+  await p.selectOption('select.fan-profile', 'quiet');
+  await p.waitForTimeout(500);
+  check((await text('.right .muted.small')).includes('运行中'), '暂停时切换温控曲线后自动继续仿真');
+  await p.click('text=⏸ 暂停仿真');
+  await p.click('.tabs >> text=状态');
+  check(/(办公|游戏|满载)档权重/.test(await text('.tab-body')) && (await text('.tab-body')).includes('机箱热阻'), '状态页显示评分档与机箱热阻');
 
   // 2. 布局页：点击主视图 B1 安装位（底部）→ 进气；表格把 F1 改为排气
   await p.click('.tabs >> text=风扇布局');
@@ -87,7 +104,11 @@ function check(cond, msg) {
   await p.selectOption('.tab-body .row select >> nth=0', '1');
   await p.click('text=保存当前');
   const rows = await p.$$eval('.scenario-table tbody tr', (r) => r.length);
-  check(rows === 18, `方案表 18 行（${rows}）`);
+  check(rows === 20, `方案表 20 行（${rows}）`);
+  const curveRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('风扇曲线')).textContent.replace(/\s+/g, ' '));
+  check(/风扇曲线\s*静音\s*静音\s*静音/.test(curveRow), `风扇曲线：当前、A、B 均为静音（${curveRow}）`);
+  const scoreRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('评分（档）')).textContent.replace(/\s+/g, ' '));
+  check(/\d+（游戏）/.test(scoreRow), `评分（档）：默认功率为游戏档（${scoreRow}）`);
   const fansRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('机箱风扇数')).textContent);
   check(/机箱风扇数\s*6\s*4\s*6/.test(fansRow.replace(/\s+/g, ' ')), `风扇数：当前 6、A 4、B 6（${fansRow.replace(/\s+/g, ' ')}）`);
   const towerRow = await p.$$eval('.scenario-table tbody tr', (r) => r.find((x) => x.textContent.includes('CPU 散热器')).textContent.replace(/\s+/g, ' '));
@@ -121,6 +142,7 @@ function check(cond, msg) {
   const fanStr = L.caseFans.map((f) => `${f.mount}${f.alongMm}:${f.type}`).join(' ');
   check(fanStr.includes('bottom232:intake') && fanStr.includes('front100:exhaust'), `保存的 JSON 含点击与表格的修改（${fanStr}）`);
   check(L.cpu.fan.count === 1 && L.cpu.tower.stacks === 2, `保存的 JSON 含塔扇数量（${JSON.stringify(L.cpu.fan)}）`);
+  check(L.fanCurves?.profile === 'quiet' && L.fanCurves.gpu.stopBelowC === 55, `保存的 JSON 含温控曲线（${L.fanCurves?.profile}）`);
 
   // 6. 载入预设再载入 JSON
   await p.selectOption('.tab-body .row select >> nth=0', 'positive');
@@ -129,6 +151,36 @@ function check(cond, msg) {
   await p.setInputFiles('input[type=file]', js);
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：配置'), null, { timeout: 30000 });
   check(true, '载入 JSON 后显示"当前：配置 …"');
+  // 6a. 配置里的温控曲线随载入生效：选"性能"后保存，再切回"静音"，载入该配置应回到"性能"；旧型号名 RX140 读为 M25_140；
+  //     档位名与曲线不符（标着"性能"、实为静音曲线）时记为自定义
+  await p.click('.tabs >> text=功率与风扇');
+  await p.selectOption('select.fan-profile', 'performance');
+  await p.click('text=⏸ 暂停仿真');
+  await p.click('.tabs >> text=风扇布局');
+  const jsPerf = await download('text=保存配置（JSON）');
+  const Lperf = JSON.parse(fs.readFileSync(jsPerf, 'utf8'));
+  fs.writeFileSync(js, JSON.stringify(L)); // 同名下载覆盖了第 5 步的配置：写回（后面的用例沿用它）
+  check(Lperf.fanCurves.profile === 'performance', `保存的 JSON 为性能档（${Lperf.fanCurves.profile}）`);
+  Lperf.caseFans[0].model = 'RX140';
+  await p.click('.tabs >> text=功率与风扇');
+  await p.selectOption('select.fan-profile', 'quiet');
+  await p.click('text=⏸ 暂停仿真');
+  await p.click('.tabs >> text=风扇布局');
+  await p.setInputFiles('input[type=file]', writeJson('perfcurve.json', Lperf));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('perfcurve.json'), null, { timeout: 30000 });
+  const models = await p.$$eval('.slot-table tbody tr select', (els) => els.map((e) => e.value));
+  check(models.includes('M25_140') && !models.includes('RX140'), `旧型号名 RX140 读为 M25_140`);
+  await p.click('.tabs >> text=功率与风扇');
+  check((await p.$eval('select.fan-profile', (e) => e.value)) === 'performance', '载入配置后温控曲线下拉框随之切换（性能）');
+  await p.click('.tabs >> text=风扇布局');
+  const Lmis = JSON.parse(JSON.stringify(L)); // 第 5 步保存的静音曲线，改标为"性能"
+  Lmis.fanCurves.profile = 'performance';
+  await p.setInputFiles('input[type=file]', writeJson('mislabeled.json', Lmis));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('mislabeled.json'), null, { timeout: 30000 });
+  await p.click('.tabs >> text=功率与风扇');
+  const misVal = await p.$eval('select.fan-profile', (e) => e.value);
+  check(misVal === 'custom', `档位名与曲线不符的配置显示"自定义"（${misVal}）`);
+  await p.click('.tabs >> text=风扇布局');
   // 6b. 单塔旧配置（v1.3 之前，无 cpu.tower、无 cpu.fan.count）：塔扇下拉项为"前侧 / 前 + 后"
   const Lst = JSON.parse(fs.readFileSync(js, 'utf8'));
   delete Lst.cpu.tower;

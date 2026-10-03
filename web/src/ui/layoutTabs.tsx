@@ -11,7 +11,7 @@ export const STATE_ITEMS: { key: SlotState['type']; label: string }[] = [
   { key: 'intake', label: '进气' },
   { key: 'exhaust', label: '排气' },
 ];
-export const MODEL_ITEMS = ['P12', 'P14', 'NF_A12', 'NF_A14', 'RX120', 'RX140', 'Stock120'];
+export const MODEL_ITEMS = ['P12', 'P14', 'NF_A12', 'NF_A14', 'T30', 'M25_140', 'Stock120'];
 export const SPEED_ITEMS = ['自动', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%'];
 export const GPU_SLOT_VALUES = [2.5, 3, 3.5, 4];
 export const GPU_SLOT_ITEMS = ['2.5 槽（51 mm）', '3 槽（61 mm）', '3.5 槽（71 mm）', '4 槽（81 mm）'];

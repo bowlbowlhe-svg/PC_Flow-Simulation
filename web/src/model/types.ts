@@ -27,6 +27,36 @@ export interface ComponentThermal {
   A_fin_total_m2: number;
 }
 
+/** 频率与功率参数（见 dvfs.ts / layout_dvfs.m） */
+export interface Dvfs {
+  softStartC: number;
+  softSlope: number;
+  minFreq: number;
+  powerExp: number;
+  leakShare: number;
+  leakRefC: number;
+  leakDoubleC: number;
+}
+
+/** 温控曲线：T [°C] → duty（占满速转速的比例） */
+export interface FanCurve {
+  T: number[];
+  duty: number[];
+  stopBelowC?: number; // 显卡低温停转
+  startAboveC?: number;
+  passiveLoad?: number; // 电源半被动
+  passiveMaxC?: number;
+  passiveRestartC?: number;
+}
+
+export interface FanCurves {
+  profile: string; // 'quiet' | 'standard' | 'performance' | 'custom'
+  caseFan: FanCurve;
+  cpu: FanCurve;
+  gpu: FanCurve;
+  psu: FanCurve;
+}
+
 export interface CpuSpec {
   base: Rect;
   fins: Rect;
@@ -38,6 +68,7 @@ export interface CpuSpec {
   tower?: { stacks: number; gapMm: number };
   /** count：塔扇数量 1 或 2（缺省 1） */
   fan?: { model: string; count?: number };
+  dvfs?: Partial<Dvfs>;
 }
 
 export interface GpuSpec {
@@ -49,6 +80,7 @@ export interface GpuSpec {
   tjmax: number;
   throttleTemp: number;
   fans: { model: string; xs: number[] };
+  dvfs?: Partial<Dvfs>;
 }
 
 export interface PsuSpec {
@@ -90,6 +122,7 @@ export interface Acoustics {
   stallQ: number;
   stallDb: number;
   grilleRefZeta: number;
+  finDb: number;
   positionDb: {
     front: number;
     top: number;
@@ -119,6 +152,7 @@ export interface Layout {
   fanDiskMm: number;
   grille: { intakeZeta: number; exhaustZeta: number };
   acoustics?: Acoustics;
+  fanCurves?: FanCurves;
   cpu?: CpuSpec;
   gpu?: GpuSpec;
   psu?: PsuSpec;

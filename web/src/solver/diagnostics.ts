@@ -233,7 +233,8 @@ export interface NoiseTotal {
 export function totalNoise(s: Solver): NoiseTotal {
   const parts = s.fans.map((f) => f.getNoise(s, s.geo.acoustics));
   const perFan = parts.map((p) => p.total);
-  if (perFan.some((v) => !Number.isFinite(v))) throw new Error('风扇噪音出现非有限值，检查布局 acoustics 参数');
+  // 停转的风扇为 −Inf，不计入
+  if (perFan.some((v) => Number.isNaN(v) || v === Infinity)) throw new Error('风扇噪音出现非有限值，检查布局 acoustics 参数');
   let e = 0;
   for (const v of perFan) e += 10 ** (v / 10);
   return { dbTotal: 10 * Math.log10(mmax(e, 1)), perFan, parts };
@@ -250,6 +251,7 @@ export interface FanStatus {
   noiseDb: number;
   noise: NoiseParts;
   sharePct: number;
+  stopped: boolean; // 低温停转 / 半被动停转中
 }
 
 const MOUNT_CN: Record<string, string> = { front: '前', rear: '后', top: '顶', bottom: '底', internal: '' };
@@ -290,33 +292,28 @@ export function fanStatusList(s: Solver): FanStatus[] {
       noiseDb: perFan[k],
       noise: parts[k],
       sharePct: (100 * 10 ** (perFan[k] / 10)) / mmax(eSum, Number.EPSILON),
+      stopped: f.isStopped(s),
     };
   });
-}
-
-interface NetLike {
-  T_junction: number;
-  throttlingTemp: number;
-  power: number;
-  actualPower: number;
-}
-
-/** 元件热网络；缺该元件时返回环境温度、零功率的占位 */
-function netOrIdle(s: Solver, name: 'cpu' | 'gpu'): NetLike {
-  return s.thermalNetworks[name] ?? { T_junction: s.T_amb, throttlingTemp: 95, power: 0, actualPower: 0 };
 }
 
 /** MATLAB round（0.5 远离零） */
 const mr = (x: number) => (x < 0 ? -Math.round(-x) : Math.round(x));
 
+export type ScoreClass = 'office' | 'gaming' | 'heavy';
+
 export interface Scores {
   total: number;
-  cooling: number;
-  performance: number;
-  balance: number;
-  margin: number;
-  noise: number;
-  value: number;
+  perf: number; // 性能：频率保持率
+  thermal: number; // 温度：距温度墙
+  noise: number; // 噪音：响度
+  airflow: number; // 风道：机箱热阻
+  cls: ScoreClass;
+  clsName: string; // 办公 / 游戏 / 满载
+  perfPct: number; // 名义功率加权的频率保持率 [%]（0.1 精度）
+  freqCpu: number; // 频率比 φ（缺该元件为 NaN）
+  freqGpu: number;
+  airK: number; // 机箱热阻 K [°C / 100 W]
   cpuTemp: number;
   gpuTemp: number;
   psuTemp: number;
@@ -329,42 +326,82 @@ export interface Scores {
   rearExhaust: number;
 }
 
-/** 六维评分（锚定节流阈） */
+/**
+ * 评分（v4.6.0 起，同 CFDSolverBase.calculateScores）：按 CPU+GPU 名义功率归入 办公 / 游戏 / 满载 档，四项 0–100 加权：
+ *   性能  频率保持率 φw（按名义功率加权）：90% → 0、100% → 100
+ *   温度  (T_limit − Tj)/(T_limit − T_amb)（环境温度 → 100、降频阈 → 0），CPU、GPU 平均；结温超过 tjmax 记 0；电源超过告警温度再 −20
+ *   噪音  响度 2^((dB − 40)/10)：10 dB(A) → 100、45 dB(A) → 0
+ *   风道  K = ΔT_eff/(P/100 W)，ΔT_eff = ½·箱内温升 + ½·CPU/GPU 进风温升均值；按对数 K ≤ 1 → 100、2 → 75、4 → 50、≥ 16 → 0
+ *   权重（性能/温度/噪音/风道）：办公 10/15/60/15，游戏 25/25/35/15，满载 35/30/20/15
+ */
 export function calculateScores(s: Solver): Scores {
   const temps = computeAirflowTemperatures(s);
-  const tnC = netOrIdle(s, 'cpu');
-  const tnG = netOrIdle(s, 'gpu');
-  const cpuT = tnC.T_junction;
-  const gpuT = tnG.T_junction;
-  const psuT = s.junctionOr('psu');
+  const clamp01 = (x: number) => mmax(0, mmin(1, x));
   const { dbTotal } = totalNoise(s);
   let totalPrice = 0;
   for (const f of caseFans(s)) totalPrice += f.spec.price;
-  const clamp = (v: number) => mmax(0, mmin(100, v));
-  const cpuCool = clamp(((tnC.throttlingTemp - cpuT) / (tnC.throttlingTemp - 60)) * 100);
-  const gpuCool = clamp(((tnG.throttlingTemp - gpuT) / (tnG.throttlingTemp - 70)) * 100);
-  const cooling = 0.5 * cpuCool + 0.5 * gpuCool;
-  const pNom = tnC.power + tnG.power;
-  const pAct = tnC.actualPower + tnG.actualPower;
-  const performance = clamp(((pAct / mmax(pNom, Number.EPSILON) - 0.65) / 0.35) * 100);
-  const balance = mmax(0, 100 - Math.abs(cpuT - gpuT) * 2);
-  const cpuHead = mmax(0, (tnC.throttlingTemp - cpuT) / (tnC.throttlingTemp - s.T_amb));
-  const gpuHead = mmax(0, (tnG.throttlingTemp - gpuT) / (tnG.throttlingTemp - s.T_amb));
-  const margin = 100 * (0.5 * cpuHead + 0.5 * gpuHead);
-  const noise = clamp(100 - (dbTotal - 20) * 3);
-  const value = mmax(0, 100 - totalPrice / 15);
-  const total = mr(cooling * 0.25 + performance * 0.2 + balance * 0.1 + margin * 0.15 + noise * 0.2 + value * 0.1);
+  let pNom = 0;
+  let pAct = 0;
+  let wPhi = 0;
+  const therm: number[] = [];
+  const rise: number[] = [];
+  const freq = { cpu: NaN, gpu: NaN };
+  for (const n of ['cpu', 'gpu'] as const) {
+    const net = s.thermalNetworks[n];
+    if (!net) continue;
+    pNom += net.power;
+    pAct += net.actualPower;
+    wPhi += net.power * net.freqRatio;
+    freq[n] = net.freqRatio;
+    if (net.T_junction > net.tjmax) therm.push(0);
+    else therm.push(100 * clamp01((net.throttlingTemp - net.T_junction) / mmax(net.throttlingTemp - s.T_amb, 1)));
+    const inIdx = n === 'cpu' ? s.geo.cpuInletIdx : s.geo.gpuInletIdx;
+    let sum = 0;
+    for (const i of inIdx) sum += s.T_fluid[i];
+    rise.push(sum / inIdx.length - s.T_amb);
+  }
+  const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+  const phiW = pNom > 0 ? wPhi / pNom : 1;
+  const perf = 100 * clamp01((phiW - 0.9) / 0.1);
+  let thermal = therm.length ? mean(therm) : 100;
+  if (s.thermalNetworks.psu?.overTemp) thermal = mmax(0, thermal - 20);
+  const nl = (db: number) => 2 ** ((db - 40) / 10);
+  const noise = 100 * clamp01((nl(45) - nl(dbTotal)) / (nl(45) - nl(10)));
+  const dInt = temps.internalAmbient - s.T_amb;
+  const dEff = rise.length ? 0.5 * dInt + 0.5 * mean(rise) : dInt;
+  const airK = pAct > 1 ? dEff / (pAct / 100) : 0;
+  const airflow = airK <= 1 ? 100 : 100 * clamp01(1 - Math.log2(airK) / 4);
+  let cls: ScoreClass;
+  let clsName: string;
+  let w: number[];
+  if (pNom < 187.5) {
+    cls = 'office';
+    clsName = '办公';
+    w = [0.1, 0.15, 0.6, 0.15];
+  } else if (pNom < 400) {
+    cls = 'gaming';
+    clsName = '游戏';
+    w = [0.25, 0.25, 0.35, 0.15];
+  } else {
+    cls = 'heavy';
+    clsName = '满载';
+    w = [0.35, 0.3, 0.2, 0.15];
+  }
   return {
-    total,
-    cooling: mr(cooling),
-    performance: mr(performance),
-    balance: mr(balance),
-    margin: mr(margin),
+    total: mr(w[0] * perf + w[1] * thermal + w[2] * noise + w[3] * airflow),
+    perf: mr(perf),
+    thermal: mr(thermal),
     noise: mr(noise),
-    value: mr(value),
-    cpuTemp: mr(cpuT),
-    gpuTemp: mr(gpuT),
-    psuTemp: mr(psuT),
+    airflow: mr(airflow),
+    cls,
+    clsName,
+    perfPct: mr(1000 * phiW) / 10,
+    freqCpu: freq.cpu,
+    freqGpu: freq.gpu,
+    airK,
+    cpuTemp: mr(s.junctionOr('cpu')),
+    gpuTemp: mr(s.junctionOr('gpu')),
+    psuTemp: mr(s.junctionOr('psu')),
     noiseDb: mr(dbTotal),
     totalPrice,
     totalCFM: mr(temps.totalCFM),
@@ -391,6 +428,8 @@ export interface ScenarioSummary {
   cfm: number;
   noiseDb: number;
   score: number;
+  scoreCls: string; // 评分档：办公 / 游戏 / 满载
+  perfPct: number; // 频率保持率 [%]
   intakeCfm: number;
   exhaustCfm: number;
   pressure: string;
@@ -419,6 +458,8 @@ export function scenarioSummary(s: Solver): ScenarioSummary {
     cfm: t.totalCFM,
     noiseDb: dbTotal,
     score: sc.total,
+    scoreCls: sc.clsName,
+    perfPct: sc.perfPct,
     intakeCfm: qin,
     exhaustCfm: qout,
     pressure: fanPressureLabel(qin, qout),
@@ -533,19 +574,31 @@ const fp = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(1);
 export function getRecommendations(s: Solver): Recommendation[] {
   const sc = calculateScores(s);
   const recs: Recommendation[] = [];
-  const tnC = netOrIdle(s, 'cpu');
-  const tnG = netOrIdle(s, 'gpu');
-  const hasCpu = !!s.thermalNetworks.cpu;
-  const hasGpu = !!s.thermalNetworks.gpu;
-  if (hasCpu) {
-    if (sc.cpuTemp > tnC.throttlingTemp - 5)
-      recs.push({ title: 'CPU温度过高', desc: `当前${d(sc.cpuTemp)}°C，接近降频阈值，建议提高 CPU 风扇/机箱排风`, level: 'warning' });
-    else if (sc.cpuTemp < 60) recs.push({ title: 'CPU散热余量充足', desc: `当前${d(sc.cpuTemp)}°C，可适当降低风扇转速以减少噪音`, level: 'good' });
-  }
-  if (hasGpu) {
-    if (sc.gpuTemp > tnG.throttlingTemp - 5)
-      recs.push({ title: 'GPU温度过高', desc: `当前${d(sc.gpuTemp)}°C，建议改善显卡下方进风或增加机箱排风`, level: 'warning' });
-    else if (sc.gpuTemp < 65) recs.push({ title: 'GPU散热良好', desc: `当前${d(sc.gpuTemp)}°C，散热配置合理`, level: 'good' });
+  const chipRec = [
+    { n: 'cpu', nm: 'CPU', good: 60, tip: '建议提高 CPU 塔扇/机箱排风' },
+    { n: 'gpu', nm: 'GPU', good: 65, tip: '建议改善显卡下方进风或增加机箱排风' },
+  ] as const;
+  for (const c of chipRec) {
+    const net = s.thermalNetworks[c.n];
+    if (!net) continue; // 布局中无此元件：不给建议
+    const T = mr(net.T_junction);
+    const fpct = mr(100 * net.freqRatio);
+    if (net.overTemp)
+      recs.push({ title: `${c.nm}过热`, desc: `当前${d(T)}°C，超过 ${d(mr(net.tjmax))}°C，降到最低频率仍压不住，${c.tip}`, level: 'warning' });
+    else if (net.throttled)
+      recs.push({
+        title: `${c.nm}触发温度墙降频`,
+        desc: `当前${d(T)}°C，频率降到 ${d(fpct)}%（功率 ${f(net.actualPower, 0)} W），${c.tip}`,
+        level: 'warning',
+      });
+    else if (T > net.throttlingTemp - 5)
+      recs.push({
+        title: `${c.nm}接近温度墙`,
+        desc: `当前${d(T)}°C，距降频阈 ${d(mr(net.throttlingTemp))}°C 不到 5°C，${c.tip}`,
+        level: 'warning',
+      });
+    else if (T < c.good)
+      recs.push({ title: `${c.nm}散热余量充足`, desc: `当前${d(T)}°C，频率 ${d(fpct)}%，可适当降低风扇转速以减少噪音`, level: 'good' });
   }
   if (s.thermalNetworks.psu?.overTemp)
     recs.push({ title: '电源温度过高', desc: `当前${d(sc.psuTemp)}°C，超过告警阈值，检查电源进风`, level: 'warning' });
@@ -557,8 +610,12 @@ export function getRecommendations(s: Solver): Recommendation[] {
     });
   if (sc.noiseDb > 40) recs.push({ title: '噪音水平偏高', desc: `当前约${d(sc.noiseDb)}dB，建议启用自动温控或更换低噪风扇`, level: 'warning' });
   else if (sc.noiseDb < 25) recs.push({ title: '运行安静', desc: `当前约${d(sc.noiseDb)}dB，噪音控制优秀`, level: 'good' });
-  if (sc.balance < 70 && hasCpu && hasGpu)
-    recs.push({ title: 'CPU/GPU温度不均衡', desc: '温差较大，建议优化风道使热量均匀排出', level: 'warning' });
+  if (sc.airK > 3 && sc.cls !== 'office')
+    recs.push({
+      title: '机箱风道效率偏低',
+      desc: `每 100 W 发热，箱内与进风平均升温 ${f(sc.airK, 1)}°C，建议增加进/排风或避免气流短路`,
+      level: 'warning',
+    });
   const fl = fanStatusList(s);
   if (fl.length) {
     let i = 0;
@@ -568,7 +625,7 @@ export function getRecommendations(s: Solver): Recommendation[] {
       const p = fl[i].noise;
       recs.push({
         title: '主要噪音来源',
-        desc: `${fl[i].name} 占总噪音能量 ${f(mx, 0)}%（${f(p.total, 1)} dB：转速 ${f(p.base, 1)}、工作点 ${fp(p.op)}、格栅 ${fp(p.grille)}、位置 ${fp(p.pos)}）`,
+        desc: `${fl[i].name} 占总噪音能量 ${f(mx, 0)}%（${f(p.total, 1)} dB：转速 ${f(p.base, 1)}、工作点 ${fp(p.op)}、格栅 ${fp(p.grille)}${p.fin !== 0 ? `、鳍片 ${fp(p.fin)}` : ''}、位置 ${fp(p.pos)}）`,
         level: 'info',
       });
     }

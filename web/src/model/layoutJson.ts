@@ -6,6 +6,8 @@ import { acousticsDefault } from './layoutDefault';
 import { LayoutError } from './gpuSlots';
 import { pairMm } from './chassis';
 import { layoutCpuTower } from './cpuTower';
+import { layoutDvfs, layoutFanCurves } from './fanCurves';
+import { fanModelAlias } from './fans';
 
 /** 保存：JSON.stringify 会把 NaN 写成 null，与 MATLAB jsonencode 一致 */
 export function layoutToJson(L: Layout): string {
@@ -61,7 +63,7 @@ export function normalizeLayout(raw: Raw): Layout {
         mount: f.mount,
         alongMm: f.alongMm,
         type: f.type,
-        model: f.model,
+        model: typeof f.model === 'string' ? fanModelAlias(f.model) : f.model,
         // 缺字段补默认值；显式的 null（MATLAB 读为 []）不补，由校验报错（同 layout_json）
         speedMode: f.speedMode === undefined ? 'auto' : f.speedMode,
         manualPct: f.manualPct === undefined ? 60 : f.manualPct,
@@ -75,6 +77,17 @@ export function normalizeLayout(raw: Raw): Layout {
     } catch (e) {
       throw new LayoutError('layout_json:invalid', `CPU 散热器：${(e as Error).message}`);
     }
+  }
+  // 温控曲线：数组规整、取值检查、档位名与曲线不符时记为 custom（见 layoutFanCurves）；dvfs 检查（同 layout_json）
+  const fc = L.fanCurves;
+  const fcEmpty = fc === undefined || fc === null || fc === '' || (Array.isArray(fc) && fc.length === 0);
+  if (fcEmpty) delete L.fanCurves;
+  try {
+    if (!fcEmpty) L.fanCurves = layoutFanCurves(L as Layout);
+    if (L.cpu) layoutDvfs(L as Layout, 'cpu');
+    if (L.gpu) layoutDvfs(L as Layout, 'gpu');
+  } catch (e) {
+    throw new LayoutError('layout_json:invalid', (e as Error).message);
   }
   for (const nm of ['vents', 'solidBlocks', 'porousBlocks']) {
     if (L[nm] === undefined) continue;
@@ -143,6 +156,7 @@ export function mergeAcoustics(over: Partial<Acoustics> | undefined): Acoustics 
   if (!num(ac.stallQ) || ac.stallQ <= 0 || ac.stallQ > 1) throw new LayoutError('acoustics:value', 'acoustics.stallQ 应为 (0, 1] 的数');
   if (!num(ac.stallDb) || ac.stallDb < 0) throw new LayoutError('acoustics:value', 'acoustics.stallDb 应为 ≥ 0 的数');
   if (!num(ac.grilleRefZeta) || ac.grilleRefZeta <= 0) throw new LayoutError('acoustics:value', 'acoustics.grilleRefZeta 应为 > 0 的数');
+  if (!num(ac.finDb) || ac.finDb < 0) throw new LayoutError('acoustics:value', 'acoustics.finDb 应为 ≥ 0 的数');
   for (const k of Object.keys(ac.positionDb)) {
     if (!num(ac.positionDb[k])) throw new LayoutError('acoustics:value', `acoustics.positionDb.${k} 应为有限的数`);
   }

@@ -1,6 +1,7 @@
 // 风扇运行状态（移植自 Fan.m、fan_noise_terms.m；规格 §3.6、§5）。
 import { mmax, mmin } from '../numerics/mathx';
-import type { Acoustics } from '../model/types';
+import type { Acoustics, FanCurves } from '../model/types';
+import { curveDuty } from '../model/fanCurves';
 import { pchipEval1 } from '../numerics/pchipEval';
 import type { FanGeom } from './geometry';
 
@@ -11,37 +12,28 @@ export const CFM_PER_M3S = 2118.88;
 export interface FanControl {
   autoFanEnabled: boolean;
   fanSpeedRatio: number; // 全局手动转速 [%]
+  fanCurves: FanCurves;
   sensorTemp(sensor: FanGeom['sensor']): number;
+  psuLoadRatio(): number;
 }
 
 export interface NoiseParts {
   base: number;
   op: number;
   grille: number;
+  fin: number;
   pos: number;
   total: number;
 }
 
-/** 单扇听音位置声压级分项（fan_noise_terms） */
-export function fanNoiseTerms(base: number, qRatio: number, zeta: number, posDb: number, ac: Acoustics): NoiseParts {
+/** 单扇听音位置声压级分项（fan_noise_terms）：total = base + op + grille + fin + pos（可低于 0；停转 base = −Inf 时为 −Inf） */
+export function fanNoiseTerms(base: number, qRatio: number, zeta: number, fin: number, posDb: number, ac: Acoustics): NoiseParts {
   const q = mmin(mmax(qRatio, 0), 2);
   let op = 0;
   if (q < ac.stallQ) op = ac.stallDb * ((ac.stallQ - q) / ac.stallQ) ** 2;
   const grille = 10 * Math.log10(1 + mmax(zeta, 0) / ac.grilleRefZeta);
-  return { base, op, grille, pos: posDb, total: base + op + grille + posDb };
-}
-
-/** MATLAB interp1(x, v, q, 'linear', 'extrap') */
-function interpLinearExtrap(x: number[], v: number[], q: number): number {
-  const n = x.length;
-  let i = 0;
-  if (q >= x[n - 1]) i = n - 2;
-  else if (q > x[0]) {
-    while (i < n - 2 && q > x[i + 1]) i++;
-    // q 恰在节点上时 MATLAB 取该节点所在的区间，值相同
-  }
-  const t = (q - x[i]) / (x[i + 1] - x[i]);
-  return v[i] + t * (v[i + 1] - v[i]);
+  const total = base + op + grille + fin + posDb;
+  return { base, op, grille, fin, pos: posDb, total };
 }
 
 export class FanState {
@@ -50,6 +42,7 @@ export class FanState {
   lastQRatio = 0;
   lastFlowFactor = 1;
   noiseQRatio = 1; // 噪音用低通流量比（τ = 0.5 s），初值 1
+  stopped = false; // 低温停转（显卡）/ 半被动停转（电源）中；每步由 updateControl 按回差更新
   speedMode: 'auto' | 'manual';
   manualPct: number;
 
@@ -62,22 +55,45 @@ export class FanState {
     return this.g.spec;
   }
 
-  /** 转速比例 ∈ [0, 1]（相对 rpm_min → rpm_max 区间） */
-  speedFraction(c: FanControl): number {
-    let f: number;
-    if (this.speedMode === 'manual') f = this.manualPct / 100;
-    else if (c.autoFanEnabled) {
-      // 连续温控曲线：55/70/80 °C → 20/50/80%，85 °C 满速，最低 20%
-      const T = c.sensorTemp(this.g.sensor);
-      const r = interpLinearExtrap([25, 55, 70, 80, 85], [0.2, 0.2, 0.5, 0.8, 1.0], T);
-      f = mmin(1.0, mmax(0.2, r));
-    } else f = c.fanSpeedRatio / 100;
-    return mmin(1, mmax(0, f));
+  /** 转速占空比 ∈ [0, 1]（占满速转速的比例）：本扇固定转速 > 自动温控曲线 > 全局手动转速（同 Fan.duty） */
+  duty(c: FanControl): number {
+    let d: number;
+    if (this.speedMode === 'manual') d = this.manualPct / 100;
+    else if (c.autoFanEnabled) d = curveDuty(c.fanCurves[this.curveKey()], c.sensorTemp(this.g.sensor));
+    else d = c.fanSpeedRatio / 100;
+    return mmin(1, mmax(0, d));
+  }
+
+  /** 温控曲线：机箱风扇 caseFan，内置风扇按角色 */
+  curveKey(): 'caseFan' | 'cpu' | 'gpu' | 'psu' {
+    return this.g.role === 'case' ? 'caseFan' : this.g.role;
+  }
+
+  /** 当前是否停转：只在自动温控下、按曲线停转的风扇（显卡低温停转、电源半被动） */
+  isStopped(c: FanControl): boolean {
+    return this.stopped && this.speedMode === 'auto' && c.autoFanEnabled;
+  }
+
+  /** 每步施力前调用一次：按回差更新停转状态（同 Fan.updateControl） */
+  updateControl(c: FanControl): void {
+    if (!(this.speedMode === 'auto' && c.autoFanEnabled)) {
+      this.stopped = false;
+      return;
+    }
+    const cv = c.fanCurves[this.curveKey()];
+    const T = c.sensorTemp(this.g.sensor);
+    const has = (v: unknown) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0); // 同 MATLAB ~isempty
+    if (this.g.role === 'gpu' && has(cv.stopBelowC)) {
+      this.stopped = this.stopped ? T < cv.startAboveC! : T < cv.stopBelowC!;
+    } else if (this.g.role === 'psu' && has(cv.passiveLoad)) {
+      if (c.psuLoadRatio() >= cv.passiveLoad!) this.stopped = false;
+      else this.stopped = this.stopped ? T < cv.passiveRestartC! : T < cv.passiveMaxC!;
+    } else this.stopped = false;
   }
 
   getRPM(c: FanControl): number {
     const s = this.spec;
-    return s.rpm_min + (s.rpm_max - s.rpm_min) * this.speedFraction(c);
+    return this.isStopped(c) ? 0 : mmax(s.rpm_min, this.duty(c) * s.rpm_max);
   }
 
   /** 当前转速下的自由送风量 [CFM]（风扇定律 Q ∝ n） */
@@ -85,14 +101,15 @@ export class FanState {
     return this.spec.cfm_max * (this.getRPM(c) / this.spec.rpm_max);
   }
 
+  /** 转速主项：风扇定律 noise_max + 50·log10(n/n_max)；停转为 −Inf */
   baseNoise(c: FanControl): number {
-    const s = this.spec;
-    const f = (this.getRPM(c) - s.rpm_min) / mmax(s.rpm_max - s.rpm_min, Number.EPSILON);
-    return s.noise_idle + (s.noise_max - s.noise_idle) * f ** 3;
+    const rpm = this.getRPM(c);
+    return rpm <= 0 ? -Infinity : this.spec.noise_max + 50 * Math.log10(rpm / this.spec.rpm_max);
   }
 
   getNoise(c: FanControl, ac: Acoustics): NoiseParts {
-    return fanNoiseTerms(this.baseNoise(c), this.noiseQRatio, this.g.grilleZeta, this.g.positionDb, ac);
+    const fin = this.g.role === 'cpu' || this.g.role === 'gpu' ? ac.finDb : 0;
+    return fanNoiseTerms(this.baseNoise(c), this.noiseQRatio, this.g.grilleZeta, fin, this.g.positionDb, ac);
   }
 
   /** 由盘流量 Q [m³/s] 求 P-Q 工作点静压 [Pa] 并更新运行状态 */
@@ -116,8 +133,11 @@ export class FanState {
     this.lastQRatio = qRatio;
     const aFF = mmin(1, DT / 0.15);
     this.lastFlowFactor = this.lastFlowFactor + aFF * (mmin(1, mmax(0.2, qRatio)) - this.lastFlowFactor);
-    const aN = mmin(1, DT / 0.5);
-    this.noiseQRatio = this.noiseQRatio + aN * (qRatio - this.noiseQRatio);
+    // 停转期间保持（重新起转时不出现虚假的"近失速"噪音）
+    if (!this.isStopped(c)) {
+      const aN = mmin(1, DT / 0.5);
+      this.noiseQRatio = this.noiseQRatio + aN * (qRatio - this.noiseQRatio);
+    }
     return dp;
   }
 }

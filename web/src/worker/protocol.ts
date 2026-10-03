@@ -1,5 +1,5 @@
 // 主线程 ↔ 仿真 Worker 的消息格式。
-import type { Layout, Mount, Rect } from '../model/types';
+import type { FanCurves, Layout, Mount, Rect } from '../model/types';
 import type { AirflowTemps, CFDDiag, FanStatus, Recommendation, ScenarioSummary, Scores } from '../solver/diagnostics';
 import type { SteadyOptions } from '../solver/steady';
 
@@ -15,6 +15,8 @@ export type Command =
   | { type: 'reset' }
   | { type: 'setPower'; name: ComponentName; watts: number }
   | { type: 'setFan'; auto: boolean; pct: number }
+  /** 温控曲线档位：立即作用于求解器（同 MATLAB setFanProfile） */
+  | { type: 'setFanCurves'; curves: FanCurves }
   | { type: 'setForceReassemble'; on: boolean };
 
 /** 画静态几何与粒子重生所需的信息（每次重建求解器发送一次） */
@@ -54,7 +56,10 @@ export interface Status {
   iteration: number;
   time: number; // 仿真时间 [s]
   tj: Partial<Record<ComponentName, number>>;
-  throttle: Partial<Record<ComponentName, number>>;
+  /** CPU/GPU 频率比 φ（1 = 满频） */
+  freq: Partial<Record<'cpu' | 'gpu', number>>;
+  /** 温度墙降频中或超温（CPU/GPU 超 tjmax、电源超告警温度） */
+  hot: Partial<Record<ComponentName, boolean>>;
   temps: AirflowTemps;
   scores: Scores;
   diag: CFDDiag | null;

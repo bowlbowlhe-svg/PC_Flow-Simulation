@@ -426,6 +426,11 @@ button.danger {
   font-weight: normal;
 }
 
+/* 低温停转 / 半被动停转中的风扇 */
+.fan-table tr.fan-stopped td {
+  color: var(--muted);
+}
+
 .error {
   background: #3a1111;
   border: 1px solid #883333;

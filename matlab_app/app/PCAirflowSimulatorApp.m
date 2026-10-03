@@ -12,7 +12,9 @@ classdef PCAirflowSimulatorApp < handle
     properties (Constant)
         STATE_ITEMS = {'空', '进气', '排气'}
         STATE_KEYS  = {'none', 'intake', 'exhaust'}
-        MODEL_ITEMS = {'P12', 'P14', 'NF_A12', 'NF_A14', 'RX120', 'RX140', 'Stock120'}
+        MODEL_ITEMS = {'P12', 'P14', 'NF_A12', 'NF_A14', 'T30', 'M25_140', 'Stock120'}
+        FAN_PROFILE_KEYS = {'quiet', 'standard', 'performance'}
+        FAN_PROFILE_ITEMS = {'静音', '标准', '性能', '自定义'}
         SPEED_ITEMS = {'自动', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%'}
         SCENARIO_NAMES = {'A', 'B', 'C'}
         GPU_SLOT_ITEMS = {'2.5 槽（51 mm）', '3 槽（61 mm）', '3.5 槽（71 mm）', '4 槽（81 mm）'}
@@ -39,12 +41,13 @@ classdef PCAirflowSimulatorApp < handle
         CPUTempLabel       matlab.ui.control.Label
         GPUTempLabel       matlab.ui.control.Label
         TotalScoreLabel    matlab.ui.control.Label
-        ScoreCoolingLabel  matlab.ui.control.Label
+        ScoreThermalLabel  matlab.ui.control.Label
         ScorePerfLabel     matlab.ui.control.Label
-        ScoreBalanceLabel  matlab.ui.control.Label
-        ScoreMarginLabel   matlab.ui.control.Label
+        ScoreAirLabel      matlab.ui.control.Label
+        ScoreClassLabel    matlab.ui.control.Label
         ScoreNoiseLabel    matlab.ui.control.Label
-        ScoreValueLabel    matlab.ui.control.Label
+        ScoreAirKLabel     matlab.ui.control.Label
+        FanProfileDrop     matlab.ui.control.DropDown
         ReynoldsLabel      matlab.ui.control.Label
         GrashofLabel       matlab.ui.control.Label
         NusseltLabel       matlab.ui.control.Label
@@ -308,12 +311,14 @@ classdef PCAirflowSimulatorApp < handle
 
             pScore = app.sectionPanel(tab, [5 465 388 80], '综合评分');
             app.TotalScoreLabel   = uilabel(pScore, 'Position', [10 35 120 25], 'Text', '总分: --/100', 'FontSize', 16, 'FontWeight', 'bold', 'FontColor', [1 1 1]);
-            app.ScoreCoolingLabel = uilabel(pScore, 'Position', [140 35 80 20], 'Text', '散热: --', 'FontColor', fg, 'FontSize', 11);
-            app.ScorePerfLabel    = uilabel(pScore, 'Position', [225 35 80 20], 'Text', '性能: --', 'FontColor', fg, 'FontSize', 11);
-            app.ScoreBalanceLabel = uilabel(pScore, 'Position', [310 35 75 20], 'Text', '均衡: --', 'FontColor', fg, 'FontSize', 11);
-            app.ScoreMarginLabel  = uilabel(pScore, 'Position', [140 10 80 20], 'Text', '余量: --', 'FontColor', fg, 'FontSize', 11);
-            app.ScoreNoiseLabel   = uilabel(pScore, 'Position', [225 10 80 20], 'Text', '噪音: --', 'FontColor', fg, 'FontSize', 11);
-            app.ScoreValueLabel   = uilabel(pScore, 'Position', [310 10 75 20], 'Text', '性价比: --', 'FontColor', fg, 'FontSize', 11);
+            % 四项 0–100，按 CPU+GPU 功率归入办公/游戏/满载档加权（见 CFDSolverBase.calculateScores）
+            app.ScorePerfLabel    = uilabel(pScore, 'Position', [140 35 80 20], 'Text', '性能: --', 'FontColor', fg, 'FontSize', 11);
+            app.ScoreThermalLabel = uilabel(pScore, 'Position', [225 35 80 20], 'Text', '温度: --', 'FontColor', fg, 'FontSize', 11);
+            app.ScoreNoiseLabel   = uilabel(pScore, 'Position', [310 35 75 20], 'Text', '噪音: --', 'FontColor', fg, 'FontSize', 11);
+            app.ScoreClassLabel   = uilabel(pScore, 'Position', [10 10 125 20], 'Text', '--档权重', 'FontColor', fg, 'FontSize', 11);
+            app.ScoreAirLabel     = uilabel(pScore, 'Position', [140 10 80 20], 'Text', '风道: --', 'FontColor', fg, 'FontSize', 11);
+            app.ScoreAirKLabel    = uilabel(pScore, 'Position', [225 10 160 20], 'Text', '机箱热阻: --', 'FontColor', fg, 'FontSize', 11, ...
+                'Tooltip', '每 100 W 发热，箱内与 CPU/GPU 进风平均升温多少 °C（越低风道越好）');
 
             pCFD = app.sectionPanel(tab, [5 345 388 110], 'CFD诊断');
             c = [0 0.83 1];
@@ -351,7 +356,11 @@ classdef PCAirflowSimulatorApp < handle
             app.GamingBtn = app.plainButton(pPower, [300 34 78 22], '游戏', @(src,event)app.setScenario('gaming'));
             app.HeavyBtn  = app.plainButton(pPower, [300 6 78 22],  '满载', @(src,event)app.setScenario('heavy'));
 
-            pFan = app.sectionPanel(tab, [5 445 388 70], '风扇转速（"自动"档风扇）');
+            pFan = app.sectionPanel(tab, [5 415 388 100], '风扇转速（"自动"档风扇）');
+            uilabel(pFan, 'Position', [10 50 60 18], 'Text', '温控曲线', 'FontColor', fg, 'FontSize', 11);
+            app.FanProfileDrop = uidropdown(pFan, 'Position', [75 48 100 22], 'Items', app.FAN_PROFILE_ITEMS, ...
+                'Value', '标准', 'FontSize', 10, 'ValueChangedFcn', @(src,event)app.setFanProfile(src.Value), ...
+                'Tooltip', '静音 / 标准 / 性能：机箱、塔扇、显卡（低温停转）、电源（半被动）风扇的温控曲线');
             app.AutoFanButton = uibutton(pFan, 'Position', [10 12 60 25], 'Text', '自动', 'FontSize', 10, ...
                 'BackgroundColor', [0 0.2 0.3], 'FontColor', [0 0.83 1], 'ButtonPushedFcn', @(src,event)app.toggleAutoFan());
             uilabel(pFan, 'Position', [80 15 40 18], 'Text', '手动', 'FontColor', fg, 'FontSize', 11);
@@ -359,8 +368,8 @@ classdef PCAirflowSimulatorApp < handle
             app.FanSpeedSlider.ValueChangedFcn = @(src,event)app.FanSpeedSliderValueChanged(event);
             app.FanSpeedLbl = uilabel(pFan, 'Position', [305 15 50 18], 'Text', '40%', 'FontColor', fg, 'FontSize', 11);
 
-            pList = app.sectionPanel(tab, [5 5 388 430], '各风扇工作状态');
-            app.FanTable = uitable(pList, 'Position', [8 95 372 300], ...
+            pList = app.sectionPanel(tab, [5 5 388 400], '各风扇工作状态');
+            app.FanTable = uitable(pList, 'Position', [8 95 372 270], ...
                 'ColumnName', {'风扇', '转速', '实测CFM', '自由CFM', '静压Pa', '噪音dB', '占比%'}, ...
                 'ColumnWidth', {96, 44, 50, 50, 44, 44, 40}, 'RowName', {}, 'FontSize', 10, ...
                 'Data', cell(0, 7));
@@ -370,7 +379,7 @@ classdef PCAirflowSimulatorApp < handle
                 'VerticalAlignment', 'top', 'Text', sprintf([ ...
                 '实测 = 穿过风扇的流量；自由 = 当前转速下的自由风量（无阻力）；静压 = 工作点压升。\n' ...
                 '噪音 = 听音位置（机箱前侧 1 m）单扇声压级 = 转速 + 工作点（背压过高/近失速）\n' ...
-                '+ 格栅/滤网 + 位置修正；占比 = 声能占总噪音的百分比。']));
+                '+ 格栅/滤网 + 鳍片 + 位置修正；占比 = 声能占比；停 = 低温/半被动停转。']));
         end
 
         function createLayoutTab(app, tab)
@@ -1023,26 +1032,26 @@ classdef PCAirflowSimulatorApp < handle
             catch ME
                 app.LastError = ME.message;
                 scores = struct('intake',25,'topExhaust',25,'rearExhaust',25,'internalAmbient',25,...
-                    'noiseDb',0,'performance',0,'cpuTemp',25,'gpuTemp',25,'total',0,...
-                    'cooling',0,'balance',0,'margin',0,'noise',0,'value',0);
+                    'noiseDb',0,'perfPct',0,'cpuTemp',25,'gpuTemp',25,'total',0,...
+                    'perf',0,'thermal',0,'noise',0,'airflow',0,'clsName','--','airK',0);
             end
             app.IntakeTempLabel.Text   = sprintf('进气: %.1f°C', scores.intake);
             app.TopExhaustLabel.Text   = sprintf('顶排: %.1f°C', scores.topExhaust);
             app.SideExhaustLabel.Text  = sprintf('后排: %.1f°C', scores.rearExhaust);
             app.InternalTempLabel.Text = sprintf('内部: %.1f°C', scores.internalAmbient);
             app.NoiseLabel.Text        = sprintf('噪音: %ddB', scores.noiseDb);
-            app.PerformanceLabel.Text  = sprintf('性能: %d%%', scores.performance);
+            app.PerformanceLabel.Text  = sprintf('性能: %.1f%%', scores.perfPct);
             if app.Solver.hasCpu, app.CPUTempLabel.Text = sprintf('CPU: %d°C', scores.cpuTemp);
             else, app.CPUTempLabel.Text = 'CPU: —'; end
             if app.Solver.hasGpu, app.GPUTempLabel.Text = sprintf('GPU: %d°C', scores.gpuTemp);
             else, app.GPUTempLabel.Text = 'GPU: —'; end
             app.TotalScoreLabel.Text   = sprintf('总分: %d/100', scores.total);
-            app.ScoreCoolingLabel.Text = sprintf('散热: %d', scores.cooling);
-            app.ScorePerfLabel.Text    = sprintf('性能: %d', scores.performance);
-            app.ScoreBalanceLabel.Text = sprintf('均衡: %d', scores.balance);
-            app.ScoreMarginLabel.Text  = sprintf('余量: %d', scores.margin);
+            app.ScorePerfLabel.Text    = sprintf('性能: %d', scores.perf);
+            app.ScoreThermalLabel.Text = sprintf('温度: %d', scores.thermal);
             app.ScoreNoiseLabel.Text   = sprintf('噪音: %d', scores.noise);
-            app.ScoreValueLabel.Text   = sprintf('性价比: %d', scores.value);
+            app.ScoreClassLabel.Text   = sprintf('%s档权重', scores.clsName);
+            app.ScoreAirLabel.Text     = sprintf('风道: %d', scores.airflow);
+            app.ScoreAirKLabel.Text    = sprintf('机箱热阻: %.1f°C/100W', scores.airK);
 
             if ~isempty(app.Solver.lastDiag)
                 dg = app.Solver.lastDiag;
@@ -1344,9 +1353,13 @@ classdef PCAirflowSimulatorApp < handle
             D = cell(numel(list), 7);
             for k = 1:numel(list)
                 f = list(k);
-                D(k, :) = {f.name, sprintf('%.0f', f.rpm), sprintf('%.1f', f.cfm), ...
-                    sprintf('%.1f', f.freeCfm), sprintf('%.1f', f.dp), sprintf('%.1f', f.noiseDb), ...
-                    sprintf('%.0f', f.sharePct)};
+                if f.stopped
+                    D(k, :) = {f.name, '停', sprintf('%.1f', f.cfm), '0.0', '0.0', '—', '0'};   % 低温停转 / 半被动
+                else
+                    D(k, :) = {f.name, sprintf('%.0f', f.rpm), sprintf('%.1f', f.cfm), ...
+                        sprintf('%.1f', f.freeCfm), sprintf('%.1f', f.dp), sprintf('%.1f', f.noiseDb), ...
+                        sprintf('%.0f', f.sharePct)};
+                end
             end
             app.FanTable.Data = D;
             if isempty(list)
@@ -1356,8 +1369,13 @@ classdef PCAirflowSimulatorApp < handle
             [db, ~] = app.Solver.totalNoise();
             [~, i] = max([list.sharePct]);
             p = list(i).noise;
-            app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；最响：%s %.1f dB（占 %.0f%%）\n= 转速 %.1f %+.1f 工作点 %+.1f 格栅 %+.1f 位置', ...
-                db, list(i).name, p.total, list(i).sharePct, p.base, p.op, p.grille, p.pos);
+            if isinf(p.total)                   % 风扇全部停转
+                app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；风扇全部停转', db);
+                return;
+            end
+            finTxt = ''; if p.fin ~= 0, finTxt = sprintf(' %+.1f 鳍片', p.fin); end
+            app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；最响：%s %.1f dB（占 %.0f%%）\n= 转速 %.1f %+.1f 工作点 %+.1f 格栅%s %+.1f 位置', ...
+                db, list(i).name, p.total, list(i).sharePct, p.base, p.op, p.grille, finTxt, p.pos);
         end
 
         % ================= 功率与全局风扇 =================
@@ -1440,6 +1458,32 @@ classdef PCAirflowSimulatorApp < handle
                 app.AutoFanButton.Text = '手动';
                 app.AutoFanButton.BackgroundColor = [0.1 0.1 0.2];
             end
+        end
+
+        function setFanProfile(app, label)
+            % 温控曲线档位：静音 / 标准 / 性能（"自定义" = 配置文件里的曲线，选它不改动）。立即作用于求解器，
+            % 并写入布局（应用布局、保存配置时沿用，同功率）
+            k = find(strcmp(app.FAN_PROFILE_ITEMS(1:3), label), 1);
+            if isempty(k)                       % "自定义"只用来显示配置文件里的曲线，不能选：回显当前档位
+                app.syncFanProfileDrop(app.Solver.layout);
+                return;
+            end
+            app.applyFanCurves(fan_curve_profiles(app.FAN_PROFILE_KEYS{k}));
+            app.stateChanged();
+            app.resumeAfterChange();
+        end
+
+        function applyFanCurves(app, C)
+            % 温控曲线立即作用于求解器，并写入其布局（重置、应用布局、保存配置、方案快照都沿用，同功率）
+            app.Solver.fanCurves = C;
+            app.Solver.layout.fanCurves = C;
+        end
+
+        function syncFanProfileDrop(app, L)
+            % 下拉框显示布局的温控曲线档位（不是三档之一时显示"自定义"）
+            C = layout_fan_curves(L);
+            k = find(strcmp(app.FAN_PROFILE_KEYS, C.profile), 1);
+            if isempty(k), app.FanProfileDrop.Value = '自定义'; else, app.FanProfileDrop.Value = app.FAN_PROFILE_ITEMS{k}; end
         end
 
         function setScenario(app, scenario)
@@ -1638,6 +1682,7 @@ classdef PCAirflowSimulatorApp < handle
             prevErr = app.LastError;
             app.LastError = '';
             app.Solver = s;
+            if ~isempty(app.FanProfileDrop), app.syncFanProfileDrop(s.layout); end
             app.applyGridMode();
             app.SteadyIter = -1;
             app.StatusMsg = '';
@@ -1740,6 +1785,7 @@ classdef PCAirflowSimulatorApp < handle
             end
             p = app.Solver.powerW;
             L.power = struct('cpu', p.cpu, 'gpu', p.gpu, 'psu', p.psu);
+            L.fanCurves = app.Solver.fanCurves;           % 温控曲线档位随求解器（同功率）
         end
 
         function D = slotTableData(app)
@@ -1891,9 +1937,11 @@ classdef PCAirflowSimulatorApp < handle
             end
             old = app.Solver.layout;
             oldP = app.Solver.powerW;
+            oldC = app.Solver.fanCurves;
             try
                 app.setPendingFromLayout(L);
                 if isfield(L, 'power'), app.setPowers([L.power.cpu L.power.gpu L.power.psu]); end
+                app.applyFanCurves(layout_fan_curves(L));    % 配置里的温控曲线（缺省为标准档）随载入生效
                 [~, name, ext] = fileparts(file);
                 app.LayoutLabel = ['配置 ' name ext];
                 ok = app.applyLayout(false);
@@ -1901,7 +1949,9 @@ classdef PCAirflowSimulatorApp < handle
                 app.reportError('配置无效', ME);
                 ok = false;
             end
-            if ~ok        % 恢复原布局与功率
+            if ~ok        % 恢复原布局、功率与温控曲线
+                app.applyFanCurves(oldC);
+                app.syncFanProfileDrop(app.Solver.layout);
                 app.setPendingFromLayout(old);
                 app.setPowers([oldP.cpu oldP.gpu oldP.psu]);
                 app.LayoutLabel = app.AppliedLabel;
@@ -1949,18 +1999,21 @@ classdef PCAirflowSimulatorApp < handle
             snap = app.Scenarios{idx};
             if isempty(snap), return; end
             s0 = app.Solver;
-            p0 = s0.powerW; auto0 = s0.autoFanEnabled; pct0 = s0.fanSpeedRatio;
+            p0 = s0.powerW; auto0 = s0.autoFanEnabled; pct0 = s0.fanSpeedRatio; C0 = s0.fanCurves;
             ok = false;
             try
                 app.setPendingFromLayout(snap.layout);
                 app.setPowers(snap.powers);
                 app.setGlobalFan(snap.autoFan, snap.fanSpeedRatio);
+                app.applyFanCurves(layout_fan_curves(snap.layout));   % 方案保存时的温控曲线
                 app.LayoutLabel = snap.label;
                 ok = app.applyLayout(false);
             catch ME
                 app.reportError('载入方案失败', ME);
             end
-            if ~ok                              % 失败：恢复原布局、功率与风扇设置
+            if ~ok                              % 失败：恢复原布局、功率与风扇设置（含温控曲线）
+                app.applyFanCurves(C0);
+                app.syncFanProfileDrop(app.Solver.layout);
                 app.setPendingFromLayout(s0.layout);
                 app.setPowers([p0.cpu p0.gpu p0.psu]);
                 app.setGlobalFan(auto0, pct0);

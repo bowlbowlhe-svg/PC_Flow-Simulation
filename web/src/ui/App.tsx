@@ -8,7 +8,8 @@ import { layoutGpuSlots } from '../model/gpuSlots';
 import { layoutDefault } from '../model/layoutDefault';
 import { layoutFromJson, layoutToJson } from '../model/layoutJson';
 import type { ScenarioSnap } from '../model/scenarioTable';
-import type { Layout } from '../model/types';
+import { fanCurveProfiles, layoutFanCurves, type FanProfile } from '../model/fanCurves';
+import type { FanCurves, Layout } from '../model/types';
 import type { ComponentName } from '../worker/protocol';
 import { colormapGradient, type ColormapName } from './colormap';
 import { compositeImage, downloadBlob, GifRecorder, timestamp } from './exporters';
@@ -19,7 +20,7 @@ import { FansTab, POWER_LIMITS, StatusTab } from './panels';
 import { PQChart } from './PQChart';
 import { SimClient, type SimState } from './simClient';
 
-export const APP_VERSION = '1.3.1';
+export const APP_VERSION = '1.4.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -59,6 +60,8 @@ export function App() {
   const [powers, setPowers] = useState<Record<ComponentName, number>>(() => ({ ...initial.power }));
   const [autoFan, setAutoFan] = useState(true);
   const [fanPct, setFanPct] = useState(40);
+  // 当前求解器的温控曲线（档位下拉框；应用布局、保存配置、方案快照沿用，同 MATLAB Solver.fanCurves）
+  const [fanCurves, setFanCurves] = useState<FanCurves>(() => layoutFanCurves(initial));
   const [precise, setPrecise] = useState(false);
   const [hover, setHover] = useState('');
   const [spec, setSpec] = useState<{ title: string; unit: string; cmap: ColormapName; clim: [number, number] }>({ title: '', unit: '', cmap: 'speed', clim: [0, 2] });
@@ -115,7 +118,7 @@ export function App() {
   let pending: Layout | null = null;
   let pendingError: string | null = null;
   try {
-    pending = buildPending(pendingBase, slots, shroudGap, gpuSlots, defaultGaps, powers, cpuFans);
+    pending = buildPending(pendingBase, slots, shroudGap, gpuSlots, defaultGaps, powers, cpuFans, fanCurves);
   } catch (e) {
     pendingError = e instanceof Error ? e.message : String(e);
   }
@@ -145,6 +148,12 @@ export function App() {
       client.send({ type: 'setFan', auto, pct });
       resumeIfPaused();
     }
+  };
+  const onFanProfile = (key: FanProfile) => {
+    const C = fanCurveProfiles(key);
+    setFanCurves(C);
+    client.send({ type: 'setFanCurves', curves: C });
+    resumeIfPaused();
   };
   const preciseRef = useRef(precise);
   preciseRef.current = precise;
@@ -184,6 +193,7 @@ export function App() {
     setPowers(p);
     setAutoFan(auto);
     setFanPct(pct);
+    setFanCurves(layoutFanCurves(L));
     if (runSteady) client.send({ type: 'steady', opts: gridScale >= 1 ? { chunk: 25 } : {} });
     return true;
   };
@@ -223,7 +233,7 @@ export function App() {
     return {
       summary: st.summary,
       label: appliedLabel,
-      layout: sim.info.layout,
+      layout: { ...sim.info.layout, fanCurves: structuredClone(fanCurves) },
       powers: [powers.cpu, powers.gpu, powers.psu],
       gridScale: sim.info.gridScale,
       steady: st.atSteady,
@@ -371,7 +381,7 @@ export function App() {
                 onChange={async (e) => {
                   const sel = e.target as HTMLSelectElement;
                   const gs = Number(sel.value);
-                  if (await rebuild(applied, gs)) setGridScale(gs);
+                  if (await rebuild({ ...applied, fanCurves }, gs)) setGridScale(gs); // 沿用当前温控曲线（同 MATLAB Solver.layout）
                   else sel.value = String(gridScale); // 失败：下拉框回到原网格档
                 }}
               >
@@ -427,6 +437,8 @@ export function App() {
             powers={powers}
             autoFan={autoFan}
             fanPct={fanPct}
+            fanProfile={fanCurves.profile}
+            onFanProfile={onFanProfile}
             onPower={onPower}
             disabled={building}
             onScenario={(p) => {

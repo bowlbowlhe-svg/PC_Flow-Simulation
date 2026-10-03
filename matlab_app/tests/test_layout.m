@@ -43,11 +43,12 @@ function pass = test_layout()
     % 4) 安装检查
     R = layout_fan_report(L0);
     errs = check(errs, isempty(R.warnings), '默认布局不应有安装警告');
-    errs = check(errs, abs(R.intakeCfm - 112) < 0.1 && abs(R.exhaustCfm - 121) < 0.1 && strcmp(R.pressure, '平衡'), ...
-        '默认布局满速标称进/排 112/121 CFM、平衡');
-    % 低速：P12 520 rpm → 16.18 CFM；Stock120 920 rpm → 27.18 CFM
-    errs = check(errs, abs(R.intakeCfmIdle - 32.36) < 0.05 && abs(R.exhaustCfmIdle - 43.36) < 0.05 && ...
-        strcmp(R.pressureIdle, '负压'), '默认布局低速标称进/排 32.4/43.4 CFM、负压');
+    errs = check(errs, abs(R.intakeCfm - 112.6) < 0.01 && abs(R.exhaustCfm - 121.3) < 0.01 && strcmp(R.pressure, '平衡'), ...
+        '默认布局满速标称进/排 112.6/121.3 CFM、平衡');
+    % 低速（机箱风扇曲线最低占空比 20%）：P12 max(200, 0.2·1800) = 360 rpm → 11.26 CFM；
+    % Stock120 max(600, 0.2·2200) = 600 rpm → 17.73 CFM
+    errs = check(errs, abs(R.intakeCfmIdle - 22.52) < 0.01 && abs(R.exhaustCfmIdle - 28.99) < 0.01 && ...
+        strcmp(R.pressureIdle, '负压'), '默认布局低速标称进/排 22.5/29.0 CFM、负压');
     L3 = L0;
     L3.caseFans(end+1) = L3.caseFans(1);
     L3.caseFans(end).alongMm = L3.caseFans(1).alongMm - 60;     % 同壁重叠 60 mm
@@ -180,6 +181,50 @@ function pass = test_layout()
     Lj = layout_json('load', f);
     delete(f);
     errs = check(errs, isequal(layout_cpu_tower(Lj), tw1), 'JSON 往返应保留双塔与塔扇数量');
+
+    % 4d) 风扇型号库与温控曲线（v4.6.0）：旧型号名 RX120/RX140 读为 T30/M25_140；三个曲线档位都能构建；
+    %     曲线、dvfs 取值不合法时 JSON 读取报错；没有 fanCurves、dvfs 的旧布局按标准档与默认参数
+    Lx = L0; Lx.caseFans(1).model = 'RX120'; Lx.caseFans(2).model = 'RX140';
+    layout_json('save', Lx, f);
+    Lxj = layout_json('load', f);
+    errs = check(errs, strcmp(Lxj.caseFans(1).model, 'T30') && strcmp(Lxj.caseFans(2).model, 'M25_140'), ...
+        '旧型号名 RX120/RX140 应读为 T30/M25_140');
+    for pf = {'quiet', 'standard', 'performance'}
+        Lc = L0; Lc.fanCurves = fan_curve_profiles(pf{1});
+        layout_json('save', Lc, f);
+        Lcj = layout_json('load', f);
+        sc = CFDSolverFEM([], [], [], Lcj, 0.5);
+        errs = check(errs, isequal(sc.fanCurves, Lc.fanCurves), ['曲线档位 ' pf{1} ' 应能 JSON 往返并构建']);
+    end
+    badCurves = {@(L) setfield(L, 'fanCurves', setfield(L.fanCurves, 'caseFan', struct('T', [50 40], 'duty', [0.2 0.5]))), ...
+                 @(L) setfield(L, 'fanCurves', setfield(L.fanCurves, 'gpu', struct('T', [50 60], 'duty', [0.2 1.5]))), ...
+                 @(L) setfield(L, 'cpu', setfield(L.cpu, 'dvfs', setfield(L.cpu.dvfs, 'minFreq', 0))), ...
+                 @(L) setfield(L, 'gpu', setfield(L.gpu, 'dvfs', setfield(L.gpu.dvfs, 'leakShar', 0.1))), ...
+                 @(L) setfield(L, 'fanCurves', setfield(L.fanCurves, 'caseFan', [])), ...
+                 @(L) setfield(L, 'cpu', setfield(L.cpu, 'dvfs', 5)), ...
+                 @(L) setfield(L, 'fanCurves', setfield(L.fanCurves, 'gpu', setfield(L.fanCurves.gpu, 'stopBelowC', 'x'))), ...
+                 @(L) setfield(L, 'fanCurves', setfield(L.fanCurves, 'caseFan', setfield(L.fanCurves.caseFan, 'T', [25 NaN 70 80 85])))};
+    for k = 1:numel(badCurves)
+        layout_json('save', badCurves{k}(L0), f);
+        try
+            layout_json('load', f);
+            errs{end+1} = sprintf('不合法的曲线/dvfs（第 %d 例）应报错', k); %#ok<AGROW>
+        catch ME
+            errs = check(errs, strcmp(ME.identifier, 'layout_json:invalid'), ['错误标识应为 layout_json:invalid：' ME.identifier]);
+        end
+    end
+    % 档位名与曲线不符（标着性能、实为静音曲线）或为空时记为 custom
+    Lm = L0; Lm.fanCurves = fan_curve_profiles('quiet'); Lm.fanCurves.profile = 'performance';
+    layout_json('save', Lm, f);
+    Lmj = layout_json('load', f);
+    Le = L0; Le.fanCurves.profile = '';
+    errs = check(errs, strcmp(Lmj.fanCurves.profile, 'custom') && strcmp(layout_fan_curves(Le).profile, 'custom') && ...
+        strcmp(layout_fan_curves(L0).profile, 'standard'), '档位名与曲线不符或为空时应记为 custom');
+    Lold = rmfield(L0, 'fanCurves'); Lold.cpu = rmfield(Lold.cpu, 'dvfs'); Lold.gpu = rmfield(Lold.gpu, 'dvfs');
+    so = CFDSolverFEM([], [], [], Lold, 0.5);
+    errs = check(errs, isequal(so.fanCurves, fan_curve_profiles('standard')) && ...
+        isequal(so.CPU_HEATSINK.dvfs, layout_dvfs(L0, 'cpu')) && isequal(so.GPU_HEATSINK.dvfs, layout_dvfs(L0, 'gpu')), ...
+        '没有 fanCurves、dvfs 的旧布局应按标准档与默认参数');
 
     % 5) JSON 字段取值检查
     Lb = L0; Lb.caseFans(1).type = 'Intake';

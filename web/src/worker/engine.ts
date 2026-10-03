@@ -99,6 +99,15 @@ export class SimEngine {
         this.markChanged();
         this.postFrame();
         return;
+      case 'setFanCurves':
+        // 求解器与其布局一起改（同 MATLAB setFanProfile）：重置时按布局重建曲线，档位不能回退
+        if (this.solver) {
+          this.solver.fanCurves = structuredClone(cmd.curves);
+          this.solver.layout.fanCurves = structuredClone(cmd.curves);
+        }
+        this.markChanged();
+        this.postFrame();
+        return;
       case 'setForceReassemble':
         if (this.solver) this.solver.forceReassemble = cmd.on;
         this.postFrame();
@@ -280,12 +289,14 @@ export class SimEngine {
     const s = solver ?? this.solver!;
     const nets = s.thermalNetworks;
     const tj: Status['tj'] = {};
-    const throttle: Status['throttle'] = {};
+    const freq: Status['freq'] = {};
+    const hot: Status['hot'] = {};
     for (const n of ['cpu', 'gpu', 'psu'] as const) {
       const net = nets[n];
       if (net) {
         tj[n] = net.T_junction;
-        throttle[n] = net.throttlingRatio;
+        if (n !== 'psu') freq[n] = net.freqRatio;
+        hot[n] = net.throttled || net.overTemp;
       }
     }
     const temps = s.lastTemps ?? computeAirflowTemperatures(s);
@@ -301,7 +312,8 @@ export class SimEngine {
       iteration: s.iteration,
       time: s.iteration * s.DT,
       tj,
-      throttle,
+      freq,
+      hot,
       temps,
       scores: calculateScores(s),
       diag: s.lastDiag,

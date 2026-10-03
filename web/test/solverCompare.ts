@@ -97,7 +97,7 @@ export function compareScalars(s: Solver, snap: Ref): FieldDiff[] {
     one(`Tsink_${n}`, net.T_sink_base, sc[`Tsink_${n}`], true);
     one(`power_${n}`, net.actualPower, sc[`power_${n}`], false);
     one(`hConv_${n}`, net.h_conv, sc[`hConv_${n}`], false);
-    one(`Ttheory_${n}`, net.T_theory_f, sc[`Ttheory_${n}`], true);
+    one(`freq_${n}`, net.freqRatio, sc[`freq_${n}`], false);
   }
   out.push({ name: 'fans.length', maxAbs: s.fans.length === sc.fans.length ? 0 : Infinity, refMax: sc.fans.length, at: 0, ok: s.fans.length === sc.fans.length });
   (sc.fans as Ref[]).forEach((rf, k) => {
@@ -121,8 +121,10 @@ export function compareDiagnostics(s: Solver, snap: Ref): FieldDiff[] {
   const sc = snap.scalars;
   const out: FieldDiff[] = [];
   const one = (name: string, a: number, b: number) => {
-    const d = Math.abs(a - b);
-    out.push({ name, maxAbs: d, refMax: Math.abs(b), at: 0, ok: d <= 1e-6 * Math.abs(b) + 1e-9 });
+    // 停转风扇的噪音为 −Inf：必须两边都是 −Inf（容差公式对无穷大无意义）
+    const inf = !Number.isFinite(b);
+    const d = a === b ? 0 : Math.abs(a - b);
+    out.push({ name, maxAbs: d, refMax: Math.abs(b), at: 0, ok: inf ? a === b : d <= 1e-6 * Math.abs(b) + 1e-9 });
   };
   const same = (name: string, a: unknown, b: unknown) => out.push({ name: `${name}=${String(a)}`, maxAbs: a === b ? 0 : Infinity, refMax: 0, at: 0, ok: a === b });
   const t = computeAirflowTemperatures(s);
@@ -131,14 +133,18 @@ export function compareDiagnostics(s: Solver, snap: Ref): FieldDiff[] {
   one('noiseDb', totalNoise(s).dbTotal, sc.noiseDb);
   for (const n of ['cpu', 'gpu', 'psu'] as const) {
     const net = s.thermalNetworks[n];
-    if (net) one(`throttle_${n}`, net.throttlingRatio, sc[`throttle_${n}`]);
+    if (!net) continue;
+    one(`freq_${n}`, net.freqRatio, sc[`freq_${n}`]);
+    same(`throttled_${n}`, net.throttled, sc[`throttled_${n}`]);
+    same(`overTemp_${n}`, net.overTemp, sc[`overTemp_${n}`]);
   }
   const fl = fanStatusList(s);
   same('fans.length', fl.length, sc.fans.length);
   (sc.fans as Ref[]).forEach((rf, k) => {
     same(`fan${k + 1}.name`, fl[k]?.name, rf.name);
     one(`fan${k + 1}.cfm`, fl[k]?.cfm, rf.cfm);
-    one(`fan${k + 1}.noiseDb`, fl[k]?.noiseDb, rf.noiseDb);
+    one(`fan${k + 1}.noiseDb`, fl[k]?.noiseDb, rf.noiseDb === null ? -Infinity : rf.noiseDb); // Octave 把 −Inf 写成 null
+    same(`fan${k + 1}.stopped`, fl[k]?.stopped, rf.stopped);
     one(`fan${k + 1}.lastQRatio`, s.fans[k]?.lastQRatio, rf.lastQRatio);
   });
   const om = openingMarkers(s);

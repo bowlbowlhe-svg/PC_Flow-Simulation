@@ -35,6 +35,10 @@ function L = layout_default(name)
     % ---- 默认功率 [W]（psu 为电源输出负载）----
     L.power = struct('cpu', 125, 'gpu', 250, 'psu', 450);
 
+    % ---- 自动温控风扇曲线（档位见 fan_curve_profiles：quiet / standard / performance）----
+    % 机箱风扇跟 CPU/GPU 较高者，塔扇跟 CPU，显卡风扇跟 GPU（低温停转），电源风扇跟电源温度（低负载半被动）。
+    L.fanCurves = fan_curve_profiles('standard');
+
     % ---- 风扇通用参数 ----
     % 盘厚 12 mm；机箱风扇开口格栅阻力 ζ（Δp = ζ·½ρv²，Idelchik 手册近似）
     L.fanDiskMm = 12;
@@ -58,7 +62,8 @@ function L = layout_default(name)
     L.cpu.thermal = struct('R_junction_to_case', 0.15, 'R_tim', 0.04, 'R_base', 0.05, ...
         'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.15);
     L.cpu.tjmax = 100;
-    L.cpu.throttleTemp = 95;
+    L.cpu.throttleTemp = 95;                       % 温度墙：超过后降频把结温压在这里（见 DetailedThermalNetwork）
+    L.cpu.dvfs = layout_dvfs(struct(), 'cpu');     % 加速频率随温度、功率随频率与温度（漏电）的参数
     L.cpu.fan = struct('model', 'Tower120', 'count', 2);
 
     % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条（固体）+ 鳍片（多孔，穿流 x）+ 卡下 3 风扇 ----
@@ -81,6 +86,7 @@ function L = layout_default(name)
         'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(57));   % 鳍片面积随厚度缩放
     L.gpu.tjmax = 95;
     L.gpu.throttleTemp = 87;
+    L.gpu.dvfs = layout_dvfs(struct(), 'gpu');
     L.gpu.fans = struct('model', 'GPU80', 'xs', [68 146 224]);
 
     % ---- 电源：自带风道。风扇朝下经机箱底部进风，热风从后面板排出 ----

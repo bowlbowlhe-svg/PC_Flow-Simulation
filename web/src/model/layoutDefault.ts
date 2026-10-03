@@ -2,6 +2,7 @@
 // 主板贴后壁（I/O 与扩展槽在后面板），前部留出前进风风扇的空间，电源在底部电源仓。
 import type { Acoustics, CaseFan, FanType, Layout, Mount, Rect } from './types';
 import { gpuFinArea } from './gpuSlots';
+import { fanCurveProfiles, layoutDvfs } from './fanCurves';
 
 export function rect(x: number, y: number, w: number, h: number): Rect {
   return { x, y, w, h };
@@ -13,6 +14,7 @@ export function acousticsDefault(): Acoustics {
     stallQ: 0.4,
     stallDb: 6,
     grilleRefZeta: 2,
+    finDb: 2, // 塔扇、显卡风扇贴着致密鳍片吹的附加噪音
     positionDb: { front: 0, top: -1, bottom: -2, rear: -3, cpu: -3, gpu: -3, psu: -4 },
   };
 }
@@ -37,6 +39,8 @@ export function layoutDefault(): Layout {
       wallTempC: { rear: 25, front: 25, top: 25, bottom: 25 },
     },
     power: { cpu: 125, gpu: 250, psu: 450 },
+    // 自动温控风扇曲线（档位：quiet / standard / performance，见 fanCurves.ts）
+    fanCurves: fanCurveProfiles('standard'),
     fanDiskMm: 12,
     grille: { intakeZeta: 2.0, exhaustZeta: 0.8 },
     acoustics: acousticsDefault(),
@@ -49,7 +53,8 @@ export function layoutDefault(): Layout {
       porous: { zetaThru: 8, zetaCross: 60, thru: 'x' },
       thermal: { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 },
       tjmax: 100,
-      throttleTemp: 95,
+      throttleTemp: 95, // 温度墙：超过后降频把结温压在这里
+      dvfs: layoutDvfs({} as Layout, 'cpu'),
       fan: { model: 'Tower120', count: 2 },
     },
     gpu: {
@@ -66,6 +71,7 @@ export function layoutDefault(): Layout {
       },
       tjmax: 95,
       throttleTemp: 87,
+      dvfs: layoutDvfs({} as Layout, 'gpu'),
       fans: { model: 'GPU80', xs: [68, 146, 224] },
     },
     psu: {
