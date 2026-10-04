@@ -1,6 +1,7 @@
 // 对比计算 Worker：按 CompareRunner 的口径分段推进自定义方案（与仿真 Worker 分开，互不阻塞），逐个场景回报进度与结果。
 import { COMPARE_SCENARIOS, CompareRunner } from '../compare/protocol';
-import { makeThumb } from '../compare/thumb';
+import { makeFieldThumb } from '../compare/thumb';
+import { geoOverlay } from '../solver/geoOverlay';
 import type { CompareCommand, CompareMessage } from './compareProtocol';
 
 const ctx = self as unknown as {
@@ -46,13 +47,11 @@ function tick(): void {
       ctx.postMessage({ type: 'progress', id: j.id, scenario: keys[j.k], index: j.k, count: keys.length, done: r.doneSteps, total: r.totalSteps });
     }
     if (!r.done) return schedule();
-    if (r.diverged || !r.auto || !r.autoField) throw new Error('计算发散');
-    const g = r.solver.geo.CASE2D.outer;
-    const th = makeThumb(r.autoField, { x: g.x, y: g.y, w: g.w, h: g.h }, j.cmd.protocol.gridScale >= 1 ? 2 : 1);
-    ctx.postMessage(
-      { type: 'case', id: j.id, scenario: keys[j.k], auto: r.auto, sweep: r.sweep, thumb: th },
-      [th.T.buffer, th.speed.buffer, th.solid.buffer],
-    );
+    if (r.diverged || !r.auto) throw new Error('计算发散');
+    if (!r.autoField) throw new Error('自动温控阶段的统计窗口为空，无法生成流场图');
+    // 速度块平均与预计算数据一致：280² 为 2×2（4 mm），140² 不平均
+    const th = makeFieldThumb(r.autoField, geoOverlay(r.solver), j.cmd.protocol.gridScale >= 1 ? 2 : 1);
+    ctx.postMessage({ type: 'case', id: j.id, scenario: keys[j.k], auto: r.auto, sweep: r.sweep, thumb: th }, [th.T.buffer, th.u.buffer, th.v.buffer]);
     j.k++;
     j.runner = null;
     if (j.k >= keys.length) {

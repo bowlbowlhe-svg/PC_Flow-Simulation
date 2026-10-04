@@ -59,12 +59,12 @@ export function colormapLUT(name: ColormapName): Uint8ClampedArray {
   return lut;
 }
 
-/** CSS 渐变（色标用） */
-export function colormapGradient(name: ColormapName, dir = 'to top'): string {
+/** CSS 渐变（色标用）；t0–t1 为取用的配色表区段（0–1） */
+export function colormapGradient(name: ColormapName, dir = 'to top', t0 = 0, t1 = 1): string {
   const lut = colormapLUT(name);
   const stops: string[] = [];
   for (let s = 0; s <= 10; s++) {
-    const i = Math.round((s / 10) * 255);
+    const i = Math.round((t0 + (s / 10) * (t1 - t0)) * 255);
     stops.push(`rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]}) ${s * 10}%`);
   }
   return `linear-gradient(${dir}, ${stops.join(', ')})`;

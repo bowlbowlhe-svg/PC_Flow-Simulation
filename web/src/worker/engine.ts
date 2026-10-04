@@ -1,5 +1,4 @@
 // 仿真引擎：持有求解器，处理界面命令，分小段推进并产出帧（与 Worker 全局对象解耦，便于在 Node 下测试）。
-import { layoutGpuSlots } from '../model/gpuSlots';
 import type { Layout } from '../model/types';
 import {
   calculateScores,
@@ -13,6 +12,7 @@ import {
 } from '../solver/diagnostics';
 import { CFM_PER_M3S, PQ_QGRID } from '../solver/fan';
 import { pchipEval } from '../numerics/pchipEval';
+import { geoOverlay } from '../solver/geoOverlay';
 import { Solver } from '../solver/solver';
 import { SteadyRunner } from '../solver/steady';
 import type { Command, ComponentName, FrameFields, StaticInfo, Status, SteadyStatus, WorkerMessage } from './protocol';
@@ -164,16 +164,8 @@ export class SimEngine {
     const isFluid = new Uint8Array(s.N);
     for (const i of fluid) isFluid[i] = 1;
     const inside = Array.from(g.insideMask).filter((i) => isFluid[i]);
-    let gpu: StaticInfo['gpu'];
-    if (g.gpu) {
-      let fanBottom = g.gpu.heatsink.y + g.gpu.heatsink.h - 1;
-      for (const f of g.fans) if (f.role === 'gpu') fanBottom = Math.max(fanBottom, f.rows[1]);
-      gpu = { pcb: g.gpu.pcb, heatsink: g.gpu.heatsink, slots: layoutGpuSlots(s.layout), fanBottom };
-    }
     return {
-      W: s.W,
-      H: s.H,
-      cellMm: g.cellMm,
+      ...geoOverlay(s),
       DT: s.DT,
       VEL_SCALE: s.VEL_SCALE,
       gridScale: g.gridScale,
@@ -182,15 +174,6 @@ export class SimEngine {
       obstacle: g.obstacle.slice(),
       fluidIdx: Int32Array.from(fluid),
       insideIdx: Int32Array.from(inside),
-      caseOuter: g.CASE2D.outer,
-      motherboardTray: g.CASE2D.motherboardTray,
-      cpu: g.cpu ? { base: g.cpu.base, finArea: g.cpu.finArea, stacks: g.cpu.stacks } : undefined,
-      gpu,
-      psu: g.psu ? { body: g.psu.body } : undefined,
-      ram: g.ram,
-      vrm: g.vrm,
-      chipset: g.chipset,
-      fans: g.fans.map((f) => ({ role: f.role, type: f.type, mount: f.mount, model: f.model, rows: f.rows, cols: f.cols, normal: f.normal })),
       markers: openingMarkers(s).map((m) => ({ x: m.x, y: m.y, mount: m.mount, kind: m.kind, fan: m.fan })),
       slots: g.slotSpans,
       fanDiskCells: g.fanDiskCells,

@@ -50,8 +50,8 @@ export default defineConfig(({ mode }) => ({
           rollupOptions: { output: { inlineDynamicImports: true } },
         }
       : {
-          // 对比展示页的块约 550 KB，其中约 450 KB 是预计算数据（JSON），按需加载，不影响主页面（约 180 KB）
-          chunkSizeWarningLimit: 700,
+          // 对比展示页的块约 760 KB，其中约 640 KB 是预计算数据（JSON，含 24 张流场图的 PNG），按需加载，不影响主页面（约 190 KB）
+          chunkSizeWarningLimit: 900,
         },
   test: {
     globals: true,

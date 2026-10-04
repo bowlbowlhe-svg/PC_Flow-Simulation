@@ -1,5 +1,6 @@
 // 主线程 ↔ 仿真 Worker 的消息格式。
-import type { FanCurves, Layout, Mount, Rect } from '../model/types';
+import type { FanCurves, Layout, Mount } from '../model/types';
+import type { GeoOverlay } from '../solver/geoOverlay';
 import type { AirflowTemps, CFDDiag, FanStatus, Recommendation, ScenarioSummary, Scores } from '../solver/diagnostics';
 import type { SteadyOptions } from '../solver/steady';
 
@@ -19,11 +20,8 @@ export type Command =
   | { type: 'setFanCurves'; curves: FanCurves }
   | { type: 'setForceReassemble'; on: boolean };
 
-/** 画静态几何与粒子重生所需的信息（每次重建求解器发送一次） */
-export interface StaticInfo {
-  W: number;
-  H: number;
-  cellMm: number;
+/** 画静态几何与粒子重生所需的信息（每次重建求解器发送一次）；元件轮廓与风扇见 GeoOverlay */
+export interface StaticInfo extends GeoOverlay {
   DT: number;
   VEL_SCALE: number;
   gridScale: number;
@@ -32,16 +30,6 @@ export interface StaticInfo {
   obstacle: Uint8Array;
   fluidIdx: Int32Array; // 可重生粒子的流体格（不含海绵环），0 基
   insideIdx: Int32Array;
-  caseOuter: Rect; // 1 基格坐标
-  motherboardTray?: Rect;
-  /** finArea 为鳍片外廓；stacks 为各组鳍片（双塔 2 组，中间间隙放塔扇） */
-  cpu?: { base: Rect; finArea: Rect; stacks: Rect[] };
-  gpu?: { pcb: Rect; heatsink: Rect; slots: number; fanBottom: number };
-  psu?: { body: Rect };
-  ram: Rect[];
-  vrm?: Rect;
-  chipset?: Rect;
-  fans: { role: string; type: string; mount: string; model: string; rows: [number, number]; cols: [number, number]; normal: [number, number] }[];
   markers: { x: number; y: number; mount: Mount; kind: string; fan: number }[];
   /** 机箱风扇安装位（FAN_SLOTS 顺序）的执行盘格范围（120 mm），界面标记用 */
   slots: { id: string; mount: Mount; cols: [number, number]; rows: [number, number] }[];

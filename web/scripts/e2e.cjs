@@ -313,7 +313,35 @@ function check(cond, msg) {
     for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
     return s / (d.length / 4);
   });
-  check(lit > 20, `缩略图已绘制（平均亮度 ${lit.toFixed(0)}）`);
+  check(lit > 20, `流场图已绘制（平均亮度 ${lit.toFixed(0)}）`);
+  // 13b. 流场图（L7）：风扇成本、风速 / 温差视图与参考方案、流线开关、点开大图（悬停读数、左右切换、Esc 关闭）
+  check((await text('.cmp-cards')).includes('风扇 ¥165'), '卡片显示机箱风扇成本（默认方案 ¥165）');
+  await p.selectOption('select.cmp-metric', 'price');
+  check((await text('.compare-page')).includes('按机箱风扇成本排序'), '可按机箱风扇成本排序');
+  await p.click('.cmp-controls >> text=风速');
+  check((await text('.cmp-controls')).includes('m/s'), '风速视图色标');
+  await p.click('.cmp-controls >> text=温差');
+  await p.waitForTimeout(500);
+  check((await p.$$('select.cmp-ref')).length === 1 && (await text('.cmp-cards')).includes('温差参考'), '温差视图：参考方案可选、参考卡片有标记');
+  check((await text('.cmp-controls')).includes('更热'), '温差色标');
+  await p.click('.cmp-controls >> text=温度');
+  await p.click('.cmp-controls >> text=流线');
+  await p.click('.cmp-controls >> text=流线');
+  await p.click('.cmp-cards .field-thumb >> nth=0');
+  await p.waitForSelector('.cmp-modal canvas', { timeout: 10000 });
+  const mb = await (await p.$('.cmp-modal canvas')).boundingBox();
+  const vp = p.viewportSize();
+  check(mb.width <= vp.width && mb.y + mb.height <= vp.height + 1, `大图在窗口内（${mb.width.toFixed(0)}×${mb.height.toFixed(0)}）`);
+  await p.mouse.move(mb.x + mb.width * 0.5, mb.y + mb.height * 0.45);
+  await p.waitForTimeout(200);
+  check(/°C，风速 [\d.]+ m\/s/.test(await text('.cmp-readout')), `大图悬停读数（${await text('.cmp-readout')}）`);
+  await shot('e2e_compare_zoom');
+  await p.keyboard.press('ArrowRight');
+  await p.waitForTimeout(200);
+  check((await text('.cmp-modal-head')).includes('2/8'), '大图左右切换方案');
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(200);
+  check((await p.$('.cmp-modal')) === null, 'Esc 关闭大图');
   await p.click('.cmp-controls >> text=满载');
   check((await text('.compare-page')).includes('满载场景：各方案'), '切换到满载场景');
   await p.selectOption('select.cmp-metric', 'noiseDb');
@@ -332,6 +360,10 @@ function check(cond, msg) {
   await p.click('.cmp-card >> nth=0 >> button.cmp-open');
   await p.waitForFunction(() => document.querySelector('.run-btns')?.textContent?.includes('停止'), null, { timeout: 60000 });
   await p.click('.tabs >> text=风扇布局');
+  // 仿真页原本就在跑稳态（"停止"已显示），等新布局的几何回来再读（L7：原来直接读，偶尔读到旧布局）
+  await p
+    .waitForFunction((t) => document.querySelector('.layout-info')?.textContent?.includes(`当前：${t}`), cardTitle, { timeout: 30000 })
+    .catch(() => {});
   const openedInfo = await text('.layout-info');
   check(openedInfo.includes(`当前：${cardTitle}`), `在仿真页打开（仿真页原在跑稳态）：载入"${cardTitle}"并跑到稳态（${openedInfo.split('\n')[0]}）`);
   await p.click('.tabs >> text=功率与风扇');
@@ -349,6 +381,11 @@ function check(cond, msg) {
   await p.screenshot({ path: `${OUT}/e2e_compare_mobile.png` });
   const overflow2 = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(overflow2 <= 0, `对比展示页窄屏无横向溢出（${overflow2}px）`);
+  await p.click('.cmp-cards .field-thumb >> nth=0');
+  await p.waitForSelector('.cmp-modal canvas', { timeout: 10000 });
+  const mb2 = await (await p.$('.cmp-modal canvas')).boundingBox();
+  check(mb2.x >= 0 && mb2.x + mb2.width <= 390, `窄屏大图在窗口内（${mb2.width.toFixed(0)} px 宽）`);
+  await p.click('.cmp-modal-close');
 
   check(logs.length === 0, `控制台无错误${logs.length ? '：\n' + logs.join('\n') : ''}`);
   await b.close();

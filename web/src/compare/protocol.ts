@@ -1,8 +1,10 @@
 // 对比展示页的计算口径（预计算数据、界面后台计算与 MATLAB tools/compare_scenarios.m 共用）：
 // 每个方案 × 场景从静止推进（自动温控），取后半段每一步的均值；再接续推进几个全局手动转速（"同噪音 / 同温度"的公平比较用）。
+// 自动温控阶段的统计窗口内同时累加温度、速度与各开口净风量的时均场（流场图用，只读状态，不影响推进）。
 import type { Layout } from '../model/types';
 import { DEFAULT_PROTOCOL, type CompareProtocol } from './scenarios';
-import { calculateScores, fanStatusList, totalNoise } from '../solver/diagnostics';
+import { calculateScores, fanStatusList, openingMarkers, totalNoise } from '../solver/diagnostics';
+import type { FieldMean } from './thumb';
 import { Solver } from '../solver/solver';
 
 export { COMPARE_SCENARIOS, DEFAULT_PROTOCOL, interpAt } from './scenarios';
@@ -36,15 +38,6 @@ export interface PointMetrics {
 
 export interface SweepPoint extends PointMetrics {
   pct: number;
-}
-
-/** 场快照（缩略图用）：格心值，列优先 W×H，与求解器相同 */
-export interface FieldSnap {
-  W: number;
-  H: number;
-  T: Float32Array; // 温度（障碍格为固体温度）
-  speed: Float32Array; // 风速 [m/s]（障碍格为 0）
-  solid: Uint8Array; // 1 = 障碍
 }
 
 const COLS = ['cpu', 'gpu', 'psu', 'interior', 'cfm'] as const;
@@ -85,23 +78,51 @@ function endMetrics(s: Solver, mean: number[], drift: number): PointMetrics {
   };
 }
 
-/** 当前温度、风速与障碍（缩略图用） */
-export function fieldSnap(s: Solver): FieldSnap {
-  const { uC, vC } = s.getCellVelocity();
-  const obs = s.geo.obstacle;
-  const T = new Float32Array(s.N);
-  const speed = new Float32Array(s.N);
-  const solid = new Uint8Array(s.N);
-  for (let i = 0; i < s.N; i++) {
-    if (obs[i] > 0) {
-      T[i] = s.T_solid[i];
-      solid[i] = 1;
-    } else {
-      T[i] = s.T_fluid[i];
-      speed[i] = Math.hypot(uC[i], vC[i]) * s.VEL_SCALE;
-    }
+/** 时均场的累加器（自动温控阶段的统计窗口） */
+class FieldAccumulator {
+  private T: Float64Array;
+  private u: Float64Array;
+  private v: Float64Array;
+  private cfm: Float64Array;
+  private n = 0;
+  constructor(private readonly s: Solver) {
+    this.T = new Float64Array(s.N);
+    this.u = new Float64Array(s.N);
+    this.v = new Float64Array(s.N);
+    this.cfm = new Float64Array(s.geo.openings.length);
   }
-  return { W: s.W, H: s.H, T, speed, solid };
+
+  add(): void {
+    const s = this.s;
+    const { uC, vC } = s.getCellVelocity();
+    const obs = s.geo.obstacle;
+    const vs = s.VEL_SCALE;
+    for (let i = 0; i < s.N; i++) {
+      if (obs[i] > 0) this.T[i] += s.T_solid[i];
+      else {
+        this.T[i] += s.T_fluid[i];
+        this.u[i] += uC[i] * vs;
+        this.v[i] += vC[i] * vs;
+      }
+    }
+    openingMarkers(s).forEach((m, k) => (this.cfm[k] += m.cfm));
+    this.n++;
+  }
+
+  result(): FieldMean {
+    const s = this.s;
+    const k = this.n ? 1 / this.n : NaN;
+    const T = new Float32Array(s.N);
+    const u = new Float32Array(s.N);
+    const v = new Float32Array(s.N);
+    for (let i = 0; i < s.N; i++) {
+      T[i] = this.T[i] * k;
+      u[i] = this.u[i] * k;
+      v[i] = this.v[i] * k;
+    }
+    const openings = openingMarkers(s).map((m, j) => ({ x: m.x, y: m.y, mount: m.mount, kind: m.kind, cfm: this.cfm[j] * k }));
+    return { W: s.W, H: s.H, T, u, v, solid: s.geo.obstacle.slice(), openings };
+  }
 }
 
 /**
@@ -112,7 +133,8 @@ export function fieldSnap(s: Solver): FieldSnap {
 export class CompareRunner {
   readonly solver: Solver;
   auto: PointMetrics | null = null;
-  autoField: FieldSnap | null = null;
+  /** 自动温控阶段统计窗口内的时均场（流场图用） */
+  autoField: FieldMean | null = null;
   readonly sweep: SweepPoint[] = [];
   diverged = false;
   aborted = false;
@@ -122,6 +144,7 @@ export class CompareRunner {
   private nAcc = 0;
   private tFirst = 0; // 窗口前 1/4 的最高结温之和
   private tLast = 0; // 窗口后 1/4 的最高结温之和
+  private field: FieldAccumulator | null = null;
 
   constructor(
     layout: Layout,
@@ -174,6 +197,7 @@ export class CompareRunner {
         s.stepMultiple(1);
         this.stepInPhase++;
         budget--;
+        if (this.phase === 0) (this.field ??= new FieldAccumulator(s)).add();
         const row = readRow(s);
         for (let c = 0; c < row.length; c++) this.acc[c] += row[c];
         const q = Math.floor((len - from) / 4);
@@ -198,7 +222,8 @@ export class CompareRunner {
     const m = endMetrics(s, mean, q ? (this.tLast - this.tFirst) / q : NaN);
     if (this.phase === 0) {
       this.auto = m;
-      this.autoField = fieldSnap(s);
+      this.autoField = this.field ? this.field.result() : null;
+      this.field = null;
     } else this.sweep.push({ ...m, pct: this.protocol.sweepPct[this.phase - 1] });
     this.phase++;
     this.stepInPhase = 0;

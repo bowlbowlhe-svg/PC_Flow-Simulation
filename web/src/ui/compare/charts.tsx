@@ -27,7 +27,7 @@ export function BarChart(p: {
   const H = p.schemes.length * rowH + 24;
   const vals = p.schemes.map((s) => {
     const c = s.cases[p.scenario];
-    return c ? p.metric.get(c.auto) : NaN;
+    return c ? p.metric.get(c.auto, s) : NaN;
   });
   const fin = vals.filter(Number.isFinite);
   const base = Math.min(p.metric.base ?? 0, ...(fin.length ? fin : [0]));

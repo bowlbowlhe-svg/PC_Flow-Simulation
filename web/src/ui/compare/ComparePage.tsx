@@ -1,8 +1,10 @@
 // 方案对比展示页：多个风扇方案 × 办公/游戏/满载，一眼看清温度、性能、噪音与评分的差别；
 // 预计算数据打开即显示，可把仿真页的当前布局加入对比（后台计算），点方案可回到仿真页细调。
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { COMPARE_SCENARIOS, type ScenarioKey } from '../../compare/scenarios';
 import type { CompareData } from '../../compare/data';
+import { fieldStats, inScaleRegion, percentile, type FieldThumb, type ThumbSrc } from '../../compare/thumb';
+import { layoutDefault } from '../../model/layoutDefault';
 import { colormapGradient } from '../colormap';
 import { BarChart, TradeoffChart } from './charts';
 import {
@@ -20,7 +22,8 @@ import {
   type FairMode,
   type SchemeView,
 } from './schemes';
-import { ThumbCanvas, type ThumbMode } from './ThumbCanvas';
+import { decodeThumb, FieldThumbView, HEAT_FLOOR, useThumb } from './FieldThumbView';
+import { sameGrid, type FieldMode, type FieldStyle } from './fieldMath';
 
 export interface CompareJob {
   label: string;
@@ -52,8 +55,13 @@ interface Props {
   onOpenInSim: (s: SchemeView, sc: ScenarioKey) => void;
 }
 
-/** 缩略图温度色标上限（空气温度为主，元件超出时取最亮色） */
-const THUMB_TMAX: Record<ScenarioKey, number> = { office: 45, gaming: 60, heavy: 70 };
+/** 预设方案的环境温度（流场图温度色标的下端；自定义方案按其布局） */
+const T_AMB_DEFAULT = layoutDefault().ambientC;
+/** 色标上限解码完成前的缺省值 */
+const T_HI_DEFAULT: Record<ScenarioKey, number> = { office: 45, gaming: 60, heavy: 70 };
+/** 温差参考方案的缺省（默认方案） */
+const DEFAULT_REF = 'balanced';
+const niceCeil = (v: number, step: number) => Math.ceil(v / step - 1e-9) * step;
 const f1 = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : '—');
 /** 统计窗口内最高结温漂移超过它（°C）视为"未完全稳态" */
 const DRIFT_WARN = 0.3;
@@ -65,7 +73,11 @@ export function ComparePage(p: Props) {
   const colors = useMemo(() => new Map(schemes.map((s, k) => [s.id, schemeColor(k)])), [schemes]);
   const [scenario, setScenario] = useState<ScenarioKey>('gaming');
   const [metricKey, setMetricKey] = useState('score');
-  const [thumbMode, setThumbMode] = useState<ThumbMode>('temperature');
+  const [thumbMode, setThumbMode] = useState<FieldMode>('temperature');
+  const [stream, setStream] = useState(true);
+  const [labels, setLabels] = useState(true);
+  const [refId, setRefId] = useState(DEFAULT_REF);
+  const [zoom, setZoom] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [fairMode, setFairMode] = useState<FairMode>('noise');
   const [yKey, setYKey] = useState<'tmax' | 'perfPct'>('tmax');
@@ -96,7 +108,7 @@ export function ComparePage(p: Props) {
     ['noiseDb', '最安静'],
   ] as const) {
     const m = metricByKey(k);
-    const shown = (s: SchemeView) => Number(m.get(s.cases[scenario]!.auto).toFixed(m.digits));
+    const shown = (s: SchemeView) => Number(m.get(s.cases[scenario]!.auto, s).toFixed(m.digits));
     const vals = withCase.map(shown).filter(Number.isFinite);
     if (!vals.length) continue;
     const bestV = m.better === 'low' ? Math.min(...vals) : Math.max(...vals);
@@ -104,6 +116,25 @@ export function ComparePage(p: Props) {
     if (top.length > withCase.length / 2) continue;
     for (const s of top) badges.set(s.id, [...(badges.get(s.id) ?? []), label]);
   }
+
+  // 流场图的色标：同一场景各方案共用（温度上限 = 各方案机箱内空气温度 99 百分位的最大值，取整到 5°C）
+  const refScheme = schemes.find((s) => s.id === refId && s.cases[scenario]) ?? schemes.find((s) => s.cases[scenario]);
+  const { t: refThumb, loading: refLoading } = useThumb(refScheme?.cases[scenario]?.thumb);
+  const thumbs = withCase.map((s) => s.cases[scenario]!.thumb);
+  const stats = useScaleStats(thumbs);
+  const tAmb = Math.min(...withCase.map((s) => s.layout?.ambientC ?? T_AMB_DEFAULT), T_AMB_DEFAULT);
+  const tHi = stats ? Math.max(tAmb + 10, niceCeil(stats.t99, 5)) : T_HI_DEFAULT[scenario];
+  const sHi = stats ? Math.max(1, niceCeil(stats.s99, 0.5)) : 2;
+  const dHi = useDiffRange(thumbs, thumbMode === 'diff' ? refThumb : null);
+  const range: [number, number] = thumbMode === 'temperature' ? [tAmb, tHi] : thumbMode === 'speed' ? [0, sHi] : [-dHi, dHi];
+  const fieldStyle: FieldStyle = {
+    mode: thumbMode,
+    range,
+    ref: thumbMode === 'diff' ? refThumb : null,
+    refLoading: thumbMode === 'diff' && refLoading,
+    stream,
+    labels,
+  };
 
   const [grid, setGrid] = useState(1);
   const [sweep, setSweep] = useState(true);
@@ -131,18 +162,37 @@ export function ComparePage(p: Props) {
             ))}
           </div>
           <div class="seg">
-            <button class={thumbMode === 'temperature' ? 'active' : ''} onClick={() => setThumbMode('temperature')}>
-              温度
-            </button>
-            <button class={thumbMode === 'speed' ? 'active' : ''} onClick={() => setThumbMode('speed')}>
-              风速
-            </button>
+            {(
+              [
+                ['temperature', '温度'],
+                ['speed', '风速'],
+                ['diff', '温差'],
+              ] as const
+            ).map(([k, label]) => (
+              <button key={k} class={thumbMode === k ? 'active' : ''} onClick={() => setThumbMode(k)} title={k === 'diff' ? '与参考方案逐点相减：红 = 比参考方案热，蓝 = 更凉' : undefined}>
+                {label}
+              </button>
+            ))}
           </div>
-          <span class="cmp-legend">
-            <span class="muted small">{thumbMode === 'temperature' ? '25' : '0'}</span>
-            <span class="cmp-legend-bar" style={{ background: colormapGradient(thumbMode === 'temperature' ? 'heat' : 'speed', 'to right') }} />
-            <span class="muted small">{thumbMode === 'temperature' ? `${THUMB_TMAX[scenario]} °C` : '2 m/s'}</span>
-          </span>
+          {thumbMode === 'diff' && (
+            <label class="small">
+              参考{' '}
+              <select class="cmp-ref" value={refScheme?.id ?? ''} onChange={(e) => setRefId((e.target as HTMLSelectElement).value)}>
+                {withCase.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.short}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label class="small">
+            <input type="checkbox" checked={stream} onChange={(e) => setStream((e.target as HTMLInputElement).checked)} /> 流线
+          </label>
+          <label class="small">
+            <input type="checkbox" checked={labels} onChange={(e) => setLabels((e.target as HTMLInputElement).checked)} /> 开口风量
+          </label>
+          <FieldLegend mode={thumbMode} range={range} />
         </div>
       </section>
 
@@ -211,7 +261,10 @@ export function ComparePage(p: Props) {
       <section class="section">
         <h3>{SCENARIO_LABEL[scenario]}场景：各方案（按{metric.label}排序）</h3>
         <p class="muted small">
-          缩略图为自动温控末态的侧视{thumbMode === 'temperature' ? '温度' : '风速'}（左 = 后部 I/O，右 = 前面板）。"在仿真页打开"按仿真页当前的网格档跑到稳态，
+          流场图为侧视（左 = 后部 I/O，右 = 前面板），{thumbMode === 'temperature' ? '温度' : thumbMode === 'speed' ? '风速' : `与"${refScheme?.short ?? ''}"的温差`}
+          取自动温控阶段后 {((proto.autoSteps - proto.autoAvgFrom) * DT).toFixed(0)} s 的时间平均，各方案共用色标（温度色标的上限不计电源内部）。
+          {stream ? `${thumbMode === 'diff' ? '深色线' : '白线'}为时均流线，箭头指流向；没有流线的地方时均风速低于 0.03 m/s（死区或回流中心）。` : ''}
+          {labels ? '数字为各开口的时均净风量（CFM），橙色流出、青色流入。' : ''}点图放大，可看细节与读数。"在仿真页打开"按仿真页当前的网格档跑到稳态，
           预览 140² 与这里的精确 280² 相比 GPU 可能差几 °C。
         </p>
         <div class="cmp-cards">
@@ -226,8 +279,21 @@ export function ComparePage(p: Props) {
                   <b>{s.label}</b>
                 </div>
                 <div class="muted small">{s.fans}</div>
-                <ThumbCanvas src={c.thumb} mode={thumbMode} tMax={THUMB_TMAX[scenario]} title={`${s.label}（${SCENARIO_LABEL[scenario]}，自动温控末态）`} />
+                <FieldThumbView
+                  src={c.thumb}
+                  style={fieldStyle}
+                  title={`${s.label}（${SCENARIO_LABEL[scenario]}）：点击放大`}
+                  onClick={() => {
+                    setSelected(s.id);
+                    setZoom(s.id);
+                  }}
+                />
                 <div class="cmp-badges">
+                  {thumbMode === 'diff' && s.id === refScheme?.id && (
+                    <span class="tag" title="温差图的参考方案（自身温差为 0）">
+                      温差参考
+                    </span>
+                  )}
                   {(badges.get(s.id) ?? []).map((b) => (
                     <span key={b} class="badge">
                       {b}
@@ -247,6 +313,7 @@ export function ComparePage(p: Props) {
                   <span>性能 {f1(n(a.perfPct))}%</span>
                   <span>内温 {f1(n(a.interior))}°C</span>
                   <span>风量 {f1(n(a.cfm))}</span>
+                  <span title={`机箱风扇：${s.price.detail}（型号库参考价，不含 CPU 塔扇、显卡与电源自带风扇）`}>风扇 ¥{f0(s.price.total)}</span>
                   <span class="cmp-score" style={{ background: scoreColor(n(a.score)) }}>
                     评分 {f0(n(a.score))}
                   </span>
@@ -417,6 +484,183 @@ export function ComparePage(p: Props) {
           </div>
         )}
       </section>
+      {zoom && (
+        <FieldModal
+          schemes={ranked.filter((s) => s.cases[scenario])}
+          id={zoom}
+          scenario={scenario}
+          style={fieldStyle}
+          refLabel={refScheme?.short ?? ''}
+          color={(id) => colors.get(id) ?? '#888'}
+          onNav={setZoom}
+          onClose={() => setZoom(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+const statsCache = new WeakMap<FieldThumb, { t99: number; s99: number }>();
+/** 每张流场图的色标统计只算一次（切回已看过的场景不再重算） */
+function cachedStats(t: FieldThumb): { t99: number; s99: number } {
+  let v = statsCache.get(t);
+  if (!v) statsCache.set(t, (v = fieldStats(t)));
+  return v;
+}
+
+/** 共用色标的上限：各方案色标统计（机箱内、不含电源内部，99 百分位）的最大值；解码完成前 null */
+function useScaleStats(thumbs: ThumbSrc[]): { t99: number; s99: number } | null {
+  const [st, setSt] = useState<{ key: string; v: { t99: number; s99: number } } | null>(null);
+  const key = thumbs.map(objId).join('|');
+  useEffect(() => {
+    let live = true;
+    Promise.all(thumbs.map(decodeThumb)).then(
+      (ts) => {
+        if (!live) return;
+        const s = ts.map(cachedStats);
+        const mx = (k: 't99' | 's99') => Math.max(...s.map((x) => x[k]).filter(Number.isFinite), -Infinity);
+        setSt({ key, v: { t99: mx('t99'), s99: mx('s99') } });
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return st && st.key === key && Number.isFinite(st.v.t99) ? st.v : null;
+}
+
+/** 对象的序号（依赖比较用：同一对象同一序号） */
+const ids = new WeakMap<object, number>();
+let nextId = 0;
+function objId(o: object): number {
+  let k = ids.get(o);
+  if (k === undefined) ids.set(o, (k = ++nextId));
+  return k;
+}
+
+/** 温差色标的范围：各方案与参考方案机箱内逐点温差绝对值 98 百分位的最大值（取整到 1°C，至少 2°C）；解码完成前用 5°C。
+ *  ref = null（不在温差视图）时不计算 */
+function useDiffRange(thumbs: ThumbSrc[], ref: FieldThumb | null): number {
+  const [d, setD] = useState(5);
+  const key = thumbs.map(objId).join('|');
+  useEffect(() => {
+    if (!ref) return;
+    let live = true;
+    Promise.all(thumbs.map(decodeThumb)).then(
+      (ts) => {
+        if (!live) return;
+        let worst = 0;
+        for (const t of ts) {
+          if (t === ref || !sameGrid(t, ref)) continue;
+          const diffs: number[] = [];
+          for (let r = 0; r < t.crop.h; r++)
+            for (let c = 0; c < t.crop.w; c++) {
+              if (!inScaleRegion(ref, c, r)) continue;
+              const k = r * t.crop.w + c;
+              diffs.push(Math.abs(t.T[k] - ref.T[k]));
+            }
+          worst = Math.max(worst, n(percentile(diffs, 98)));
+        }
+        setD(Math.max(2, niceCeil(worst, 1)));
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, ref]);
+  return d;
+}
+
+/** 流场图色标（与卡片、大图共用） */
+function FieldLegend({ mode, range }: { mode: FieldMode; range: [number, number] }) {
+  const [lo, hi] = range;
+  const grad =
+    mode === 'temperature'
+      ? colormapGradient('heat', 'to right', HEAT_FLOOR, 1)
+      : mode === 'speed'
+        ? colormapGradient('speed', 'to right')
+        : colormapGradient('diverging', 'to right');
+  const fmt = (v: number) => (mode === 'speed' ? v.toFixed(1) : `${v > 0 && mode === 'diff' ? '+' : ''}${v.toFixed(0)}`);
+  const unit = mode === 'speed' ? 'm/s' : '°C';
+  return (
+    <span class="cmp-legend" title={mode === 'diff' ? '红 = 比参考方案热，蓝 = 更凉' : undefined}>
+      <span class="muted small">
+        {fmt(lo)}
+        {mode === 'diff' ? ' 更凉' : ''}
+      </span>
+      <span class="cmp-legend-bar" style={{ background: grad }} />
+      <span class="muted small">
+        {fmt(hi)} {unit}
+        {mode === 'diff' ? ' 更热' : ''}
+      </span>
+    </span>
+  );
+}
+
+/** 放大的流场图：标注更全、流线更密、悬停读数；左右切换方案，Esc 关闭 */
+function FieldModal(p: {
+  schemes: SchemeView[];
+  id: string;
+  scenario: ScenarioKey;
+  style: FieldStyle;
+  refLabel: string;
+  color: (id: string) => string;
+  onNav: (id: string) => void;
+  onClose: () => void;
+}) {
+  const k = Math.max(0, p.schemes.findIndex((s) => s.id === p.id));
+  const s = p.schemes[k];
+  const [hover, setHover] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => setHover(''), [p.id, p.style.mode]); // 换方案后旧读数不再适用
+  useEffect(() => box.current?.focus(), []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') p.onClose();
+      else if (e.key === 'ArrowLeft' && k > 0) p.onNav(p.schemes[k - 1].id);
+      else if (e.key === 'ArrowRight' && k < p.schemes.length - 1) p.onNav(p.schemes[k + 1].id);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [k, p.schemes]);
+  if (!s) return null;
+  const c = s.cases[p.scenario]!;
+  const a = c.auto;
+  return (
+    <div class="cmp-modal" onClick={p.onClose}>
+      <div class="cmp-modal-box" ref={box} role="dialog" aria-modal="true" aria-label={`${s.label} 流场图`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+        <div class="cmp-modal-head">
+          <span class="dot" style={{ background: p.color(s.id) }} />
+          <b>{s.label}</b>
+          <span class="muted small">
+            {SCENARIO_LABEL[p.scenario]} · {s.fans}
+            {p.style.mode === 'diff' ? ` · 减去"${p.refLabel}"` : ''}
+          </span>
+          <span class="grow" />
+          <button disabled={k <= 0} onClick={() => p.onNav(p.schemes[k - 1].id)} title="上一个方案（←）">
+            ‹
+          </button>
+          <span class="muted small">
+            {k + 1}/{p.schemes.length}
+          </span>
+          <button disabled={k >= p.schemes.length - 1} onClick={() => p.onNav(p.schemes[k + 1].id)} title="下一个方案（→）">
+            ›
+          </button>
+          <button class="cmp-modal-close" onClick={p.onClose} title="关闭（Esc）">
+            ✕
+          </button>
+        </div>
+        <FieldThumbView src={c.thumb} style={p.style} large onHover={setHover} />
+        <div class="cmp-modal-foot">
+          <FieldLegend mode={p.style.mode} range={p.style.range} />
+          <span class="small">
+            CPU {f1(n(a.cpu))}°C · GPU {f1(n(a.gpu))}°C · 噪音 {f1(n(a.noiseDb))} dB · 风量 {f1(n(a.cfm))} CFM · 风扇 ¥{f0(s.price.total)}（{s.price.detail}）
+          </span>
+        </div>
+        <div class="cmp-readout small muted">{hover || '把鼠标移到图上看读数'}</div>
+      </div>
     </div>
   );
 }

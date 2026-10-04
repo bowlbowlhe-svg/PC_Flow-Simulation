@@ -2,12 +2,11 @@
 import { COMPARE_SCENARIOS, interpAt, type ScenarioKey } from '../../compare/scenarios';
 import type { PointMetrics, SweepPoint } from '../../compare/protocol';
 import type { CompareData } from '../../compare/data';
-import type { Thumb } from '../../compare/thumb';
-import { FAN_PRESETS } from '../../model/fans';
+import type { ThumbSrc } from '../../compare/thumb';
+import { FAN_CATALOG, FAN_PRESETS, hasModel } from '../../model/fans';
 import type { Layout } from '../../model/types';
 
-/** 缩略图：预计算数据里是 PNG（异步解码），自定义方案直接是像素 */
-export type ThumbSrc = Thumb | { w: number; h: number; png: string };
+export type { ThumbSrc };
 
 export interface CaseView {
   auto: PointMetrics;
@@ -23,7 +22,25 @@ export interface SchemeView {
   fans: string; // 风扇配置说明
   gridScale: number;
   layout?: Layout; // 自定义方案的布局（"在仿真页打开"用）
+  /** 机箱风扇成本（型号库参考价，元；不含 CPU 塔扇、显卡与电源自带的风扇） */
+  price: FanCost;
   cases: Partial<Record<ScenarioKey, CaseView>>;
+}
+
+export interface FanCost {
+  total: number;
+  detail: string; // 如"3×P12 + 原装"
+}
+
+/** 机箱风扇成本：按型号计数（机箱原装风扇计 0 元） */
+export function fanCost(models: string[]): FanCost {
+  const cnt = new Map<string, number>();
+  for (const m of models) cnt.set(m, (cnt.get(m) ?? 0) + 1);
+  let total = 0;
+  for (const m of models) total += hasModel(m) ? FAN_CATALOG[m].price : NaN;
+  const name = (m: string) => (m === 'Stock120' ? '原装' : m.replace(/_/g, '-'));
+  const detail = [...cnt].map(([m, k]) => (k > 1 ? `${k}×${name(m)}` : name(m))).join(' + ');
+  return { total, detail: detail || '无机箱风扇' };
 }
 
 export interface CustomScheme {
@@ -59,10 +76,21 @@ export function buildSchemes(data: CompareData, customs: CustomScheme[]): Scheme
   const out: SchemeView[] = FAN_PRESETS.map((p): SchemeView => {
     const cases: SchemeView['cases'] = {};
     for (const c of data.cases) if (c.preset === p.name) cases[c.scenario] = { auto: c.auto, sweep: c.sweep, thumb: c.thumb };
-    return { id: p.name, label: p.label, short: p.short, kind: 'preset', fans: presetFans(p.name), gridScale: data.protocol.gridScale, cases };
+    const price = fanCost(p.fans.map((f) => f[2]));
+    return { id: p.name, label: p.label, short: p.short, kind: 'preset', fans: presetFans(p.name), gridScale: data.protocol.gridScale, price, cases };
   }).filter((s) => Object.keys(s.cases).length > 0);
   for (const c of customs)
-    out.push({ id: c.id, label: c.label, short: c.label.replace(/（.*$/, ''), kind: 'custom', fans: layoutFans(c.layout), gridScale: c.gridScale, layout: c.layout, cases: c.cases });
+    out.push({
+      id: c.id,
+      label: c.label,
+      short: c.label.replace(/（.*$/, ''),
+      kind: 'custom',
+      fans: layoutFans(c.layout),
+      gridScale: c.gridScale,
+      layout: c.layout,
+      price: fanCost((c.layout.caseFans ?? []).map((f) => f.model)),
+      cases: c.cases,
+    });
   return out;
 }
 
@@ -82,7 +110,8 @@ export interface MetricDef {
   better: 'low' | 'high';
   digits: number;
   base?: number; // 条形图的起点（温度从环境温度起）
-  get: (m: PointMetrics) => number;
+  /** s：所属方案（与场景无关的指标，如风扇成本） */
+  get: (m: PointMetrics, s?: SchemeView) => number;
 }
 
 export const METRICS: MetricDef[] = [
@@ -95,6 +124,7 @@ export const METRICS: MetricDef[] = [
   { key: 'interior', label: '机箱内温', unit: '°C', better: 'low', digits: 1, base: 25, get: (m) => n(m.interior) },
   { key: 'cfm', label: '机箱风量', unit: 'CFM', better: 'high', digits: 1, base: 0, get: (m) => n(m.cfm) },
   { key: 'airK', label: '机箱热阻', unit: '°C/100W', better: 'low', digits: 2, base: 0, get: (m) => n(m.airK) },
+  { key: 'price', label: '机箱风扇成本', unit: '元', better: 'low', digits: 0, base: 0, get: (_m, s) => s?.price.total ?? NaN },
 ];
 
 export const metricByKey = (k: string) => METRICS.find((m) => m.key === k) ?? METRICS[0];
@@ -103,7 +133,7 @@ export const metricByKey = (k: string) => METRICS.find((m) => m.key === k) ?? ME
 export function rankBy(schemes: SchemeView[], sc: ScenarioKey, m: MetricDef): SchemeView[] {
   const v = (s: SchemeView) => {
     const c = s.cases[sc];
-    return c ? m.get(c.auto) : NaN;
+    return c ? m.get(c.auto, s) : NaN;
   };
   return [...schemes].sort((a, b) => {
     const va = v(a);

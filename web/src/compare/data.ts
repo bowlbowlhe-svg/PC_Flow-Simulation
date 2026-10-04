@@ -1,5 +1,6 @@
 // 对比展示页的数据：预计算结果（data.json，由 scripts/compareData.ts 生成）与界面后台计算的自定义方案同一格式。
 import type { CompareProtocol, PointMetrics, ScenarioKey, SweepPoint } from './protocol';
+import type { StoredThumb } from './thumb';
 
 export interface CompareCase {
   /** 预设名（FAN_PRESETS 的 name）或自定义方案的 id */
@@ -7,12 +8,12 @@ export interface CompareCase {
   scenario: ScenarioKey;
   auto: PointMetrics;
   sweep: SweepPoint[];
-  /** 缩略图：RGB PNG（R 温度、G 风速、B 障碍），base64 */
-  thumb: { w: number; h: number; png: string };
+  /** 流场图：自动温控阶段统计窗口内的时均场（见 thumb.ts） */
+  thumb: StoredThumb;
 }
 
 export interface CompareData {
-  version: 1;
+  version: 2;
   generated: string; // 生成日期
   protocol: CompareProtocol;
   cases: CompareCase[];

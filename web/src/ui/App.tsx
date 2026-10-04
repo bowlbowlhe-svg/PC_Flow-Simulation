@@ -27,7 +27,7 @@ import { COMPARE_SCENARIOS, type ScenarioKey } from '../compare/scenarios';
 /** 对比展示页（含预计算数据与对比 Worker）按需加载 */
 type CompareMod = typeof import('./compare/lazy');
 
-export const APP_VERSION = '1.6.0';
+export const APP_VERSION = '1.7.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },

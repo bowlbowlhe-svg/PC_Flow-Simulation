@@ -3,12 +3,12 @@
 MATLAB 版 v4.8.0 的浏览器移植。规格见 [`../docs/ALGORITHM.md`](../docs/ALGORITHM.md)，验收数据见
 [`../matlab_app/tests/reference/`](../matlab_app/tests/reference/)，阶段计划见 [`../docs/ROADMAP.md`](../docs/ROADMAP.md)（W0–W5）。
 
-当前进度：W0–W5 完成（求解器、诊断与稳态、主界面、布局编辑与方案对比、性能与定稿）；之后按 L1–L6 迭代（见 ROADMAP），
-最新为准三维修正、机箱壁散热与公开评测标定（L6）。
+当前进度：W0–W5 完成（求解器、诊断与稳态、主界面、布局编辑与方案对比、性能与定稿）；之后按 L1–L7 迭代（见 ROADMAP），
+最新为对比展示页的流场图（时均温度 / 风速 / 温差、元件轮廓、流线、开口风量、放大查看）与风扇成本（L7）。
 
 ## 使用
 
-**直接用**：下载 [`release/pcflow-web.html`](release/pcflow-web.html)（单个文件，约 740 KB，其中约 450 KB 是对比展示页的预计算数据），双击用浏览器打开即可，不需要
+**直接用**：下载 [`release/pcflow-web.html`](release/pcflow-web.html)（单个文件，约 960 KB，其中约 640 KB 是对比展示页的预计算数据（含 24 张流场图）），双击用浏览器打开即可，不需要
 联网或安装。需要 2022 年以后的浏览器（Chrome/Edge 98+、Firefox 94+、Safari 15.4+；已在 Chromium 上测试）。
 操作说明见 [`GUIDE.md`](GUIDE.md)。
 
@@ -32,6 +32,7 @@ npm run diag -- fixed_default    # 与标准答案逐快照对照，打印超差
 npm run profile -- fixed_default 40   # 各类线性求解的次数、迭代数与耗时
 npm run steady -- steady_default out.json   # 280² 固定推进 3000 步，与稳态标准答案对照（约 20 分钟）
 npm run compare-data -- run all all part.json  # 重新生成对比展示页的预计算数据（24 个算例，每个约 35 分钟；可分几个进程算再 merge）
+npm run compare-data -- thumbs src/compare/data.json all all part.json  # 只重算流场图（只跑自动温控阶段，按存储精度核对指标全部相同；每个约 10–14 分钟）
 # 界面端到端检查（Playwright + Chromium，用全局安装的 playwright）：
 PW=$(npm root -g)/playwright OUT=/tmp/shots URL=http://localhost:4173/ node scripts/e2e.cjs
 ```
@@ -54,8 +55,10 @@ PW=$(npm root -g)/playwright OUT=/tmp/shots URL=http://localhost:4173/ node scri
   风量与压力状态，安装冲突检查；应用（可同时跑到稳态）、撤销、保存/载入 JSON 配置（与 MATLAB 版格式相同）。
 - **方案对比**：保存 A/B/C 三个方案，20 项指标逐项对比（含性能、评分（档）、风扇曲线），载入方案继续调整，温差视图。
 - **方案对比展示**（页面顶部切换）：8 种风扇布局预设 × 办公/游戏/满载的预计算结果（`src/compare/data.json`，精确 280²，打开即显示）：
-  评分总览矩阵、各方案卡片（温度/风速缩略图、结温、噪音、性能、评分）、指标条形图、"同噪音 / 同温度"公平比较（全局 40/70/100% 转速扫描的
+  评分总览矩阵、各方案卡片（流场图、结温、噪音、性能、评分、机箱风扇成本）、指标条形图（含风扇成本）、"同噪音 / 同温度"公平比较（全局 40/70/100% 转速扫描的
   噪音—温度曲线与插值排名）；可把仿真页当前布局加入对比（独立的后台 Worker 按同一口径计算），点方案回到仿真页细调。口径见 ALGORITHM §13。
+  流场图为自动温控阶段统计窗口内的时间平均：温度 / 风速 / 与参考方案的温差三种着色（各方案共用色标），叠加元件轮廓与风扇（送风方向）、
+  时均流线（箭头指流向，没有流线处为死区）、各开口的时均净风量；点图放大（流线更密、标注更全、悬停读数，← → 切换方案，Esc 关闭）。
 - **导出**：主视图 PNG（含标题与色标），GIF 录制（约每 150 ms 一帧、主视图宽 480 px（整图含色标约 530 px）、最多 300 帧，延时按实际取帧间隔）。
 
 仿真在 Web Worker 里推进（每段约 30 ms 或一步，与界面命令交替）；推进时界面至多每 50 ms 收到一帧，另外每条设置命令
@@ -69,7 +72,7 @@ PW=$(npm root -g)/playwright OUT=/tmp/shots URL=http://localhost:4173/ node scri
 | `src/model/` | 布局数据模型：类型、默认布局、风扇型号与安装位、温控曲线档位与频率参数（`fanCurves.ts`）、准三维修正与壁面散热参数（`quasi3d.ts`）、预设、显卡槽数、基准布局、JSON 规整与校验、风扇布局检查、方案对比表（对应 `layout_default.m`、`fan_catalog.m`、`layout_json.m`、`layout_fan_report.m`、`scenario_table.m` 等） |
 | `src/numerics/` | 自带数值例程：`gridInterp2`（linear/cubic/makima）、`edtNearest`（最近点距离变换，平局取线性索引最小）、`pchipEval`、CSR 稀疏矩阵、PCG（IC(0)/修正 IC(0) 预条件）、5 点模板存储的扩散系统求解（与 CSR 版逐位相同）、稀疏 Cholesky（嵌套剖分排序）、MATLAB 语义的 max/min（忽略 NaN） |
 | `src/solver/` | 几何构建（§2）、矩阵装配、风扇状态（P-Q 工作点、温控与停转、噪音分项）、元件热网络（频率与功率）、时间推进求解器（§3–§4）、诊断量（开口风量、温度汇总、噪音、评分、建议）、跑到稳态与长时统计 |
-| `src/compare/` | 方案对比的计算口径（`CompareRunner`，与 MATLAB `compare_scenarios` 同口径）、缩略图量化、预计算数据 `data.json` |
+| `src/compare/` | 方案对比的计算口径（`CompareRunner`，与 MATLAB `compare_scenarios` 同口径；自动阶段同时累加时均场）、流场图的裁剪与量化（`thumb.ts`）、预计算数据 `data.json` |
 | `src/worker/` | 仿真 Worker：命令协议与引擎（分段推进、帧、稳态进度）；对比计算 Worker（自定义方案的后台计算） |
 | `src/ui/` | 界面（Preact + Canvas 2D）：主视图、粒子示踪、等值线、配色、曲线与工作点图、各标签页、导出 |
 | `test/` | Vitest 测试；`fixtures/` 为 Octave 生成的对照数据（生成脚本在 `test/gen/`） |
