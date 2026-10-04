@@ -27,7 +27,7 @@ function pass = test_layout()
     f = [tempname() '.json'];
     layout_json('save', L0, f);
     L2 = layout_json('load', f);
-    errs = check(errs, isequal(L2, L0), '默认布局 JSON 往返应逐字段一致');
+    errs = check(errs, isequaln(L2, L0), '默认布局 JSON 往返应逐字段一致（NaN 壁温为绝热）');
     Lc = layout_benchmark('cavity', 1e4);
     layout_json('save', Lc, f);
     Lc2 = layout_json('load', f);
@@ -71,7 +71,7 @@ function pass = test_layout()
     errs = check(errs, any(contains_(Rr.warnings, '超出壁面')), '顶壁 270 mm 的风扇应超出 320 mm 深的机箱');
 
     % 4b) 显卡厚度：默认 4 槽与 layout_set_gpu_slots 一致；各槽数的散热片高度；放不下时报错
-    errs = check(errs, isequal(layout_set_gpu_slots(L0, 4), L0) && layout_gpu_slots(L0) == 4, ...
+    errs = check(errs, isequaln(layout_set_gpu_slots(L0, 4), L0) && layout_gpu_slots(L0) == 4, ...
         '默认布局应为 4 槽显卡');
     hs = arrayfun(@(sl) getfield(getfield(getfield(layout_set_gpu_slots(L0, sl), 'gpu'), 'heatsink'), 'h'), [2.5 3 3.5 4]);
     errs = check(errs, isequal(hs, [27 37 47 57]), sprintf('2.5/3/3.5/4 槽散热片高度应为 27/37/47/57 mm（%s）', mat2str(hs)));
@@ -88,7 +88,7 @@ function pass = test_layout()
     tw = layout_cpu_tower(L0);
     errs = check(errs, tw.stacks == 2 && tw.gapMm == 24 && tw.fans == 2 && isequal(tw.pos, {'front', 'mid'}), ...
         '默认应为双塔、间隙 24 mm、2 个塔扇（前 + 中）');
-    errs = check(errs, isequal(layout_set_cpu_fans(L0, 2), L0), 'layout_set_cpu_fans(L0, 2) 应不改默认布局');
+    errs = check(errs, isequaln(layout_set_cpu_fans(L0, 2), L0), 'layout_set_cpu_fans(L0, 2) 应不改默认布局');
     L1f = layout_set_cpu_fans(L0, 1);
     tw1 = layout_cpu_tower(L1f);
     errs = check(errs, tw1.fans == 1 && isequal(tw1.pos, {'mid'}), '双塔 1 扇应装在中间');

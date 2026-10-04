@@ -2,9 +2,9 @@
 import { cloneLayout, type Layout } from './types';
 import { mround } from './mround';
 
-/** 显卡鳍片总面积 [m²]，随散热片高度线性缩放：3.5 槽（散热片 47 mm）为 0.5 m² */
+/** 显卡鳍片有效换热面积 [m²]，随散热片高度线性缩放：3.5 槽（散热片 47 mm）为 0.45 m²（与鳍片 h 一起标定的有效值，v4.8.0；之前 0.5 m² 配旧式 h） */
 export function gpuFinArea(heatsinkMm: number): number {
-  return (0.5 * heatsinkMm) / 47;
+  return (0.45 * heatsinkMm) / 47;
 }
 
 /** 布局中显卡占用的扩展槽数；无显卡时为 NaN。无 slots 字段时按整卡厚度折算到 0.5 槽 */
@@ -35,7 +35,10 @@ export function layoutSetGpuSlots(L: Layout, slots: number): Layout {
   g.heatsink.y = g.pcb.y + g.pcb.h;
   g.heatsink.h = h;
   g.slots = slots;
-  g.thermal.A_fin_total_m2 = gpuFinArea(h);
+  // 热参数没有 h 参数的旧模型布局仍按旧标定 0.5·h/47（配旧式 h = 30 + 130·V），不把新旧标定混在一起（同 MATLAB）
+  const th = g.thermal;
+  const legacy = ([th.h_free, th.h_forced, th.h_exp] as unknown[]).every((v) => v === undefined || v === null);
+  g.thermal.A_fin_total_m2 = legacy ? (0.5 * h) / 47 : gpuFinArea(h);
   if (L.shroud) {
     const gap = L.shroud.yMm - (g.heatsink.y + h + L.fanDiskMm);
     if (gap < 10) {

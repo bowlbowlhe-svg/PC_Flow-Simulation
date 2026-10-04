@@ -190,6 +190,25 @@ function check(cond, msg) {
   const towerOpts = await p.$$eval('select.cpu-fans option', (os) => os.map((o) => o.textContent).join(' / '));
   check(towerOpts === '1 个（前侧） / 2 个（前 + 后）' && (await p.$eval('select.cpu-fans', (e) => e.value)) === '1', `单塔配置的塔扇下拉项（${towerOpts}）`);
 
+  // 6c. v4.7 及以前的配置（没有 chassis.panelU）：热参数都是旧默认值时整体升级，改过的整体按 v4.7 模型，配置名后注明（L6）
+  const old47 = (tweak) => {
+    const Lo = JSON.parse(fs.readFileSync(js, 'utf8'));
+    delete Lo.chassis.panelU;
+    delete Lo.zShare;
+    Lo.chassis.wallTempC = { rear: 25, front: 25, top: 25, bottom: 25 };
+    Lo.cpu.thermal = { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 };
+    Lo.gpu.thermal = { R_junction_to_case: 0.08, R_tim: 0.02, R_base: 0.02, fin_thickness_mm: 0.35, A_fin_total_m2: (0.5 * Lo.gpu.heatsink.h) / 47 };
+    Lo.gpu.porous = { zetaThru: 4, zetaCross: 10, thru: 'x' };
+    if (tweak) tweak(Lo);
+    return Lo;
+  };
+  await p.setInputFiles('input[type=file]', writeJson('v47.json', old47()));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('v47.json'), null, { timeout: 30000 });
+  check((await text('.layout-info')).includes('v47.json（v4.7 配置，已升级）'), 'v4.7 默认热参数的配置整体升级并注明');
+  await p.setInputFiles('input[type=file]', writeJson('v47custom.json', old47((L) => (L.cpu.thermal.R_tim = 0.05))));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('v47custom.json'), null, { timeout: 30000 });
+  check((await text('.layout-info')).includes('按 v4.7 模型计算'), '改过热参数的 v4.7 配置按 v4.7 模型计算并注明');
+
   // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）
   const Lgap = JSON.parse(fs.readFileSync(js, 'utf8'));
   Lgap.shroud.gaps = [{ x0Mm: 270, x1Mm: 310 }];

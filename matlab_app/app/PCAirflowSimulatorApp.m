@@ -1930,10 +1930,15 @@ classdef PCAirflowSimulatorApp < handle
         function loadLayoutFile(app, file)
             if app.SteadyRunning, return; end
             try
-                L = layout_json('load', file);
+                [L, info] = layout_json('load', file);
             catch ME
                 app.reportError('读取配置失败', ME);
                 return;
+            end
+            switch info.migration             % 旧版配置：标在配置名后面（同网页版 migrationNote）
+                case 'v48',    note = '（v4.7 配置，已升级）';
+                case 'legacy', note = '（v4.7 配置，热参数改过，按 v4.7 模型计算）';
+                otherwise,     note = '';
             end
             old = app.Solver.layout;
             oldP = app.Solver.powerW;
@@ -1943,7 +1948,7 @@ classdef PCAirflowSimulatorApp < handle
                 if isfield(L, 'power'), app.setPowers([L.power.cpu L.power.gpu L.power.psu]); end
                 app.applyFanCurves(layout_fan_curves(L));    % 配置里的温控曲线（缺省为标准档）随载入生效
                 [~, name, ext] = fileparts(file);
-                app.LayoutLabel = ['配置 ' name ext];
+                app.LayoutLabel = ['配置 ' name ext note];
                 ok = app.applyLayout(false);
             catch ME
                 app.reportError('配置无效', ME);

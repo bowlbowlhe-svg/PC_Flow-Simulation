@@ -37,6 +37,13 @@ function checkGeometry(g: Geometry, ref: Ref) {
   expect(one(g.dirichletIdx)).toEqual(G.dirichletIdx);
   expect(Array.from(g.dirichletT)).toEqual(G.dirichletT);
   expect(one(g.heatObsIdx)).toEqual(G.heatObsIdx);
+  // 机箱壁散热格与 1 − 衰减因子（v4.8.0）
+  const wlIdx = G.wallLoss.idx === undefined || G.wallLoss.idx === null ? [] : Array.isArray(G.wallLoss.idx) ? G.wallLoss.idx : [G.wallLoss.idx];
+  expect(one(g.wallLossIdx)).toEqual(wlIdx);
+  const wl = numArr(G.wallLoss.oneMinusDecay ?? []);
+  bad = 0;
+  g.wallLossDecay.forEach((v, i) => (bad += close6(1 - v, wl[i]) ? 0 : 1));
+  expect(bad).toBe(0);
   expect(one(g.cpuInletIdx)).toEqual(G.cht.cpuInlet);
   expect(one(g.cpuFinIdx)).toEqual(G.cht.cpuFin);
   expect(one(g.gpuInletIdx)).toEqual(G.cht.gpuInlet);

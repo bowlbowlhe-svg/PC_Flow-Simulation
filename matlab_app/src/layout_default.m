@@ -27,10 +27,12 @@ function L = layout_default(name)
     % 计算域 560 mm 见方（基准网格 280×280、格距 2 mm）。机箱深 320 mm（后 → 前）× 高 400 mm：
     % ATX 主板 244 mm 深，前部 72 mm 放前进风风扇；高度含顶部风扇空间与底部电源仓。
     % 机箱居中，前后各留 120 mm、上下各留 80 mm 外部空气；机箱 Z 向有效深度 0.15 m（2D 换算用）。
-    % 机箱壁温度：数值为 Dirichlet 温度 [°C]，NaN 为绝热。
+    % 机箱壁：wallTempC 为数值时是定温壁（Dirichlet，°C），NaN 为绝热；panelU 为壁向室内空气的总传热系数
+    % [W/m²K]（内侧对流 + 钢板/玻璃 + 外侧自然对流与辐射，钢板机柜约 5.5），edge = 四周壁，side = 两块侧板（v4.8.0）。
     L.domain = struct('sizeMm', 560, 'baseCellMm', 2);
     L.chassis = struct('enabled', true, 'originMm', [120 80], 'sizeMm', [320 400], 'depthM', 0.15, ...
-        'wallTempC', struct('rear', 25, 'front', 25, 'top', 25, 'bottom', 25));
+        'wallTempC', struct('rear', NaN, 'front', NaN, 'top', NaN, 'bottom', NaN), ...
+        'panelU', struct('edge', 5, 'side', 5));
 
     % ---- 默认功率 [W]（psu 为电源输出负载）----
     L.power = struct('cpu', 125, 'gpu', 250, 'psu', 450);
@@ -52,25 +54,27 @@ function L = layout_default(name)
     % 塔扇 1 个（装在中间）或 2 个（前侧 + 中间），用 layout_set_cpu_fans 切换；都从前向后吹，
     % 热风直接对着后排风扇；鳍片后端距后排风扇执行盘约 22 mm，下沿距显卡 PCB 16 mm。
     % 2D 侧视里底座画在两组鳍片之间；真实机箱里底座贴主板、鳍片在它外侧，所以底座不是障碍（v4.4.0 起）。
-    % 热阻：带顶盖的小面积芯片结-壳热阻较大（公开评测里 120mm 风冷满载总热阻约 0.25–0.4 K/W）。
+    % 热阻：带顶盖的小面积芯片结-壳热阻较大；鳍片对流 h = h_free + h_forced·V^h_exp（V 为鳍片区穿流方向风速，
+    % 见 DetailedThermalNetwork），A 与 h 为按公开评测标定的有效值（双塔风冷 125 W 时比环境高约 44 K、200 W 约 52–61 K）。
     % 穿流 ζ 为整个散热器（两组鳍片合计），横流 ζ 也施加在中间间隙（风扇框围住，空气不从间隙上下漏走）。
     L.cpu = struct();
     L.cpu.base = rect(68, 112, 48, 48);
     L.cpu.fins = rect(36, 76, 112, 120);           % 鳍片外廓（两组鳍片 + 中间间隙）
     L.cpu.tower = struct('stacks', 2, 'gapMm', 24);
     L.cpu.porous = struct('zetaThru', 8, 'zetaCross', 60, 'thru', 'x');
-    L.cpu.thermal = struct('R_junction_to_case', 0.15, 'R_tim', 0.04, 'R_base', 0.05, ...
-        'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.15);
+    L.cpu.thermal = struct('R_junction_to_case', 0.12, 'R_tim', 0.04, 'R_base', 0.04, ...
+        'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.3, 'h_free', 5, 'h_forced', 48, 'h_exp', 0.8);
     L.cpu.tjmax = 100;
     L.cpu.throttleTemp = 95;                       % 温度墙：超过后降频把结温压在这里（见 DetailedThermalNetwork）
     L.cpu.dvfs = layout_dvfs(struct(), 'cpu');     % 加速频率随温度、功率随频率与温度（漏电）的参数
     L.cpu.fan = struct('model', 'Tower120', 'count', 2);
 
-    % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条（固体）+ 鳍片（多孔，穿流 x）+ 卡下 3 风扇 ----
-    % 4 槽时显卡风扇下沿到电源仓挡板留 21 mm 进风。鳍片阻力取偏低值：真实显卡的热风
-    % 还会从侧板方向（Z 向）排出，2D 侧视只能走卡的两端，降低阻力以作补偿。
-    % 热阻：大面积 GPU 核心 + 均热板，公开评测里三风扇卡 250–320 W 核心温度
-    % 约 65–75°C（总热阻约 0.12–0.16 K/W）。风扇向上吹入鳍片。
+    % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条 + 鳍片（多孔，穿流 y）+ 卡下 3 风扇 ----
+    % 4 槽时显卡风扇下沿到电源仓挡板留 21 mm 进风。风扇向上吹入鳍片；鳍片片垂直于卡长（热管沿卡长），热风从卡的
+    % 顶边（侧板方向）与插槽边排出：显卡只占主板到侧板距离的 zShare.gpu（约 80%），卡旁的空隙在 2D 里与 PCB、
+    % 散热片重合，所以 PCB 是多孔区（ζ = zeta_partial(0.8) = 26），散热片穿流 y（鳍片 + 空隙）、横流 x 只能走空隙（ζ 25）。
+    % 热阻：大面积 GPU 核心 + 均热板；公开评测里三风扇卡 250–300 W 游戏时核心约 60–69°C（开放平台，机箱内高 3–5°C），
+    % 风扇约 1300–1600 rpm；风扇停转时被动散热只够约 55 W（游戏负载下风扇会起转）。
     % 厚度按扩展槽数：整卡 = slots × 20.32 mm = PCB（含背板）12 + 散热片 + 风扇盘 12，
     % 默认 4 槽（约 81 mm，高端显卡常见）；改厚度用 layout_set_gpu_slots（从 PCIe 槽向下长）。
     % 挡板端在后面板。散热片后端离后壁约 26 mm（挡板端的视频接口区，不画散热片；这条通道让散热片后端的热风
@@ -81,9 +85,10 @@ function L = layout_default(name)
     L.gpu.slots = 4;
     L.gpu.pcb = rect(38, 212, 216, 12);
     L.gpu.heatsink = rect(28, 224, 236, 57);
-    L.gpu.porous = struct('zetaThru', 4, 'zetaCross', 10, 'thru', 'x');
-    L.gpu.thermal = struct('R_junction_to_case', 0.08, 'R_tim', 0.02, 'R_base', 0.02, ...
-        'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(57));   % 鳍片面积随厚度缩放
+    L.gpu.porous = struct('zetaThru', 4, 'zetaCross', 25, 'thru', 'y');
+    L.gpu.thermal = struct('R_junction_to_case', 0.03, 'R_tim', 0.015, 'R_base', 0.015, ...
+        'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(57), ...   % 鳍片面积随厚度缩放
+        'h_free', 3, 'h_forced', 48, 'h_exp', 0.8, 'passiveFlowShare', 0.1);
     L.gpu.tjmax = 95;
     L.gpu.throttleTemp = 87;
     L.gpu.dvfs = layout_dvfs(struct(), 'gpu');
@@ -108,6 +113,9 @@ function L = layout_default(name)
     L.ram = [rect(190, 48, 4, 32); rect(196, 48, 4, 32); ...
              rect(202, 48, 4, 32); rect(208, 48, 4, 32)];
     L.vrm = rect(34, 44, 28, 20);
+    % 准三维修正：零件占主板到侧板距离（约 175 mm）的比例。显卡高约 140 mm、DDR5 约 35–44 mm、VRM 散热片约 30 mm；
+    % 小于 1 的零件旁边有空隙可以过风，按多孔区处理（见 layout_zshare、zeta_partial）
+    L.zShare = struct('gpu', 0.8, 'ram', 0.2, 'vrm', 0.2);
     L.chipset = rect(174, 306, 20, 8);            % 仅显示（位于主板平面，不挡气流）
     L.motherboardTray = rect(4, 36, 244, 278);    % 仅显示
 

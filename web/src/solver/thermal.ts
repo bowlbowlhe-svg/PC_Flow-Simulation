@@ -1,6 +1,7 @@
 // 元件热网络（移植自 DetailedThermalNetwork.m；规格 §4）：串联热阻 + 一阶热惯性 + 频率与功率控制。
 import { mmax, mmin } from '../numerics/mathx';
 import type { ComponentThermal, Dvfs } from '../model/types';
+import { layoutHeatCoef, type HeatCoef } from '../model/quasi3d';
 
 export class ThermalNetwork {
   power: number; // 名义发热功率 P_nom [W]（电源为损耗）
@@ -17,6 +18,8 @@ export class ThermalNetwork {
   overTemp = false;
   R_internal = 0.8;
   R_total = 0;
+  /** 鳍片对流系数参数（CPU/GPU；电源不用） */
+  readonly heat: HeatCoef | null;
 
   constructor(
     readonly name: 'cpu' | 'gpu' | 'psu',
@@ -31,6 +34,7 @@ export class ThermalNetwork {
     this.tjmax = tjmax;
     // 未给或为空（MATLAB isempty）时取 tjmax − 15
     this.throttlingTemp = throttling === undefined || throttling === null ? tjmax - 15 : throttling;
+    this.heat = thermal ? layoutHeatCoef(thermal, name) : null;
   }
 
   /** 推进一步：V 为散热体平均风速 [m/s]，Tamb 为进风温度 [°C] */
@@ -40,7 +44,8 @@ export class ThermalNetwork {
     let R_total: number;
     const th = this.thermal;
     if (th) {
-      h = 30 + 130 * mmin(v, 6);
+      const hc = this.heat!;
+      h = hc.h_free + hc.h_forced * mmin(v, 6) ** hc.h_exp;
       const finT = mmax(th.fin_thickness_mm, 0.1) / 1000;
       const m = Math.sqrt((2 * h) / (200 * finT));
       const Lfin = 0.025;

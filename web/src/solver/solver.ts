@@ -483,6 +483,10 @@ export class Solver implements FanControl {
     this.clampMin(this.T_fluid, this.T_amb);
     this.setDisplayObstacleTemps();
     for (const i of this.geo.spongeRingIdx) this.T_fluid[i] = this.T_amb;
+    // 机箱壁（侧板与四周壁）向室内散热（§3.9）
+    const wl = this.geo.wallLossIdx;
+    const wd = this.geo.wallLossDecay;
+    for (let k = 0; k < wl.length; k++) this.T_fluid[wl[k]] = this.T_amb + (this.T_fluid[wl[k]] - this.T_amb) * wd[k];
     this.solveConjugateHeatTransfer(vel);
     // min(T, 200) 再 max(T, T_amb)（MATLAB 语义：NaN 先变为 200）
     for (let i = 0; i < this.N; i++) this.T_fluid[i] = mmax(mmin(this.T_fluid[i], 200), this.T_amb);
@@ -1001,6 +1005,13 @@ export class Solver implements FanControl {
     const { uC, vC } = vel;
     const speed = new Float64Array(this.N);
     for (let i = 0; i < this.N; i++) speed[i] = Math.sqrt(uC[i] * uC[i] + vC[i] * vC[i]) * this.VEL_SCALE;
+    // 鳍片换热按穿流方向的风速分量（横穿鳍片区的气流在 Z 向从鳍片旁边的空隙走，不经过鳍片间隙）；旧模型（没有 h 参数）取风速模
+    const thruSpeed = (dir: 'x' | 'y') => {
+      const a = new Float64Array(this.N);
+      const c = dir === 'x' ? uC : vC;
+      for (let i = 0; i < this.N; i++) a[i] = Math.abs(c[i]) * this.VEL_SCALE;
+      return a;
+    };
     const rc = this.rhoCpCell();
     const g = this.geo;
     const W = this.W;
@@ -1012,28 +1023,46 @@ export class Solver implements FanControl {
     };
     const nets = this.thermalNetworks;
     if (nets.cpu && g.cpu) {
-      this.solveComponent(nets.cpu, g.cpuInletIdx, g.cpuFinIdx, speed, rc);
+      const vh = nets.cpu.heat!.legacy ? speed : thruSpeed(g.cpuThru);
+      this.solveComponent(nets.cpu, g.cpuInletIdx, g.cpuFinIdx, speed, rc, vh, this.passiveScale(nets.cpu, 'cpu'));
       for (const i of g.cpuFinIdx) this.T_solid[i] = nets.cpu.T_sink_base;
       for (const i of rectCells(g.cpu.base)) this.T_solid[i] = nets.cpu.T_junction; // 底座在鳍片内，后写（同 MATLAB）
     }
     if (nets.gpu && g.gpu) {
-      this.solveComponent(nets.gpu, g.gpuInletIdx, g.gpuFinIdx, speed, rc);
+      const vh = nets.gpu.heat!.legacy ? speed : thruSpeed(g.gpuThru);
+      this.solveComponent(nets.gpu, g.gpuInletIdx, g.gpuFinIdx, speed, rc, vh, this.passiveScale(nets.gpu, 'gpu'));
       for (const i of rectCells(g.gpu.pcb)) this.T_solid[i] = nets.gpu.T_junction;
       for (const i of g.gpuFinIdx) this.T_solid[i] = nets.gpu.T_sink_base;
     }
     if (nets.psu && g.psu) {
-      this.solveComponent(nets.psu, g.psuInletIdx, g.psuInteriorIdx, speed, rc);
+      this.solveComponent(nets.psu, g.psuInletIdx, g.psuInteriorIdx, speed, rc, speed, 1);
       for (const i of rectCells(g.psu.body)) this.T_solid[i] = nets.psu.T_junction;
     }
   }
 
-  private solveComponent(net: ThermalNetwork, inlet: Int32Array, body: Int32Array, speed: Float64Array, rc: number): void {
+  /** 元件有内置风扇但都没转（显卡低温停转）时换热风速乘 passiveFlowShare，否则（有风扇在转、或没有风扇）为 1 */
+  private passiveScale(net: ThermalNetwork, role: 'cpu' | 'gpu'): number {
+    const own = this.fans.filter((f) => f.g.role === role);
+    if (own.length === 0 || own.some((f) => !f.isStopped(this))) return 1;
+    return net.heat!.passiveFlowShare;
+  }
+
+  /** vHeat：换热用风速（CPU、GPU 为穿流分量，电源为风速模）；speed：注热权重用的风速模；vScale：换热风速的比例 */
+  private solveComponent(
+    net: ThermalNetwork,
+    inlet: Int32Array,
+    body: Int32Array,
+    speed: Float64Array,
+    rc: number,
+    vHeat: Float64Array,
+    vScale: number,
+  ): void {
     let sT = 0;
     for (const i of inlet) sT += this.T_fluid[i];
     const Tamb = sT / inlet.length;
     let sV = 0;
-    for (const i of body) sV += speed[i];
-    const V = sV / body.length;
+    for (const i of body) sV += vHeat[i];
+    const V = vScale * (sV / body.length);
     net.solve(V, Tamb, this.DT);
     const w = new Float64Array(body.length);
     let sw = 0;

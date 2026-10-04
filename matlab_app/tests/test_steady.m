@@ -3,12 +3,13 @@ function pass = test_steady()
 %   参考值：tests/steady_reference.json（tools/make_steady_reference 生成：默认场景 280² 固定推进
 %   3000 步、取 1000 步之后的长时均值）。两项检查：
 %   1) 回归（严格）：与参考文件里的预览档回归值 preview（同样设置的 runToSteady）比较，结温 ≤ 0.5°C、风量 ≤ 2%；
-%   2) 两档网格的差距不明显变大：与精确档比较，CPU ≤ 3.5°C、GPU ≤ 7°C、电源 ≤ 2°C、风量 ≤ 12%，且 runToSteady 判定收敛。
+%   2) 两档网格的差距不明显变大：与精确档比较，CPU ≤ 2°C、GPU ≤ 3°C、电源 ≤ 2°C、风量 ≤ 5%，且 runToSteady 判定收敛。
 %   第 2 项是模型在粗网格上的保真度，不是代码正确性：紧凑机箱（v4.3 起）里显卡周围 20–30 mm 的间隙在预览网格上只有
 %   5–6 格，v4.4.0（CPU 底座不挡风）默认布局预览档（runToSteady 判稳值）CPU −2.5°C、GPU +3.9°C、风量 −9%，
 %   超出原来 2°C/3°C/8% 的容差，因此放宽；v4.5.0（双塔散热器）为 0.0/+1.2/+1.3°C、−1%；v4.6.0（风扇转速按厂家数据，
 %   显卡风扇在低转速）为 −1.5/+5.0/+0.7°C、−8%：显卡风扇风量小，进风间隙的分辨率影响更大，GPU 容差放宽到 7°C
-%   （其它布局的两档差别本来就到 ±7°C，见 README）。
+%   （其它布局的两档差别本来就到 ±7°C，见 README）。v4.8.0（准三维修正：显卡旁空隙可以过风、显卡热风从卡的顶边排出，
+%   进风间隙不再是显卡唯一的进风路径）为 +0.0/+1.6/+0.7°C、+0.1%，容差收回到 CPU 2、GPU 3、电源 2°C、风量 5%。
 %   实测见 README 的验证表。
     f = fullfile(fileparts(mfilename('fullpath')), 'steady_reference.json');
     ref = jsondecode(fileread(f));
@@ -23,7 +24,7 @@ function pass = test_steady()
     cfm = col('cfm');
     dTj = tj - ref.tj;
     dQ = (cfm - ref.cfm) / ref.cfm;
-    pass = info.converged && all(abs(dTj) <= [3.5 7 2]) && abs(dQ) <= 0.12;
+    pass = info.converged && all(abs(dTj) <= [2 3 2]) && abs(dQ) <= 0.05;
     reg = '';
     if isfield(ref, 'preview')
         pv = ref.preview; pv.tj = pv.tj(:)';

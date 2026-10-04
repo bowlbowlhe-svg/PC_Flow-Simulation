@@ -1,10 +1,11 @@
 classdef DetailedThermalNetwork < handle
     %DETAILEDTHERMALNETWORK 元件热网络（CPU/GPU/PSU）：串联热阻 + 一阶热惯性 + 频率与功率控制。
     %   CPU/GPU：R_total = R_jc + R_TIM + R_base + R_conv，
-    %            R_conv = 1/(h·A·η_overall)，h = 30 + 130·V [W/m²K]，
+    %            R_conv = 1/(h·A·η_overall)，h = h_free + h_forced·min(V, 6)^h_exp [W/m²K]（layout_heat_coef；
+    %            缺省为旧式 30 + 130·V），
     %            鳍片效率 η_f = tanh(mL)/(mL)，m = √(2h/(k·t_fin))，k = 200 W/mK。
     %   PSU：    R_total = R_internal + 1/(h·A)，h = 15 + 80·V，A = 0.08 m²。
-    %   V 为散热体（鳍片/电源内部）平均风速（2D 流场按机箱深度折算的体积流量口径），
+    %   V 为散热体平均风速（CPU/GPU 鳍片取穿流方向分量，电源内部取风速模；2D 流场按机箱深度折算的体积流量口径），
     %   T_amb 为进风温度。V 不设下限：风扇提速 → V 增大 → h 增大 → 结温下降。
     %   结温一阶惯性：Tj += a·(T_amb + P_actual·R_total − Tj)，a = min(1, dt/τ)（τ 为数值平滑，不代表真实热容）。
     %
@@ -39,6 +40,7 @@ classdef DetailedThermalNetwork < handle
         overTemp = false
         R_internal = 0.8      % 无散热器规格时（电源）的内部固定热阻 [K/W]
         R_total = 0           % 最近一次的总热阻 [K/W]
+        heat = []             % 鳍片对流系数参数（CPU/GPU，layout_heat_coef；电源为空）
     end
 
     methods
@@ -53,6 +55,7 @@ classdef DetailedThermalNetwork < handle
                 obj.throttling_temp = throttling;
             end
             obj.spec = spec;
+            if ~isempty(spec), obj.heat = layout_heat_coef(spec.thermal, name); end
         end
 
         function result = solve(obj, velocity_ambient, T_ambient, dt)
@@ -60,7 +63,7 @@ classdef DetailedThermalNetwork < handle
             if nargin < 4 || isempty(dt), dt = obj.dt; end
             effective_velocity = max(0, velocity_ambient);
             if ~isempty(obj.spec)
-                h = 30 + 130 * min(effective_velocity, 6);
+                h = obj.heat.h_free + obj.heat.h_forced * min(effective_velocity, 6)^obj.heat.h_exp;
                 fin_t_m = max(obj.spec.thermal.fin_thickness_mm, 0.1) / 1000;
                 m = sqrt(2 * h / (200 * fin_t_m));
                 L_fin = 0.025;

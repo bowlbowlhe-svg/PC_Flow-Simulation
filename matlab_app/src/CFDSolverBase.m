@@ -94,6 +94,11 @@ classdef CFDSolverBase < handle
         gpuFinIdx = []
         psuInletIdx = []
         psuInteriorIdx = []
+        cpuThru = 'x'         % 鳍片换热用的风速分量（多孔区穿流方向）
+        gpuThru = 'x'
+        zShare = struct('gpu', 1, 'ram', 1, 'vrm', 1)   % 零件 Z 向占比（< 1 的零件为多孔区，layout_zshare）
+        wallLossIdx = []      % 机箱壁散热格（§3.9）与每步衰减因子 exp(−κ·DT)
+        wallLossDecay = []
 
         % ===== 风扇与热网络 =====
         fans = {}             % 机箱风扇（Fan，role='case'）
@@ -136,6 +141,7 @@ classdef CFDSolverBase < handle
         accDiffuseCase = 0
         accClampCase   = 0
         accInjectCase  = 0
+        accWall      = 0   % 机箱壁散热（全部在机箱内）
     end
 
     methods
@@ -412,8 +418,11 @@ classdef CFDSolverBase < handle
                         'zetaThru', 0, 'zetaCross', pz.zetaCross, 'thru', 'x');
                 end
             end
+            % 准三维修正：只占机箱部分深度的零件（显卡、内存、VRM 散热片）旁边还有空隙可以过风，占比 z < 1 时
+            % 按多孔区（ζ = zeta_partial(z)，两个方向相同）处理，z = 1 时为固体障碍（旧模型）
+            obj.zShare = layout_zshare(L);
             if obj.hasGpu
-                setIfFree(obj.rectCells(obj.GPU_HEATSINK.pcb), OB.GPU_PCB);
+                obj.addPartial(obj.GPU_HEATSINK.pcb, obj.zShare.gpu, OB.GPU_PCB);
                 pz = L.gpu.porous;
                 obj.porousZones(end+1) = struct('rect', obj.GPU_HEATSINK.heatsink, ...
                     'zetaThru', pz.zetaThru, 'zetaCross', pz.zetaCross, 'thru', pz.thru);
@@ -444,10 +453,10 @@ classdef CFDSolverBase < handle
                 setIfFree(idx, OB.PSU_SHROUD);
             end
             for r = 1:numel(obj.RAM_SLOTS)
-                setIfFree(obj.rectCells(obj.RAM_SLOTS(r)), OB.RAM_SLOT);
+                obj.addPartial(obj.RAM_SLOTS(r), obj.zShare.ram, OB.RAM_SLOT);
             end
             if ~isempty(obj.VRM)
-                setIfFree(obj.rectCells(obj.VRM.heatsink), OB.VRM);
+                obj.addPartial(obj.VRM.heatsink, obj.zShare.vrm, OB.VRM);
             end
             if isfield(L, 'solidBlocks')
                 for k = 1:numel(L.solidBlocks)
@@ -465,6 +474,17 @@ classdef CFDSolverBase < handle
 
         function setObstacle(obj, idx, type)
             obj.obstacle(idx) = type;
+        end
+
+        function addPartial(obj, r, z, type)
+            % 占机箱 Z 向深度比例 z 的零件：z = 1 为固体障碍（只写空闲格），z < 1 为两向同阻力的多孔区
+            if z >= 1
+                idx = obj.rectCells(r);
+                obj.setObstacle(idx(obj.obstacle(idx) == 0), type);
+            else
+                zeta = zeta_partial(z);
+                obj.porousZones(end+1) = struct('rect', r, 'zetaThru', zeta, 'zetaCross', zeta, 'thru', 'x');
+            end
         end
 
         function updateObstacleSets(obj)
@@ -875,6 +895,43 @@ classdef CFDSolverBase < handle
             if obj.hasCpu && isempty(obj.cpuInletIdx), obj.cpuInletIdx = obj.cpuFinIdx; end
             if obj.hasGpu && isempty(obj.gpuInletIdx), obj.gpuInletIdx = obj.gpuFinIdx; end
             if obj.hasPsu && isempty(obj.psuInletIdx), obj.psuInletIdx = obj.psuInteriorIdx; end
+            obj.cpuThru = 'x'; obj.gpuThru = 'x';
+            if obj.hasCpu, obj.cpuThru = obj.layout.cpu.porous.thru; end
+            if obj.hasGpu, obj.gpuThru = obj.layout.gpu.porous.thru; end
+            obj.initWallLoss();
+        end
+
+        function initWallLoss(obj)
+            % 机箱壁散热（§3.9，v4.8.0；缺 chassis.panelU 时没有）：机箱内（壁内侧、电源外壳以外）的流体格经两块
+            % 侧板向室内散热 κ_side = 2·U_side/(ρc_p·depthM)；与非定温壁格相邻的每条边再加 κ_edge = U_edge/(ρc_p·Δx)。
+            % 每步 T ← T_amb + (T − T_amb)·exp(−κ·DT)
+            obj.wallLossIdx = []; obj.wallLossDecay = [];
+            U = layout_panel_u(obj.layout);
+            if ~obj.CASE2D.enabled || (U.edge <= 0 && U.side <= 0), return; end
+            W = obj.GRID.W; H = obj.GRID.H;
+            co = obj.CASE2D.outer;
+            cL = co.x; cR = co.x + co.w - 1; cT = co.y; cB = co.y + co.h - 1;
+            rc = obj.AIR_DENSITY * obj.AIR_CP;
+            kEdge = U.edge / (rc * obj.GRID.cell_size_mm / 1000);
+            kSide = 2 * U.side / (rc * obj.CHASSIS_DEPTH_M);
+            region = false(W, H);
+            region(cT+1:cB-1, cL+1:cR-1) = true;
+            region = region & reshape(obj.obstacle == 0, W, H);
+            if obj.hasPsu
+                b = obj.PSU2D.body;
+                region(b.y:b.y+b.h-1, b.x:b.x+b.w-1) = false;
+            end
+            lossWall = reshape(obj.obstacle == obj.OBSTACLE.WALL, W, H);
+            lossWall(obj.dirichletIdx) = false;
+            n = zeros(W, H);
+            n(2:W,:)   = n(2:W,:)   + lossWall(1:W-1,:);
+            n(1:W-1,:) = n(1:W-1,:) + lossWall(2:W,:);
+            n(:,2:H)   = n(:,2:H)   + lossWall(:,1:H-1);
+            n(:,1:H-1) = n(:,1:H-1) + lossWall(:,2:H);
+            kap = n * kEdge + kSide;
+            sel = find(region(:) & kap(:) > 0);
+            obj.wallLossIdx = sel;
+            obj.wallLossDecay = exp(-kap(sel) * obj.DT);
         end
 
         function computeFaceMasks(obj)
@@ -1177,6 +1234,7 @@ classdef CFDSolverBase < handle
             obj.accClampCap = 0;   obj.accClampFloor = 0;
             obj.accAdvectCase = 0; obj.accDiffuseCase = 0; obj.accClampCase = 0;
             obj.accInjectCase = 0;
+            obj.accWall = 0;
             obj.accE0 = 0; obj.accE0_case = 0;
         end
 
@@ -1202,7 +1260,7 @@ classdef CFDSolverBase < handle
             % 能量/质量守恒校核（计量窗口 = 上次 resetEnergyAccounting 以来）。
             % 判据 A（全域逐步计账）：注入 + 平流 + 扩散 + 海绵环重置 + 钳位 − 储能速率 ≈ 0。
             % 判据 B2（机箱内区算子级平衡）：内区注入 + 平流 + 扩散 + 钳位 − 内区储能 ≈ 0。
-            % 报告项：开口焓流、定温壁导热、开口平面扩散（采样口径机箱平衡）、远场环与质量账。
+            % 报告项：开口焓流、定温壁导热、壁面散热 Q_panel（§3.9）、开口平面扩散（采样口径机箱平衡）、远场环与质量账。
             % 壁面/开口导热按求解器扩散算子同一离散：q = ρcp_cell·diffScale·α_face·ΔT。
             flux = obj.computeOpeningFluxes();
             Q_exhaust = flux.top.heatW + flux.rear.heatW + flux.front.heatW + flux.bottom.heatW;
@@ -1266,7 +1324,8 @@ classdef CFDSolverBase < handle
             Q_R_diffuse= obj.accDiffuse  * accScale;
             Q_R_out    = obj.accResetOut * accScale;
             Q_R_clamp  = obj.accClamp    * accScale;
-            ledgerW   = Q_gaussian + Q_R_advect + Q_R_diffuse + Q_R_out + Q_R_clamp;
+            Q_R_wall   = obj.accWall     * accScale;     % 机箱壁散热（≤ 0）
+            ledgerW   = Q_gaussian + Q_R_advect + Q_R_diffuse + Q_R_out + Q_R_clamp + Q_R_wall;
             E_now = sum((obj.T_fluid - obj.T_amb) .* double(obj.obstacle == 0)) * rhoCpCell;
             dEdtW = (E_now - obj.accE0) / (accN * obj.DT);
             closureW   = ledgerW - dEdtW;
@@ -1275,7 +1334,7 @@ classdef CFDSolverBase < handle
             % ---- 采样口径机箱平衡（报告项）----
             E_case_now = sum(obj.T_fluid(obj.insideMask) - obj.T_amb) * rhoCpCell;
             dEdtCaseW = (E_case_now - obj.accE0_case) / (accN * obj.DT);
-            residualCorrW   = Q_exhaust + Q_wall + Q_openingDiff + dEdtCaseW - Q_injected;
+            residualCorrW   = Q_exhaust + Q_wall - Q_R_wall + Q_openingDiff + dEdtCaseW - Q_injected;
             residualCorrPct = 100 * residualCorrW / max(Q_injected, eps);
 
             % ---- 判据 B2 ----
@@ -1283,7 +1342,7 @@ classdef CFDSolverBase < handle
             Q_advectCase  = obj.accAdvectCase  * accScale;
             Q_diffuseCase = obj.accDiffuseCase * accScale;
             Q_clampCase   = obj.accClampCase   * accScale;
-            balanceOpW   = Q_injectCase + Q_advectCase + Q_diffuseCase + Q_clampCase - dEdtCaseW;
+            balanceOpW   = Q_injectCase + Q_advectCase + Q_diffuseCase + Q_clampCase + Q_R_wall - dEdtCaseW;
             balanceOpPct = 100 * balanceOpW / max(Q_injected, eps);
 
             cons = struct('Q_injected',Q_injected,'Q_gaussian',Q_gaussian,...
@@ -1292,6 +1351,7 @@ classdef CFDSolverBase < handle
                 'Q_injectCase',Q_injectCase,'Q_advectCase',Q_advectCase,'Q_diffuseCase',Q_diffuseCase,...
                 'Q_clampCase',Q_clampCase,'balanceOpW',balanceOpW,'balanceOpPct',balanceOpPct,...
                 'Q_R_advect',Q_R_advect,'Q_R_diffuse',Q_R_diffuse,'Q_R_out',Q_R_out,'Q_R_clamp',Q_R_clamp,...
+                'Q_panel',-Q_R_wall,...
                 'Q_R_clampSolve',obj.accClampSolve*accScale,'Q_R_clampAdvect',obj.accClampAdvect*accScale,...
                 'Q_R_clampCap',obj.accClampCap*accScale,'Q_R_clampFloor',obj.accClampFloor*accScale,...
                 'ledgerW',ledgerW,'ledgerPct',100*ledgerW/max(Q_injected,eps),...
@@ -1331,31 +1391,49 @@ classdef CFDSolverBase < handle
         function solveConjugateHeatTransfer(obj)
             [uC, vC] = obj.getCellVelocity();
             speed = sqrt(uC.^2 + vC.^2) * obj.VEL_SCALE;       % m/s
+            % 鳍片换热按穿流方向的风速分量（横穿鳍片区的气流在 Z 向从鳍片旁边的空隙走，不经过鳍片间隙）；旧模型（没有 h 参数）取风速模
+            VS = obj.VEL_SCALE;
+            thru = @(d) CFDSolverBase.thruSpeed(uC, vC, d, VS);
             rhoCpCell = obj.rhoCpCell();
             if obj.hasCpu
                 net = obj.thermalNetworks.cpu;
-                obj.solveComponent(net, obj.cpuInletIdx, obj.cpuFinIdx, speed, rhoCpCell);
+                if net.heat.legacy, vh = speed; else, vh = thru(obj.cpuThru); end
+                obj.solveComponent(net, obj.cpuInletIdx, obj.cpuFinIdx, speed, rhoCpCell, vh, obj.passiveScale(net, 'cpu'));
                 obj.T_solid(obj.cpuFinIdx) = net.T_sink_base;
                 obj.T_solid(obj.rectCells(obj.CPU_HEATSINK.base)) = net.T_junction;   % 底座在鳍片内，后写（固体温度视图显示芯片）
             end
             if obj.hasGpu
                 net = obj.thermalNetworks.gpu;
-                obj.solveComponent(net, obj.gpuInletIdx, obj.gpuFinIdx, speed, rhoCpCell);
+                if net.heat.legacy, vh = speed; else, vh = thru(obj.gpuThru); end
+                obj.solveComponent(net, obj.gpuInletIdx, obj.gpuFinIdx, speed, rhoCpCell, vh, obj.passiveScale(net, 'gpu'));
                 obj.T_solid(obj.rectCells(obj.GPU_HEATSINK.pcb)) = net.T_junction;
                 obj.T_solid(obj.gpuFinIdx) = net.T_sink_base;
             end
             if obj.hasPsu
                 net = obj.thermalNetworks.psu;
-                obj.solveComponent(net, obj.psuInletIdx, obj.psuInteriorIdx, speed, rhoCpCell);
+                obj.solveComponent(net, obj.psuInletIdx, obj.psuInteriorIdx, speed, rhoCpCell, speed, 1);
                 obj.T_solid(obj.rectCells(obj.PSU2D.body)) = net.T_junction;
             end
         end
 
-        function solveComponent(obj, net, inletIdx, bodyIdx, speed, rhoCpCell)
-            % 单元件：进风均温为环境，散热体内平均风速定 h；按对流拾取权重注热
-            %   w = 0.25 + 0.75·min(1, V/1.5)：热优先进入运动流体（鳍片强制对流）
+        function k = passiveScale(obj, net, role)
+            % 元件有内置风扇但都没转（显卡低温停转）时换热风速乘 passiveFlowShare，否则（有风扇在转、或没有风扇）为 1
+            k = 1;
+            nOwn = 0;
+            for j = 1:numel(obj.builtInFans)
+                f = obj.builtInFans{j};
+                if ~strcmp(f.role, role), continue; end
+                nOwn = nOwn + 1;
+                if ~f.isStopped(obj), return; end
+            end
+            if nOwn > 0, k = net.heat.passiveFlowShare; end
+        end
+
+        function solveComponent(obj, net, inletIdx, bodyIdx, speed, rhoCpCell, vHeat, vScale)
+            % 单元件：进风均温为环境，散热体内平均风速定 h（vHeat：CPU、GPU 为穿流分量，电源为风速模；vScale：换热风速的比例）；
+            % 按对流拾取权重注热 w = 0.25 + 0.75·min(1, speed/1.5)：热优先进入运动流体（鳍片强制对流）
             Tamb = mean(obj.T_fluid(inletIdx));
-            V = mean(speed(bodyIdx));
+            V = vScale * mean(vHeat(bodyIdx));
             net.solve(V, Tamb, obj.DT);
             w = 0.25 + 0.75 * min(1, speed(bodyIdx) / 1.5);
             dT = net.actual_power * (w / sum(w)) * obj.DT / rhoCpCell;
@@ -1753,6 +1831,13 @@ classdef CFDSolverBase < handle
         function fluidStep(obj) %#ok<MANU>
             % 单步时间推进，由子类实现（Octave 不支持无实现的抽象方法声明）
             error('CFDSolverBase:abstract', 'fluidStep 由子类 CFDSolverFEM 实现');
+        end
+    end
+
+    methods (Static)
+        function a = thruSpeed(uC, vC, d, VS)
+            % 格心风速在多孔区穿流方向的分量大小 [m/s]
+            if strcmp(d, 'x'), a = abs(uC) * VS; else, a = abs(vC) * VS; end
         end
     end
 end

@@ -1,10 +1,11 @@
-# 算法规格（v4.7）
+# 算法规格（v4.8）
 
 本文是 MATLAB 定稿版的算法说明，也是网页版移植的"标准答案"依据：方程、离散、每步顺序、
 单位换算、整数几何、参数与判据都以这里和代码为准（代码行为优先；两者不一致时以代码为准并修正本文）。
 目标是不看代码也能逐位复现。配套的数值参考数据见 `matlab_app/tests/reference/`（`tools/make_reference_dataset` 生成）。
 
 > 模型定位：2D 侧视定性工具，用于比较风道布局、风扇配置与元件温度的趋势，不是产品级散热仿真。
+> v4.8 起加入准三维修正（零件只占部分 Z 向深度、显卡热风从侧边排出、机箱壁与侧板散热），热参数按公开评测标定（§4）。
 
 ## 1. 坐标、网格与单位
 
@@ -43,6 +44,10 @@
 
 1. **障碍类型与顺序**：壁（外框最外 1 圈，无条件写入）→ GPU PCB → 电源外壳 → 电源仓挡板 → 内存 → VRM
    → `solidBlocks`。除壁外都按 setIfFree（只写入当前为 0 的格）。芯片组、主板区仅显示，不是障碍。
+   **准三维修正（v4.8.0）**：GPU PCB、内存、VRM 按 Z 向占比 z（`layout_zshare`：`zShare.{gpu, ram, vrm}`，零件占主板到侧板
+   距离的比例，缺字段为 1；取值 0 < z ≤ 0.95 或 z = 1，z > 0.95 时 ζ 迅速发散，应按固体处理）处理——z = 1 时按上面的顺序写成障碍（旧模型）；z < 1 时不是障碍，在同一位置登记为多孔区（§2.4），
+   代表零件旁边 1 − z 的深度里可以过风的空隙。默认 gpu 0.8（显卡高约 140 mm / 主板到侧板约 175 mm）、ram 0.2、vrm 0.2，
+   所以默认布局里这三类都不是障碍，`heatObsIdx` 只剩电源外壳。
    **CPU 底座也仅显示**（v4.4.0 起；之前是障碍，类型码 3 保留不用）：2D 侧视把底座画在塔式鳍片中间，真实机箱里
    底座贴在主板上、鳍片在它外侧，气流从鳍片中穿过；作为固体会挡住鳍片中部约一半的过风截面。
    **CPU 塔式散热器的结构**（v4.5.0 起，`layout_cpu_tower`）：`cpu.fins` 为全部鳍片的外廓，记其格矩形为 fin。
@@ -60,8 +65,13 @@
    - 内部 `in = (b.x+1, b.y+1, b.w−2, b.h−2)`；外壳 = b 的格 − in 的格，类型电源外壳。
 3. **电源仓挡板**：矩形 `x = cL`、`w = csX`、`y = oy + toCell(shroud.yMm)`、`h = toCell(shroud.hMm)`（不取 max(1,·)）；
    对每个 `gaps(g)`：`x0 = ox + toCell(x0Mm)`、`x1 = ox + toCell(x1Mm)`，剔除列 x ∈ [x0, x1] 的格。
-4. **多孔区**（不是障碍，属流体格）：按 CPU 鳍片组（后组、前组）、双塔间隙、GPU 散热片（`gpu.heatsink`）、电源内部 in、
-   `porousBlocks(k).rect` 的顺序登记，各带 `zetaThru`/`zetaCross`/`thru`（'x' 或 'y'）。阻力系数见 §3.7。
+4. **多孔区**（不是障碍，属流体格）：按 CPU 鳍片组（后组、前组）、双塔间隙、GPU PCB（z < 1 时）、GPU 散热片（`gpu.heatsink`）、
+   电源内部 in、各内存条（z < 1 时）、VRM（z < 1 时）、`porousBlocks(k).rect` 的顺序登记，各带 `zetaThru`/`zetaCross`/`thru`
+   （'x' 或 'y'）。阻力系数见 §3.7。部分遮挡的零件两个方向的 ζ 相同、`thru = 'x'`：
+   `ζ = zeta_partial(z) = (0.5·z + z²)/(1 − z)²`（以来流速度计的突缩 + 突扩，开口比 σ = 1 − z；z = 0.8 → 26，0.2 → 0.21875）。
+   GPU 散热片默认 `thru = 'y'`（v4.8.0；之前为 'x'）：鳍片片垂直于卡长，风扇向上吹入鳍片，热风从卡的顶边（侧板方向）与
+   插槽边排出；2D 里这条路径是穿过散热片与 PCB 多孔区向上，横向（x）只能走卡旁的空隙（`zetaCross` 25 ≈ zeta_partial(0.8)；
+   是布局里的独立数值，改 `zShare.gpu` 时应同时改它）。
    CPU 各鳍片组：`zetaThru = cpu.porous.zetaThru / 组数`（整个散热器的穿流阻力不变；单塔即原值）、`zetaCross`、`thru` 取 `cpu.porous`；
    双塔间隙：`zetaThru = 0`、`zetaCross = cpu.porous.zetaCross`、`thru = 'x'`（塔扇框围住的风道：没有鳍片，但空气不从间隙上下漏走）。
 5. **风扇执行盘**：盘厚 `t = max(1, toCell(fanDiskMm))`（默认 12 mm → 6 格，预览 3 格），`thickM = t·Δx`；
@@ -84,7 +94,8 @@
      行 `[in.y+in.h−t, in.y+in.h−1]`（电源内部最底 t 行），法向 (0, −1)。
    - **显卡厚度按槽数**（`layout_set_gpu_slots`，1 槽 = 20.32 mm）：整卡厚 = PCB `pcb.h`（12）+ 散热片 h + 风扇盘 `fanDiskMm`（12），
      `h = round(槽数·20.32 − pcb.h − fanDiskMm)`，`heatsink.y = pcb.y + pcb.h`（从 PCB 下沿向下长）；
-     2/2.5/3/3.5/4/4.5 槽 → 17/27/37/47/57/67 mm。鳍片总面积 `A_fin = 0.5·h/47` m²（3.5 槽 0.5 m²，4 槽 0.606 m²）。
+     2/2.5/3/3.5/4/4.5 槽 → 17/27/37/47/57/67 mm。鳍片有效换热面积 `A_fin = gpu_fin_area(h) = 0.45·h/47` m²（3.5 槽 0.45 m²，4 槽 0.546 m²；v4.8.0 与鳍片 h 一起标定，
+     之前为 0.5·h/47 配旧式 h）。
      可选 2–4.5 槽；风扇盘下沿到电源仓挡板 `shroud.yMm − (heatsink.y + h + fanDiskMm) < 10` mm 时拒绝（默认 4 槽留 21 mm）。
      未存 `gpu.slots` 的旧布局按 `round((pcb.h + heatsink.h + fanDiskMm)/20.32·2)/2` 推断。
 6. **开口**（顺序：机箱风扇 → 被动通风口 → 电源；开口 = 所在壁上一段连续壁格，全部清为流体）：
@@ -151,6 +162,7 @@
 14 障碍格显示值，依次：定温壁 = 壁温 → 其余障碍 = 4 邻域流体均值（无流体邻居取 T_amb）
    → 发热元件固体格（GPU PCB/电源外壳）= T_solid
 15 远场海绵环 T = T_amb
+15b 机箱壁散热（§3.9）：散热格 T ← T_amb + (T − T_amb)·exp(−κ·DT)
 16 共轭传热：CPU → GPU → 电源，热网络一步，热量注入散热体流体格
 17 T ← min(T, 200)，T ← max(T, T_amb)；海绵环再钉一次 T_amb
 18 iteration ← iteration + 1
@@ -349,7 +361,18 @@ N = 1 每步；N = 2 在第 1、3、5… 步。推进时长 `Δt = N·DT`；不�
 - 定温壁格：`T_w/DT`（解得 T = T_w）；绝热障碍格：`T^n/DT`（保持上一步的显示值）。
 
 定温壁 = `chassis.wallTempC.{top,bottom,rear,front}` 为数值的壁上的壁类型格（角格归顶/底壁；NaN 或 JSON 读回的空值 = 绝热）；
-其余障碍全部绝热。求解后 `T ← max(T, T_amb)`（全部格）。
+其余障碍全部绝热。求解后 `T ← max(T, T_amb)`（全部格）。默认布局 v4.8.0 起四面壁都是 NaN（绝热），向室外的散热由下面的
+壁面散热给出（之前为 25°C 定温壁：壁面导热按格距离散，h ≈ ρc_p·α/Δx 随网格变，2 mm 网格约 13 W/m²K、4 mm 约 6.5，
+且两块侧板不散热）。
+
+**机箱壁散热**（第 15b 步，v4.8.0；`layout_panel_u`：`chassis.panelU.{edge, side}`，壁向室内空气的总传热系数 [W/m²K]，
+内侧对流 + 钢板/玻璃 + 外侧自然对流与辐射，缺字段为 0 即没有）：散热格 = 外框内侧（列 `cL+1 … cR−1`、行 `cT+1 … cB−1`）
+的流体格中不在电源 body 矩形内者（按线性索引升序）。每格
+`κ = n·U_edge/(ρc_p·Δx) + 2·U_side/(ρc_p·depthM)`（ρc_p = AIR_DENSITY·AIR_CP，Δx 以 m 计），n 为其 4 邻格中属于非定温壁的
+壁类型格数（侧板两块：机箱内每格都贴着两块侧板；四周壁只有贴壁的格），κ > 0 的格每步
+`T ← T_amb + (T − T_amb)·exp(−κ·DT)`（衰减因子 exp(−κ·DT) 在构建时算好）。默认 U_edge = U_side = 5（钢板机柜按 5.5，
+4 mm 玻璃导热可忽略）；默认机箱 320 × 400 mm、depthM 0.15 m 的散热面积约 0.47 m²，扣掉开口、电源外壳内与定温壁后实际参与散热的
+相当于约 1.6 W/K（由 `fixed_default` 的散热格与衰减因子算得），内温比环境高 7 K 时约散 11 W。
 
 **平流**（第 13 步）：`advectScalar(T, 格心速度, T_amb, DT)`（§3.4），然后 `T ← max(T, T_amb)`（冷源不存在）。
 
@@ -462,10 +485,19 @@ V 为 n1×n2 节点值（n1、n2 ≥ 3），节点坐标：第 1 维 `o1 + (0 �
 ## 4. 共轭传热与元件热网络
 
 第 16 步先算一次格心风速 `speed = |格心速度|·VEL_SCALE`（m/s），然后按 **CPU → GPU → 电源** 的顺序（缺的元件跳过），对每个元件：
-1. 进风温度 `T_in = mean(T(进风集合))`（用当前 T，已含本步先处理元件的注热）；散热体平均风速 `V = mean(speed(散热体))`（集合见 §2.7）。
+1. 进风温度 `T_in = mean(T(进风集合))`（用当前 T，已含本步先处理元件的注热）；散热体平均风速 V（集合见 §2.7）：
+   CPU、GPU 取格心速度在各自多孔区穿流方向（`cpu.porous.thru`、`gpu.porous.thru`）的分量大小的均值
+   `V = mean(|u_c|)`（'x'）或 `mean(|v_c|)`（'y'）×VEL_SCALE（v4.8.0 起：横穿鳍片区的气流在 Z 向从鳍片旁的空隙走，不经过鳍片间隙；
+   之前取风速模）；热参数没有 h 参数（旧模型，见下）时仍取风速模；电源取风速模 `mean(speed(内部))`。元件有内置风扇但都没转时
+   （显卡低温停转；`fan.isStopped` 为本步第 8 步施力前更新的状态），CPU/GPU 的 V 再乘 `thermal.passiveFlowShare`（缺省 1，默认 GPU 0.1；
+   没有该角色的风扇时不乘）：`V = s·mean(…)`——静止的扇叶与风扇罩挡住鳍片进风，机箱气流大多从卡旁空隙绕过，鳍片只剩自然对流与少量穿流。
 2. 热网络一步（`DetailedThermalNetwork.solve(V, T_in, DT)`，`v = max(0, V)`）：
-   - CPU/GPU：`h = 30 + 130·min(v, 6)` [W/m²K]；`t_fin = max(fin_thickness_mm, 0.1)/1000`，`m = sqrt(2h/(200·t_fin))`，L = 0.025 m，
-     `η_f = tanh(mL)/(mL + 1e−10)`，`η_o = 1 − 0.8(1 − η_f)`；A = `A_fin_total_m2`（缺省 CPU 0.12、GPU 0.50）；
+   - CPU/GPU：`h = h_free + h_forced·min(v, 6)^h_exp` [W/m²K]（`layout_heat_coef`：`thermal.{h_free, h_forced, h_exp}` 三个都给，
+     或都不给 = 旧模型：h = 30 + 130·v 且 V 取风速模，与 v4.7 逐位相同；只给一部分报错。默认 CPU 5 + 48·v^0.8、GPU 3 + 48·v^0.8：
+     h_free 为无风时的自然对流与辐射（显卡鳍片更密、被风扇罩包着，取得更低），鳍片间隙内的强制对流随风速约按 0.8 次方增长）；
+     `t_fin = max(fin_thickness_mm, 0.1)/1000`，`m = sqrt(2h/(200·t_fin))`，L = 0.025 m，
+     `η_f = tanh(mL)/(mL + 1e−10)`，`η_o = 1 − 0.8(1 − η_f)`；A = `A_fin_total_m2`（缺省 CPU 0.12、GPU 0.50）。
+     V 是 2D 流场按机箱深度折算的风速，h 与 A 都是按公开评测标定的有效值（§9），不是鳍片的几何面积；
      `R_conv = 1/max(h·A·η_o, eps)`；`R_total = R_jc + R_tim + R_base + R_conv`。
    - 电源：`h = 15 + 80·min(v, 4)`，`R_total = R_internal + 1/max(h·0.08, eps)`。
    - V 不设下限：风扇提速 → h 增大 → 结温下降。
@@ -597,7 +629,7 @@ v4.2.2 的 400 mm 布局里 280² 正压仍会停在假平台：按标准答案�
 
 ## 8. 能量计账（守恒测试）
 
-逐步累计各算子改变的焓（注入、平流、扩散、海绵环重置、钳位；只计流体格，机箱内区另计），判据：
+逐步累计各算子改变的焓（注入、平流、扩散、海绵环重置、钳位、机箱壁散热；只计流体格，机箱内区另计；壁面散热格都在机箱内），判据：
 A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平衡 ≤ 5%；C CFD 内温与代数内温偏差
 在 [−15, +45]°C。计量窗口从 `resetEnergyAccounting`（清零并记录储能基准）起算。
 
@@ -608,6 +640,8 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 | 空气（AIR，可覆盖） | ρ、μ、c_p、ν、Pr、β_T、g | 1.184 kg/m³、1.81e−5 Pa·s、1005 J/kgK、1.56e−5 m²/s、0.71、3.4e−3 1/K、9.81 m/s² |
 | 常量（不可覆盖） | AIR_DENSITY、AIR_CP、CFM_TO_M3S、CFM_PER_M3S | 1.184、1005、4.719e−4、2118.88 |
 | 环境 | T_amb | 25°C |
+| 机箱壁（v4.8） | 壁温 wallTempC、壁面散热 panelU（四周壁 / 侧板） | NaN（绝热）、5 / 5 W/m²K（§3.9） |
+| 准三维（v4.8） | Z 向占比 zShare（显卡 / 内存 / VRM）、部分遮挡 ζ | 0.8 / 0.2 / 0.2、(0.5z + z²)/(1 − z)² = 26 / 0.22 / 0.22（§2.4） |
 | 数值 | DT、spongeWidth、spongeDamping、速度限幅、T 上限 | 0.005 s、1 格、0.8、6 m/s、200°C |
 | 湍流 | a₁、β*、β₁、α、σ_k、σ_ω、I、V_ref、ν_t 上限 | 0.31、0.09、0.0708、5/9、0.6、0.5、0.05、2 m/s、2000ν |
 | 湍流下限 | k、ω | k ≥ 1e−10；ω ∈ [1e−6, 1e8]；壁距下限 0.5Δx |
@@ -615,11 +649,12 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 | 风扇 | 盘厚、格栅 ζ（进/排）、温控曲线 | 12 mm、2.0/0.8、标准档（§3.6，另有静音/性能档） |
 | 风扇状态 | flowFactor τ、noiseQRatio τ、代数轨流量效率 | 0.15 s、0.5 s、0.75 |
 | 热网络 | τ、鳍片 k、鳍片 L | 0.25 s、200 W/mK、25 mm |
+| 鳍片对流（v4.8） | h = h_free + h_forced·V^h_exp（V 为穿流分量）、风扇都停转时换热风速比例 | CPU 5 + 48·V^0.8、GPU 3 + 48·V^0.8；GPU 0.1（CPU 1） |
 | 频率与功率 | 加速起点/斜率、最低频率、功耗指数、漏电占比/基准/翻倍 | CPU 60°C/0.001、GPU 50°C/0.001；0.5；3；CPU 0.15、GPU 0.10 / 70°C / 25°C（§4） |
-| CPU | 双塔间隙、塔扇数、热阻 jc/TIM/base、鳍片厚、面积、降频阈 | 24 mm、2（前 + 中）、0.15/0.04/0.05 K/W、0.4 mm、0.15 m²、95°C |
-| GPU | 槽数、热阻 jc/TIM/base、鳍片厚、面积、降频阈 | 4 槽（散热片 57 mm）、0.08/0.02/0.02 K/W、0.35 mm、0.606 m²（= 0.5·57/47）、87°C |
+| CPU | 双塔间隙、塔扇数、热阻 jc/TIM/base、鳍片厚、有效面积、降频阈 | 24 mm、2（前 + 中）、0.12/0.04/0.04 K/W、0.4 mm、0.3 m²、95°C |
+| GPU | 槽数、热阻 jc/TIM/base、鳍片厚、有效面积、降频阈 | 4 槽（散热片 57 mm）、0.03/0.015/0.015 K/W、0.35 mm、0.546 m²（= 0.45·57/47）、87°C |
 | 电源 | 额定、内部热阻、告警温度、进/出风 ζ | 850 W、0.25 K/W、85°C、2.0/1.0 |
-| 多孔 ζ（穿流/横流） | CPU 鳍片（整个散热器；双塔每组穿流 4）、GPU 鳍片、电源内部 | 8/60、4/10、6/6 |
+| 多孔 ζ（穿流/横流） | CPU 鳍片（整个散热器；双塔每组穿流 4）、GPU 鳍片（穿流 y）、电源内部 | 8/60、4/25、6/6 |
 | 几何 | 电源贴壁吸附、进风采样带、无风扇电源进风口 | 6 mm、10 mm（≥ 2 格）、120 mm |
 | 稳态 | runToSteady chunk、window、tolT、tolFlow、min/max | 50 步、1 s、0.3°C、3%、2 s/15 s |
 | 稳态 | steady_long_run 步数、统计起点、采样 | 3000、> 1000 步、每步（轨迹每 10 步存一行） |
@@ -635,7 +670,7 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 |---|---|
 | `name`、`ambientC`、`turbulenceModel` | 名称、环境温度、湍流模型（'komega' / 'lvel' / 'laminar'） |
 | `domain` | `sizeMm`、`baseCellMm` |
-| `chassis` | `enabled`、`originMm`（标量或 [x y]）、`sizeMm`（标量或 [深 高]）、`depthM`、`wallTempC.{rear,front,top,bottom}`（NaN = 绝热） |
+| `chassis` | `enabled`、`originMm`（标量或 [x y]）、`sizeMm`（标量或 [深 高]）、`depthM`、`wallTempC.{rear,front,top,bottom}`（NaN = 绝热）、`panelU.{edge, side}`（壁面散热的总传热系数 W/m²K，可缺省 = 没有，§3.9） |
 | `power` | `cpu`、`gpu`、`psu`（电源为输出负载） |
 | `fanDiskMm`、`grille`、`acoustics` | 执行盘厚、机箱风扇格栅 ζ（`intakeZeta`/`exhaustZeta`）、噪音参数（含 `finDb`） |
 | `fanCurves` | 可选：温控曲线 `profile`、`caseFan`/`cpu`/`gpu`/`psu` 各 `{T, duty}`，显卡另有 `stopBelowC`/`startAboveC`，电源另有 `passiveLoad`/`passiveMaxC`/`passiveRestartC`（缺省 = 标准档） |
@@ -643,18 +678,29 @@ A 全域闭合 |残差| ≤ 5%；B 储能速率收敛；B2 机箱内区算子平
 | `gpu` | `slots`（可缺省，按厚度推断）、`pcb`、`heatsink`、`porous`、`thermal`、`tjmax`、`throttleTemp`、`dvfs`、`fans.{model, xs}` |
 | `psu` | `body`、`ratedW`、`effCurve.{load, eff}`、`porous`、`fan.{model, xMm}`、`intakeZeta`、`exhaustZeta`、`R_internal`、`warnTemp` |
 | `ram`、`vrm`、`chipset`、`motherboardTray` | 其它元件（chipset、主板区仅显示） |
+| `zShare` | 可选：`gpu`、`ram`、`vrm` 占主板到侧板距离的比例（0 < z ≤ 0.95 或 1，缺字段 = 1 即固体障碍；< 1 为多孔区，§2.1、§2.4） |
 | `shroud` | 电源仓挡板 `yMm`、`hMm`、`gaps.{x0Mm, x1Mm}` |
 | `caseFans` | `mount`、`alongMm`、`type`、`model`、`speedMode`、`manualPct` |
 | `vents` | 可选：`mount`、`alongMm`、`lengthMm`、`zeta` |
 | `solidBlocks` / `porousBlocks` / `air` | 可选：实心块矩形；多孔块 `rect`、`zetaThru`、`zetaCross`、`thru`；覆盖 `AIR` 字段 |
 
-cpu/gpu/psu 可整体缺省（该元件不存在）。
+cpu/gpu/psu 可整体缺省（该元件不存在）。`cpu.thermal`、`gpu.thermal` 另有可选的 `h_free`、`h_forced`、`h_exp`（鳍片对流，§4，缺字段为旧式
+h = 30 + 130·V 且换热风速取风速模，三个要么都给要么都不给）与 `passiveFlowShare`（有内置风扇但都没转时换热风速的比例，缺省 1）。
+布局里缺 v4.8 的字段（zShare、panelU、h 参数）时按 v4.7 模型计算，结果与 v4.7 逐位相同（壁温按 wallTempC）。
+
+**读取 v4.7 及以前保存的配置**（`layout_json('load')`、网页 `normalizeLayout`；没有 `chassis.panelU`、含 cpu/gpu/psu 的文件——
+基准布局没有元件，不迁移）：`cpu.thermal`（0.15/0.04/0.05/0.4/0.15）、`gpu.thermal`（0.08/0.02/0.02/0.35、A = 0.5·h/47）与 `gpu.porous`
+（4/10/'x'）都是旧默认值时（数值按相对 1e−9 比较）整体升级为 v4.8 模型：四面壁温都是 25°C → 绝热；补 `chassis.panelU`、`zShare`；
+热参数与 GPU 鳍片换成新默认值（GPU 面积按 `gpu_fin_area(h)`）。其中任何一项改过时整个文件保持原样，按 v4.7 模型计算（不把新旧标定
+混在一起）。界面在配置名后注明"（v4.7 配置，已升级）"或"（v4.7 配置，热参数改过，按 v4.7 模型计算）"；
+MATLAB `[L, info] = layout_json('load', f)` 的 `info.migration` 为 'none' / 'v48' / 'legacy'。
 
 ## 11. 移植要点（网页版）
 
 - **必须一致**：每步顺序（§3）、单位换算与两个 CFM 常量（§1）、取整规则（四舍五入 0.5 远离零、`floor(n/2)`）与 §2 的全部整数几何公式、
   两次投影与阻力 β 用 u_ref 且算子与速度更新都用冻结的 β_ref、冻结算子的重装策略（§3.10，扩散算子每 5 步重装、阻力耦合算子按判据）、
   自带插值/距离变换/pchip（§3.11，逐位口径）、风扇工作点取施力前流场、温控曲线与停转回差（施力前更新）、热网络（频率与功率）与注热权重、共轭传热 CPU → GPU → 电源的顺序、
+  鳍片换热风速取穿流分量（§4）、部分遮挡零件的多孔区登记顺序与 ζ（§2.4）、壁面散热格与衰减因子（§3.9，第 15b 步在海绵环重置之后、共轭传热之前）、
   常量 AIR_DENSITY/AIR_CP 的使用范围、稳态统计口径（§7）。
 - **线性代数**：压力（Cholesky）、扩散（对称正定/LDL）用直接法或收敛到 1e−10 的迭代法均可；只影响舍入。注意冻结的是
   **系数场**（§3.10），与解法无关：用迭代法时也要按 §3.10 在规定的步数用装配时的 ν/α/ν_t/β_ref，才能复现标准答案。
@@ -714,7 +760,8 @@ cpu/gpu/psu 可整体缺省（该元件不存在）。
   1. 自动温控阶段：从静止推进 `autoSteps = 1600` 步（8 s），统计第 `autoAvgFrom = 800` 步之后的每一步；
   2. 转速扫描：依次关闭自动温控、全局手动转速 `sweepPct = 40/70/100%`，每档接续推进 `sweepSteps = 800` 步，统计第 `sweepAvgFrom = 400`
      步之后的每一步。全局手动下跟随全局转速的风扇（含塔扇、显卡、电源风扇）同一转速、不停转；布局里设为"手动"的单台风扇保持自己的转速。
-  1600 步的依据：7 个稳态标准答案算例（280²）第 800–1600 步的均值与 3000 步长时均值相差 ≤ 0.09°C、≤ 0.2 CFM。
+  1600 步的依据：7 个稳态标准答案算例（280²，v4.8.0）第 800–1600 步的均值与 3000 步长时均值相差 ≤ 0.39°C、≤ 0.75 CFM
+  （负压最大，其余 ≤ 0.24°C、≤ 0.44 CFM；v4.6.0 时 ≤ 0.09°C、≤ 0.2 CFM）。
   统计窗口前的推进可任意分块（诊断量只读状态，不影响结果），窗口内逐步推进。
 - 每个阶段的结果：CPU、GPU、电源结温，机箱内均温，机箱风量取窗口内每步值的均值（缺元件为 NaN）；噪音、频率比、性能 %、实际功率、
   评分与分项、机箱热阻 K、各风扇转速与停转取阶段末状态；`drift` 为统计窗口内最高结温 max(CPU, GPU) 后 1/4 与前 1/4 均值之差，

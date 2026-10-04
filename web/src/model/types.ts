@@ -25,6 +25,12 @@ export interface ComponentThermal {
   R_base: number;
   fin_thickness_mm: number;
   A_fin_total_m2: number;
+  /** 鳍片对流 h = h_free + h_forced·min(V, 6)^h_exp [W/m²K]（v4.8.0 起；缺省为旧式 30 + 130·V，见 quasi3d.ts） */
+  h_free?: number;
+  h_forced?: number;
+  h_exp?: number;
+  /** 没有转动的风扇时换热风速的比例（v4.8.0，缺省 1） */
+  passiveFlowShare?: number;
 }
 
 /** 频率与功率参数（见 dvfs.ts / layout_dvfs.m） */
@@ -134,6 +140,19 @@ export interface Acoustics {
   };
 }
 
+/** 零件占机箱 Z 向深度的比例（准三维修正，v4.8.0 起；缺省为 1 = 整个深度都挡住，见 quasi3d.ts） */
+export interface ZShare {
+  gpu?: number;
+  ram?: number;
+  vrm?: number;
+}
+
+/** 机箱壁向室内空气的总传热系数 [W/m²K]：edge = 2D 边界上的前/后/顶/底壁，side = 两块侧板（v4.8.0 起，见 quasi3d.ts） */
+export interface PanelU {
+  edge: number;
+  side: number;
+}
+
 export interface WallTemps {
   rear: number; // NaN = 绝热
   front: number;
@@ -147,7 +166,7 @@ export interface Layout {
   turbulenceModel: 'komega' | 'lvel' | 'laminar';
   domain: { sizeMm: number; baseCellMm: number };
   /** originMm：标量（x = y）或 [x y]；sizeMm：标量（见方）或 [深 高]（见 chassis.ts） */
-  chassis: { enabled: boolean; originMm: number | number[]; sizeMm: number | number[]; depthM: number; wallTempC: WallTemps };
+  chassis: { enabled: boolean; originMm: number | number[]; sizeMm: number | number[]; depthM: number; wallTempC: WallTemps; panelU?: PanelU };
   power: { cpu: number; gpu: number; psu: number };
   fanDiskMm: number;
   grille: { intakeZeta: number; exhaustZeta: number };
@@ -158,6 +177,7 @@ export interface Layout {
   psu?: PsuSpec;
   ram?: Rect[];
   vrm?: Rect;
+  zShare?: ZShare;
   chipset?: Rect; // 仅显示
   motherboardTray?: Rect; // 仅显示
   shroud?: { yMm: number; hMm: number; gaps: { x0Mm: number; x1Mm: number }[] };

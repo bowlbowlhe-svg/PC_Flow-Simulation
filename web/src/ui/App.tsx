@@ -6,7 +6,7 @@ import { layoutCpuTower } from '../model/cpuTower';
 import { layoutFanReport, type FanReport } from '../model/fanReport';
 import { layoutGpuSlots } from '../model/gpuSlots';
 import { layoutDefault } from '../model/layoutDefault';
-import { layoutFromJson, layoutToJson } from '../model/layoutJson';
+import { layoutFromJson, layoutToJson, migrationNote, type LayoutMigration } from '../model/layoutJson';
 import type { ScenarioSnap } from '../model/scenarioTable';
 import { fanCurveProfiles, layoutFanCurves, type FanProfile } from '../model/fanCurves';
 import type { FanCurves, Layout } from '../model/types';
@@ -27,7 +27,7 @@ import { COMPARE_SCENARIOS, type ScenarioKey } from '../compare/scenarios';
 /** 对比展示页（含预计算数据与对比 Worker）按需加载 */
 type CompareMod = typeof import('./compare/lazy');
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.6.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -222,8 +222,9 @@ export function App() {
   };
   const onLoadFile = async (f: File) => {
     let L: Layout;
+    const info: { migration?: LayoutMigration } = {};
     try {
-      L = layoutFromJson(await f.text());
+      L = layoutFromJson(await f.text(), info);
     } catch (e) {
       client.state.error = `读取配置失败：${e instanceof Error ? e.message : String(e)}`;
       setSim({ ...client.state });
@@ -244,7 +245,7 @@ export function App() {
       }
     }
     const L2 = { ...L, power: p };
-    if (await applyLayout(false, L2, `配置 ${f.name}`, p)) setPendingFromLayout(L2);
+    if (await applyLayout(false, L2, `配置 ${f.name}${migrationNote(info.migration ?? 'none')}`, p)) setPendingFromLayout(L2);
   };
   const currentSnap = (): Scenario | null => {
     if (!st || !sim.info || !sim.fields) return null;

@@ -1,1 +1,1 @@
-{"version":"4.6.0","source":"tests/reference/steady_default.json","steps":3000,"avgFrom":1000,"tj":[72.2,62.51,58.01],"tjStd":[0.03,0.01,0.03],"interior":31.82,"cfm":52.61,"cfmStd":0.16,"preview":{"steps":1250,"tj":[70.69,67.51,58.72],"interior":32.28,"cfm":48.26}}
+{"version":"4.8.0","source":"tests/reference/steady_default.json","steps":3000,"avgFrom":1000,"tj":[70.37,67.86,58.07],"tjStd":[0,0.05,0.03],"interior":33.48,"cfm":49.65,"cfmStd":0.05,"preview":{"steps":1050,"tj":[70.39,69.41,58.76],"interior":33.39,"cfm":49.69}}

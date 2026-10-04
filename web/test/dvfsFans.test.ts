@@ -43,8 +43,8 @@ describe('热网络：频率与功率控制（同 test_thermal）', () => {
     expect(run(250, 0.6, 45).freqRatio).toBeGreaterThan(n2.freqRatio);
   });
 
-  it('漏电强、散热差（R·P ≈ 122 K）：温度墙仍把结温压在降频阈、不过热', () => {
-    const n = run(250, 0, 40);
+  it('漏电强、散热差（R·P ≈ 119 K）：温度墙仍把结温压在降频阈、不过热', () => {
+    const n = run(250, 0.1, 40);
     expect(Math.abs(n.T_junction - L.cpu!.throttleTemp)).toBeLessThan(0.05);
     expect(n.overTemp).toBe(false);
     expect(n.freqRatio).toBeGreaterThan(d.minFreq + 0.02);
@@ -76,9 +76,11 @@ describe('热网络：频率与功率控制（同 test_thermal）', () => {
     expect(p.overTemp).toBe(p.T_junction > 85);
   });
 
-  it('求解器：300/500/1200 W 推进后显卡触发温度墙，满载档性能分下降并提示降频', async () => {
+  it('求解器：300/500/1200 W、全局手动 30% 推进后显卡触发温度墙，满载档性能分下降并提示降频', async () => {
     const s = new Solver(layoutDefault(), { gridScale: 0.5, powers: { cpu: 300, gpu: 500, psu: 1200 } });
     s.turbUpdateEvery = 2;
+    s.autoFanEnabled = false; // 风扇慢转（v4.8 的显卡散热器在自动温控下 500 W 不触发温度墙）
+    s.fanSpeedRatio = 30;
     await stepYielding(s, 400); // 分段推进并让出事件循环（长时间同步运行会让 vitest 的进程通信超时）
     const g = s.thermalNetworks.gpu!;
     const sc = calculateScores(s);

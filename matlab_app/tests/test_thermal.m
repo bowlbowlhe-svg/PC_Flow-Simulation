@@ -6,7 +6,7 @@ function pass = test_thermal()
 %   3) 极差：降到最低频率仍压不住，置过热；
 %   4) 漏电：同频率下结温越高功率越大；
 %   5) 电源：不降频，超过告警温度置 overTemp；
-%   6) 求解器：高功率（300/500/1200 W）推进后显卡触发温度墙，评分的性能项下降、建议提示降频。
+%   6) 求解器：高功率（300/500/1200 W）、全局手动 30% 转速推进后显卡触发温度墙，评分的性能项下降、建议提示降频。
     errs = {};
     L = layout_default();
     spec = struct('thermal', L.cpu.thermal, 'dvfs', layout_dvfs(L, 'cpu'));
@@ -29,8 +29,8 @@ function pass = test_thermal()
     n3 = run(250, 0.6, 45);
     errs = check(errs, n3.freq_ratio > n2.freq_ratio, sprintf('散热越好频率应越高（%.3f → %.3f）', n2.freq_ratio, n3.freq_ratio));
 
-    % 2b) 漏电强：250 W、鳍片处无风、进风 40°C（R·P ≈ 122 K，按 T_limit 处漏电计的旧写法会停在 100.4°C 过热）
-    n5 = run(250, 0, 40);
+    % 2b) 漏电强：250 W、鳍片处风速 0.1 m/s、进风 40°C（R·P ≈ 119 K，按 T_limit 处漏电计的旧写法会越过降频阈过热）
+    n5 = run(250, 0.1, 40);
     errs = check(errs, abs(n5.T_junction - L.cpu.throttleTemp) < 0.05 && ~n5.overTemp && n5.freq_ratio > d.minFreq + 0.02, ...
         sprintf('漏电强、散热差：应压在降频阈且不过热（Tj %.2f°C，φ %.3f）', n5.T_junction, n5.freq_ratio));
 
@@ -54,6 +54,7 @@ function pass = test_thermal()
 
     % 6) 求解器：高功率
     s = CFDSolverFEM(300, 500, 1200, [], 0.5);
+    s.autoFanEnabled = false; s.fanSpeedRatio = 30;     % 风扇慢转（v4.8 的显卡散热器在自动温控下 500 W 不触发温度墙）
     s.stepMultiple(400);
     g = s.thermalNetworks.gpu;
     sc = s.calculateScores();

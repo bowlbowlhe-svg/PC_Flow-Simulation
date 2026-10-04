@@ -11,6 +11,8 @@ import { mround } from '../model/mround';
 import { mergeAcoustics } from '../model/layoutJson';
 import { edtNearest } from '../numerics/edtNearest';
 import { layoutCpuTower, type CpuFanPos, type CpuTower } from '../model/cpuTower';
+import { layoutPanelU, layoutZShare, partialZeta, type ZShareFull } from '../model/quasi3d';
+import { AIR_CP, AIR_DENSITY } from './constants';
 
 export const OBSTACLE = Object.freeze({
   WALL: 1,
@@ -115,6 +117,14 @@ export interface Geometry {
   gpuInletIdx: Int32Array;
   psuInteriorIdx: Int32Array;
   psuInletIdx: Int32Array;
+  /** 鳍片换热用的风速分量（多孔区穿流方向）：CPU、GPU */
+  cpuThru: ThruDir;
+  gpuThru: ThruDir;
+  /** 零件 Z 向占比（准三维修正；< 1 的零件为多孔区） */
+  zShare: ZShareFull;
+  /** 机箱壁散热（§3.9）：散热格（0 基）与每步衰减因子 exp(−κ·DT) */
+  wallLossIdx: Int32Array;
+  wallLossDecay: Float64Array;
   uFaceActive: Uint8Array; // W×(H+1)
   vFaceActive: Uint8Array; // (W+1)×H
   uFaceRing: Uint8Array;
@@ -239,8 +249,18 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     }
     if (cpu.gap) porousZones.push({ rect: cpu.gap, zetaThru: 0, zetaCross: pz.zetaCross, thru: 'x' });
   }
+  // 准三维修正：只占机箱部分深度的零件（显卡、内存、VRM 散热片）旁边还有空隙可以过风，占比 z < 1 时按多孔区
+  // （ζ = partialZeta(z)，两个方向相同）处理，z = 1 时为固体障碍（旧模型）
+  const zShare = layoutZShare(L);
+  const partial = (rect: Rect, z: number, type: number) => {
+    if (z >= 1) setIfFree(rectCells(rect), type);
+    else {
+      const zeta = partialZeta(z);
+      porousZones.push({ rect, zetaThru: zeta, zetaCross: zeta, thru: 'x' });
+    }
+  };
   if (gpu && L.gpu) {
-    setIfFree(rectCells(gpu.pcb), OBSTACLE.GPU_PCB);
+    partial(gpu.pcb, zShare.gpu, OBSTACLE.GPU_PCB);
     addZone(gpu.heatsink, L.gpu.porous);
   }
   if (psu && L.psu) {
@@ -263,8 +283,8 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     }
     setIfFree(idx, OBSTACLE.PSU_SHROUD);
   }
-  for (const r of ram) setIfFree(rectCells(r), OBSTACLE.RAM_SLOT);
-  if (vrm) setIfFree(rectCells(vrm), OBSTACLE.VRM);
+  for (const r of ram) partial(r, zShare.ram, OBSTACLE.RAM_SLOT);
+  if (vrm) partial(vrm, zShare.vrm, OBSTACLE.VRM);
   for (const sb of L.solidBlocks ?? []) setIfFree(rectCells(rectToGrid(sb)), OBSTACLE.BLOCK);
   for (const pb of L.porousBlocks ?? []) addZone(rectToGrid(pb.rect), pb);
 
@@ -554,6 +574,33 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   if (gpu && gpuInletIdx.length === 0) gpuInletIdx = gpuFinIdx;
   if (psu && psuInletIdx.length === 0) psuInletIdx = psuInteriorIdx;
 
+  // ---- 机箱壁散热（§3.9，v4.8.0；缺 chassis.panelU 时没有）----
+  // 机箱内（壁内侧、电源外壳以外）的流体格经两块侧板向室内散热，κ_side = 2·U_side/(ρc_p·depthM)；与非定温壁格相邻的
+  // 每条边再加 κ_edge = U_edge/(ρc_p·Δx)。每步 T ← T_amb + (T − T_amb)·exp(−κ·DT)
+  const panelU = layoutPanelU(L);
+  const wlIdx: number[] = [];
+  const wlDecay: number[] = [];
+  if (CASE2D.enabled && (panelU.edge > 0 || panelU.side > 0)) {
+    const rc = AIR_DENSITY * AIR_CP;
+    const kEdge = panelU.edge / (rc * cellM);
+    const kSide = (2 * panelU.side) / (rc * L.chassis.depthM);
+    const pb = psu?.body;
+    const isWallLoss = (j: number) => obstacle[j] === OBSTACLE.WALL && !dirSet.has(j);
+    for (let x = cL + 1; x <= cR - 1; x++) {
+      for (let y = cT + 1; y <= cB - 1; y++) {
+        const i = lin(x, y);
+        if (obstacle[i] !== 0) continue;
+        if (pb && x >= pb.x && x <= pb.x + pb.w - 1 && y >= pb.y && y <= pb.y + pb.h - 1) continue;
+        const n = +isWallLoss(lin(x, y - 1)) + +isWallLoss(lin(x, y + 1)) + +isWallLoss(lin(x - 1, y)) + +isWallLoss(lin(x + 1, y));
+        const k = n * kEdge + kSide;
+        if (k > 0) {
+          wlIdx.push(i);
+          wlDecay.push(Math.exp(-k * DT));
+        }
+      }
+    }
+  }
+
   // ---- computeFaceMasks ----
   const uFaceActive = new Uint8Array(W * (H + 1));
   const vFaceActive = new Uint8Array((W + 1) * H);
@@ -686,6 +733,7 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     fanDiskCells: t,
     obstacle,
     porousZones,
+    zShare,
     fans,
     nCaseFans,
     openings,
@@ -708,6 +756,10 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
     gpuInletIdx,
     psuInteriorIdx,
     psuInletIdx,
+    cpuThru: L.cpu?.porous.thru ?? 'x',
+    gpuThru: L.gpu?.porous.thru ?? 'x',
+    wallLossIdx: Int32Array.from(wlIdx),
+    wallLossDecay: Float64Array.from(wlDecay),
     uFaceActive,
     vFaceActive,
     uFaceRing,

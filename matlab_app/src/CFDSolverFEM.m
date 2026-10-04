@@ -779,6 +779,13 @@ classdef CFDSolverFEM < CFDSolverBase
             Tpre = obj.T_fluid;
             obj.T_fluid(obj.spongeRingIdx) = obj.T_amb;
             obj.accResetOut = obj.accResetOut + sum(obj.T_fluid(obj.spongeRingIdx) - Tpre(obj.spongeRingIdx));
+            % 机箱壁（侧板与四周壁）向室内散热（§3.9）
+            if ~isempty(obj.wallLossIdx)
+                Tw0 = obj.T_fluid(obj.wallLossIdx);
+                Tw1 = obj.T_amb + (Tw0 - obj.T_amb) .* obj.wallLossDecay;
+                obj.T_fluid(obj.wallLossIdx) = Tw1;
+                obj.accWall = obj.accWall + sum(Tw1 - Tw0);
+            end
 
             obj.solveConjugateHeatTransfer();
 

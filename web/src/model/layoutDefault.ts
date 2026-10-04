@@ -36,7 +36,9 @@ export function layoutDefault(): Layout {
       originMm: [120, 80],
       sizeMm: [320, 400],
       depthM: 0.15,
-      wallTempC: { rear: 25, front: 25, top: 25, bottom: 25 },
+      // 壁：wallTempC 为数值时是定温壁，NaN 为绝热；panelU 为壁向室内空气的总传热系数 [W/m²K]（四周壁 / 两块侧板，v4.8.0）
+      wallTempC: { rear: NaN, front: NaN, top: NaN, bottom: NaN },
+      panelU: { edge: 5, side: 5 },
     },
     power: { cpu: 125, gpu: 250, psu: 450 },
     // 自动温控风扇曲线（档位：quiet / standard / performance，见 fanCurves.ts）
@@ -51,23 +53,38 @@ export function layoutDefault(): Layout {
       fins: rect(36, 76, 112, 120), // 鳍片外廓（两组鳍片 + 中间间隙）
       tower: { stacks: 2, gapMm: 24 },
       porous: { zetaThru: 8, zetaCross: 60, thru: 'x' },
-      thermal: { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 },
+      thermal: {
+        R_junction_to_case: 0.12,
+        R_tim: 0.04,
+        R_base: 0.04,
+        fin_thickness_mm: 0.4,
+        A_fin_total_m2: 0.3,
+        h_free: 5,
+        h_forced: 48,
+        h_exp: 0.8,
+      },
       tjmax: 100,
       throttleTemp: 95, // 温度墙：超过后降频把结温压在这里
       dvfs: layoutDvfs({} as Layout, 'cpu'),
       fan: { model: 'Tower120', count: 2 },
     },
+    // 显卡：鳍片片垂直于卡长，风扇向上吹入鳍片，热风从卡的顶边（侧板方向）与插槽边排出；显卡只占主板到侧板距离的
+    // zShare.gpu，卡旁的空隙在 2D 里与 PCB、散热片重合：PCB 为多孔区，散热片穿流 y、横流 x 只能走空隙（v4.8.0）
     gpu: {
       slots: 4,
       pcb: rect(38, 212, 216, 12),
       heatsink: rect(28, 224, 236, 57), // 后端离后壁约 26 mm（挡板端接口区；热风可沿后壁上行），前端伸出主板前缘约 16 mm
-      porous: { zetaThru: 4, zetaCross: 10, thru: 'x' },
+      porous: { zetaThru: 4, zetaCross: 25, thru: 'y' },
       thermal: {
-        R_junction_to_case: 0.08,
-        R_tim: 0.02,
-        R_base: 0.02,
+        R_junction_to_case: 0.03,
+        R_tim: 0.015,
+        R_base: 0.015,
         fin_thickness_mm: 0.35,
         A_fin_total_m2: gpuFinArea(57),
+        h_free: 3,
+        h_forced: 48,
+        h_exp: 0.8,
+        passiveFlowShare: 0.1,
       },
       tjmax: 95,
       throttleTemp: 87,
@@ -88,6 +105,8 @@ export function layoutDefault(): Layout {
     // 主板 ATX 244 × 305 mm，后缘贴后壁；下沿约 27 mm 在电源仓挡板后，主板区只画挡板以上部分
     ram: [rect(190, 48, 4, 32), rect(196, 48, 4, 32), rect(202, 48, 4, 32), rect(208, 48, 4, 32)],
     vrm: rect(34, 44, 28, 20),
+    // 准三维修正：零件占主板到侧板距离（约 175 mm）的比例（显卡约 140 mm、DDR5 约 35–44 mm、VRM 散热片约 30 mm）
+    zShare: { gpu: 0.8, ram: 0.2, vrm: 0.2 },
     chipset: rect(174, 306, 20, 8),
     motherboardTray: rect(4, 36, 244, 278),
     shroud: { yMm: 314, hMm: 16, gaps: [{ x0Mm: 280, x1Mm: 318 }] },

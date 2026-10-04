@@ -1,7 +1,10 @@
-function out = layout_json(action, varargin)
+function [out, info] = layout_json(action, varargin)
 %LAYOUT_JSON 布局配置的 JSON 读写。
 %   layout_json('save', L, file)   保存
 %   L = layout_json('load', file)  读取并规整（JSON 的 null → NaN、单元素数组等）
+%   [L, info] = layout_json('load', file)  info.migration 为版本迁移结果：'none'；'v48'（v4.7 配置，热参数都是旧默认值，
+%                                  已整体升级为 v4.8 模型）；'legacy'（v4.7 配置，改过热参数，保持原样按 v4.7 模型计算）
+    info = struct('migration', 'none');
     switch action
         case 'save'
             L = varargin{1}; file = varargin{2};
@@ -18,19 +21,20 @@ function out = layout_json(action, varargin)
             raw = fread(fid, inf, 'uint8=>uint8')';
             fclose(fid);
             L = jsondecode(native2unicode(raw, 'UTF-8'));
-            out = normalize(L);
+            [out, info.migration] = normalize(L);
         otherwise
             error('layout_json:action', '未知操作：%s', action);
     end
 end
 
-function L = normalize(L)
+function [L, mig] = normalize(L)
     % 壁温：JSON 里 NaN 存为 null，读回为 []
     sides = {'rear','front','top','bottom'};
     for k = 1:numel(sides)
         v = L.chassis.wallTempC.(sides{k});
         if isempty(v), L.chassis.wallTempC.(sides{k}) = NaN; end
     end
+    [L, mig] = migrateV48(L);
     % 数值数组（如 gpu.fans.xs、矩形机箱的 sizeMm/originMm）读回可能为列向量，统一为行向量
     L.chassis.sizeMm = L.chassis.sizeMm(:)';
     L.chassis.originMm = L.chassis.originMm(:)';
@@ -83,12 +87,72 @@ function L = normalize(L)
         if isfield(L, 'fanCurves') && ~isempty(L.fanCurves), L.fanCurves = layout_fan_curves(L); end
         if isfield(L, 'cpu') && ~isempty(L.cpu), layout_dvfs(L, 'cpu'); end
         if isfield(L, 'gpu') && ~isempty(L.gpu), layout_dvfs(L, 'gpu'); end
+        layout_zshare(L);
+        layout_panel_u(L);
+        if isfield(L, 'cpu') && ~isempty(L.cpu), layout_heat_coef(L.cpu.thermal, 'cpu'); end
+        if isfield(L, 'gpu') && ~isempty(L.gpu), layout_heat_coef(L.gpu.thermal, 'gpu'); end
     catch ME
         error('layout_json:invalid', '%s', ME.message);
     end
     % 电源仓挡板缺口：空数组读回为 []
     if isfield(L, 'shroud') && isfield(L.shroud, 'gaps') && isempty(L.shroud.gaps)
         L.shroud.gaps = struct('x0Mm', {}, 'x1Mm', {});
+    end
+end
+
+function [L, mig] = migrateV48(L)
+    % 读取 v4.7 及以前保存的配置（没有 chassis.panelU、含 CPU/GPU/电源）。热参数（CPU、GPU）与 GPU 鳍片阻力都是旧默认值时
+    % 整体升级为 v4.8 模型：四面壁温都是 25°C 的定温壁 → 绝热；补 chassis.panelU、zShare；热参数与 GPU 鳍片换成新默认值
+    % （GPU 面积按 gpu_fin_area(h)）。改过其中任何一项时整个文件保持原样——缺 v4.8 字段即按 v4.7 模型计算，不把新旧标定
+    % 混在一起。基准布局（方腔、风道、空域）没有元件，不迁移。mig：'none' / 'v48'（已升级）/ 'legacy'（按 v4.7 模型）。
+    mig = 'none';
+    hasPart = any(cellfun(@(k) isfield(L, k) && ~isempty(L.(k)), {'cpu', 'gpu', 'psu'}));
+    if isfield(L.chassis, 'panelU') || ~hasPart, return; end
+    hasCpu = isfield(L, 'cpu') && ~isempty(L.cpu);
+    hasGpu = isfield(L, 'gpu') && ~isempty(L.gpu);
+    oldCpu = ~hasCpu || (isfield(L.cpu, 'thermal') && sameAs(L.cpu.thermal, ...
+        struct('R_junction_to_case', 0.15, 'R_tim', 0.04, 'R_base', 0.05, 'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.15)));
+    oldGpu = ~hasGpu;
+    if hasGpu && isfield(L.gpu, 'thermal') && isfield(L.gpu, 'heatsink') && isfield(L.gpu, 'porous')
+        h = L.gpu.heatsink.h;
+        oldGpu = sameAs(L.gpu.thermal, struct('R_junction_to_case', 0.08, 'R_tim', 0.02, 'R_base', 0.02, ...
+                     'fin_thickness_mm', 0.35, 'A_fin_total_m2', 0.5 * h / 47)) && ...
+                 sameAs(L.gpu.porous, struct('zetaThru', 4, 'zetaCross', 10, 'thru', 'x'));
+    end
+    if ~(oldCpu && oldGpu)
+        mig = 'legacy';
+        return;
+    end
+    mig = 'v48';
+    D = layout_default();
+    sides = {'rear','front','top','bottom'};
+    wt = L.chassis.wallTempC;
+    if all(cellfun(@(k) isequal(wt.(k), 25), sides))
+        for k = 1:numel(sides), L.chassis.wallTempC.(sides{k}) = NaN; end
+    end
+    L.chassis.panelU = D.chassis.panelU;
+    if ~isfield(L, 'zShare'), L.zShare = D.zShare; end
+    if hasCpu, L.cpu.thermal = D.cpu.thermal; end
+    if hasGpu
+        L.gpu.thermal = D.gpu.thermal;
+        L.gpu.thermal.A_fin_total_m2 = gpu_fin_area(L.gpu.heatsink.h);
+        L.gpu.porous = D.gpu.porous;
+    end
+end
+
+function tf = sameAs(a, b)
+    % 字段集合相同、数值相对差 ≤ 1e−9（jsonencode 写 15 位有效数字）、字符串相同
+    tf = isstruct(a) && isscalar(a) && isempty(setxor(fieldnames(a), fieldnames(b)));
+    if ~tf, return; end
+    fn = fieldnames(b);
+    for k = 1:numel(fn)
+        x = a.(fn{k}); y = b.(fn{k});
+        if ischar(y)
+            ok = ischar(x) && strcmp(x, y);
+        else
+            ok = isnumeric(x) && isscalar(x) && abs(x - y) <= 1e-9 * abs(y);
+        end
+        if ~ok, tf = false; return; end
     end
 end
 

@@ -2,12 +2,14 @@
 // JSON 里 NaN 存为 null；读取时补齐缺省字段、把单个对象规整为数组、并做取值检查。
 import type { Acoustics, CaseFan, Layout } from './types';
 import { hasModel } from './fans';
-import { acousticsDefault } from './layoutDefault';
+import { acousticsDefault, layoutDefault } from './layoutDefault';
 import { LayoutError } from './gpuSlots';
 import { pairMm } from './chassis';
 import { layoutCpuTower } from './cpuTower';
 import { layoutDvfs, layoutFanCurves } from './fanCurves';
 import { fanModelAlias } from './fans';
+import { gpuFinArea } from './gpuSlots';
+import { layoutHeatCoef, layoutPanelU, layoutZShare } from './quasi3d';
 
 /** 保存：JSON.stringify 会把 NaN 写成 null，与 MATLAB jsonencode 一致 */
 export function layoutToJson(L: Layout): string {
@@ -27,17 +29,20 @@ function numOrNaN(v: unknown): number {
 }
 
 /** 读取并规整（与 layout_json('load') 同口径） */
-export function layoutFromJson(text: string): Layout {
-  return normalizeLayout(JSON.parse(text));
+export function layoutFromJson(text: string, info?: { migration?: LayoutMigration }): Layout {
+  return normalizeLayout(JSON.parse(text), info);
 }
 
-export function normalizeLayout(raw: Raw): Layout {
+/** info.migration 返回版本迁移结果（见 migrateV48） */
+export function normalizeLayout(raw: Raw, info?: { migration?: LayoutMigration }): Layout {
   const L: Raw = structuredClone(raw);
   validateDomain(L);
   // 壁温：null → NaN（绝热）
   for (const side of ['rear', 'front', 'top', 'bottom']) {
     L.chassis.wallTempC[side] = numOrNaN(L.chassis.wallTempC[side]);
   }
+  const mig = migrateV48(L);
+  if (info) info.migration = mig;
   if (L.gpu && L.gpu.fans) L.gpu.fans.xs = asArray(L.gpu.fans.xs).map(Number);
   if (L.psu && L.psu.effCurve) {
     L.psu.effCurve.load = asArray(L.psu.effCurve.load).map(Number);
@@ -51,6 +56,16 @@ export function normalizeLayout(raw: Raw): Layout {
   }
   // CPU 塔式散热器：null 或 []（MATLAB isempty，例如 cpu.fan = [] 存为 "fan":[]）按没写处理
   const isEmpty = (v: unknown) => v === null || (Array.isArray(v) && v.length === 0);
+  // v4.8 字段：null 或 []（MATLAB isempty）按没写处理（同 layout_zshare / layout_panel_u / layout_heat_coef）
+  if (L.chassis && isEmpty(L.chassis.panelU)) delete L.chassis.panelU;
+  if (isEmpty(L.zShare)) delete L.zShare;
+  else if (L.zShare && typeof L.zShare === 'object' && !Array.isArray(L.zShare)) {
+    for (const k of Object.keys(L.zShare)) if (isEmpty(L.zShare[k])) delete L.zShare[k];
+  }
+  for (const c of ['cpu', 'gpu']) {
+    const th = L[c]?.thermal;
+    if (th && typeof th === 'object') for (const k of ['h_free', 'h_forced', 'h_exp', 'passiveFlowShare']) if (isEmpty(th[k])) delete th[k];
+  }
   if (L.cpu) {
     for (const k of ['fan', 'tower']) if (isEmpty(L.cpu[k])) delete L.cpu[k];
     if (L.cpu.fan) for (const k of ['count']) if (isEmpty(L.cpu.fan[k])) delete L.cpu.fan[k];
@@ -86,6 +101,10 @@ export function normalizeLayout(raw: Raw): Layout {
     if (!fcEmpty) L.fanCurves = layoutFanCurves(L as Layout);
     if (L.cpu) layoutDvfs(L as Layout, 'cpu');
     if (L.gpu) layoutDvfs(L as Layout, 'gpu');
+    layoutZShare(L as Layout);
+    layoutPanelU(L as Layout);
+    if (L.cpu) layoutHeatCoef(L.cpu.thermal, 'cpu');
+    if (L.gpu) layoutHeatCoef(L.gpu.thermal, 'gpu');
   } catch (e) {
     throw new LayoutError('layout_json:invalid', (e as Error).message);
   }
@@ -104,6 +123,49 @@ export function normalizeLayout(raw: Raw): Layout {
   }
   if (L.shroud) L.shroud.gaps = asArray(L.shroud.gaps);
   return L as Layout;
+}
+
+/** 读取时的版本迁移结果：none 不需要；v48 v4.7 配置已升级为 v4.8 模型；legacy 改过热参数的 v4.7 配置，按 v4.7 模型计算 */
+export type LayoutMigration = 'none' | 'v48' | 'legacy';
+
+/** 界面上标在配置名后面的说明 */
+export function migrationNote(m: LayoutMigration): string {
+  return m === 'v48' ? '（v4.7 配置，已升级）' : m === 'legacy' ? '（v4.7 配置，热参数改过，按 v4.7 模型计算）' : '';
+}
+
+/**
+ * 读取 v4.7 及以前保存的配置（没有 chassis.panelU、含 CPU/GPU/电源）。热参数（CPU、GPU）与 GPU 鳍片阻力都是旧默认值时
+ * 整体升级为 v4.8 模型（同 layout_json.m）：四面壁温都是 25°C 的定温壁 → 绝热；补 chassis.panelU、zShare；热参数与 GPU 鳍片
+ * 换成新默认值（GPU 面积按 gpuFinArea(h)）。改过其中任何一项时整个文件保持原样——缺 v4.8 字段即按 v4.7 模型计算，
+ * 不把新旧标定混在一起。基准布局（方腔、风道、空域）没有元件，不迁移。
+ */
+function migrateV48(L: Raw): LayoutMigration {
+  if (!L.chassis || L.chassis.panelU !== undefined || !(L.cpu || L.gpu || L.psu)) return 'none';
+  // 数值按相对 1e−9 比较（MATLAB jsonencode 写 15 位有效数字）
+  const eq = (x: unknown, y: number | string) =>
+    typeof y === 'number' ? typeof x === 'number' && Math.abs(x - y) <= 1e-9 * Math.abs(y) : x === y;
+  const same = (a: Raw, b: Record<string, number | string>) =>
+    !!a && typeof a === 'object' && Object.keys(a).length === Object.keys(b).length && Object.keys(b).every((k) => eq(a[k], b[k]));
+  const h = L.gpu?.heatsink?.h;
+  const oldDefaults =
+    (!L.cpu || same(L.cpu.thermal, { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 })) &&
+    (!L.gpu ||
+      (same(L.gpu.thermal, { R_junction_to_case: 0.08, R_tim: 0.02, R_base: 0.02, fin_thickness_mm: 0.35, A_fin_total_m2: (0.5 * h) / 47 }) &&
+        same(L.gpu.porous, { zetaThru: 4, zetaCross: 10, thru: 'x' })));
+  if (!oldDefaults) return 'legacy';
+  const D = layoutDefault();
+  const wt = L.chassis.wallTempC;
+  if (['rear', 'front', 'top', 'bottom'].every((k) => wt[k] === 25)) {
+    for (const k of ['rear', 'front', 'top', 'bottom']) wt[k] = NaN;
+  }
+  L.chassis.panelU = { ...D.chassis.panelU! };
+  if (L.zShare === undefined) L.zShare = { ...D.zShare! };
+  if (L.cpu) L.cpu.thermal = { ...D.cpu!.thermal };
+  if (L.gpu) {
+    L.gpu.thermal = { ...D.gpu!.thermal, A_fin_total_m2: gpuFinArea(h) };
+    L.gpu.porous = { ...D.gpu!.porous };
+  }
+  return 'v48';
 }
 
 /**
