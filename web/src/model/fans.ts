@@ -22,19 +22,19 @@ function spec(size: number, rmin: number, rmax: number, cfm: number, nMax: numbe
   return { size, rpm_min: rmin, rpm_max: rmax, cfm_max: cfm, noise_max: nMax, pmax_pa: pmax, pq_curve: pq, price, label };
 }
 
-/** 风扇型号库（顺序与 MATLAB struct 字段顺序一致；满速参数取自厂家/零售商规格，见 fan_catalog.m） */
+/** 风扇型号库（顺序与 MATLAB struct 字段顺序一致；满速噪音按同一实测口径（1 m）、价格为京东零售价或估计，来源见 fan_catalog.m） */
 export const FAN_CATALOG: Readonly<Record<string, FanSpec>> = Object.freeze({
-  NF_A14: spec(140, 300, 1500, 82.52, 24.6, 2.08 * mmH2O, [1.0, 0.91, 0.78, 0.59, 0.34, 0.0], 249, 'Noctua NF-A14 PWM'),
-  NF_A12: spec(120, 450, 2000, 60.1, 22.6, 2.34 * mmH2O, [1.0, 0.93, 0.8, 0.62, 0.36, 0.0], 229, 'Noctua NF-A12x25 PWM'),
-  NF_A9: spec(92, 400, 2000, 46.44, 22.8, 2.28 * mmH2O, [1.0, 0.89, 0.74, 0.55, 0.32, 0.0], 129, 'Noctua NF-A9 PWM'),
-  M25_140: spec(140, 350, 1800, 101.78, 36.4, 2.23 * mmH2O, [1.0, 0.95, 0.85, 0.7, 0.45, 0.0], 139, 'Phanteks M25 Gen2 140'),
-  T30: spec(120, 400, 2000, 67, 27.3, 7.11 * mmH2O * (2000 / 3000) ** 2, [1.0, 0.94, 0.83, 0.67, 0.42, 0.0], 219, 'Phanteks T30-120'),
-  P14: spec(140, 200, 1700, 72.8, 22.5, 2.4 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 68, 'Arctic P14 PWM'),
-  P12: spec(120, 200, 1800, 56.3, 22.5, 2.2 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 55, 'Arctic P12 PWM'),
-  Stock120: spec(120, 600, 2200, 65, 32, 20.0, generic, 0, '机箱原装 120mm'),
-  Tower120: spec(120, 300, 1550, 66.17, 25.6, 1.53 * mmH2O, generic, 0, 'CPU 塔扇（Thermalright TL-C12C）'),
-  GPU80: spec(80, 800, 2600, 45, 34, 20.0, generic, 0, '显卡 80mm 风扇'),
-  PSU120: spec(120, 500, 1800, 50, 30, 20.0, generic, 0, '电源 120mm 风扇'),
+  NF_A14: spec(140, 300, 1500, 82.52, 31.8, 2.08 * mmH2O, [1.0, 0.91, 0.78, 0.59, 0.34, 0.0], 180, 'Noctua NF-A14 PWM'),
+  NF_A12: spec(120, 450, 2000, 60.1, 29.9, 2.34 * mmH2O, [1.0, 0.93, 0.8, 0.62, 0.36, 0.0], 299, 'Noctua NF-A12x25 PWM'),
+  NF_A9: spec(92, 400, 2000, 46.44, 30.0, 2.28 * mmH2O, [1.0, 0.89, 0.74, 0.55, 0.32, 0.0], 142, 'Noctua NF-A9 PWM'),
+  M25_140: spec(140, 350, 1800, 101.78, 39.7, 2.23 * mmH2O, [1.0, 0.95, 0.85, 0.7, 0.45, 0.0], 79, 'Phanteks M25 Gen2 140'),
+  T30: spec(120, 400, 2000, 67, 32.1, 7.11 * mmH2O * (2000 / 3000) ** 2, [1.0, 0.94, 0.83, 0.67, 0.42, 0.0], 199, 'Phanteks T30-120'),
+  P14: spec(140, 200, 1700, 72.8, 31.0, 2.4 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 75, 'Arctic P14 PWM'),
+  P12: spec(120, 200, 1800, 56.3, 27.6, 2.2 * mmH2O, [1.0, 0.92, 0.77, 0.57, 0.32, 0.0], 60, 'Arctic P12 PWM'),
+  Stock120: spec(120, 600, 2200, 65, 37.0, 20.0, generic, 0, '机箱原装 120mm'),
+  Tower120: spec(120, 300, 1550, 66.17, 29.6, 1.53 * mmH2O, generic, 0, 'CPU 塔扇（Thermalright TL-C12C）'),
+  GPU80: spec(80, 800, 2600, 45, 33.0, 20.0, generic, 0, '显卡 80mm 风扇'),
+  PSU120: spec(120, 500, 1800, 50, 41.5, 20.0, generic, 0, '电源 120mm 风扇'),
 });
 
 /** 旧型号名 → 新型号名（同 fan_model_alias.m）：v4.5 及以前的 RX120、RX140 并非真实型号 */

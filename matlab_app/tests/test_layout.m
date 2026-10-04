@@ -43,6 +43,7 @@ function pass = test_layout()
     % 4) 安装检查
     R = layout_fan_report(L0);
     errs = check(errs, isempty(R.warnings), '默认布局不应有安装警告');
+    errs = check(errs, R.totalPrice == 180, sprintf('默认布局机箱风扇参考价应为 3×60 + 原装 0 = 180 元（%g）', R.totalPrice));
     errs = check(errs, abs(R.intakeCfm - 112.6) < 0.01 && abs(R.exhaustCfm - 121.3) < 0.01 && strcmp(R.pressure, '平衡'), ...
         '默认布局满速标称进/排 112.6/121.3 CFM、平衡');
     % 低速（机箱风扇曲线最低占空比 20%）：P12 max(200, 0.2·1800) = 360 rpm → 11.26 CFM；
@@ -70,9 +71,9 @@ function pass = test_layout()
     Rr = layout_fan_report(Lr);
     errs = check(errs, any(contains_(Rr.warnings, '超出壁面')), '顶壁 270 mm 的风扇应超出 320 mm 深的机箱');
 
-    % 4b) 显卡厚度：默认 4 槽与 layout_set_gpu_slots 一致；各槽数的散热片高度；放不下时报错
-    errs = check(errs, isequaln(layout_set_gpu_slots(L0, 4), L0) && layout_gpu_slots(L0) == 4, ...
-        '默认布局应为 4 槽显卡');
+    % 4b) 显卡厚度：默认 3 槽（v4.9.0）与 layout_set_gpu_slots 一致；各槽数的散热片高度；放不下时报错
+    errs = check(errs, isequaln(layout_set_gpu_slots(L0, 3), L0) && layout_gpu_slots(L0) == 3, ...
+        '默认布局应为 3 槽显卡');
     hs = arrayfun(@(sl) getfield(getfield(getfield(layout_set_gpu_slots(L0, sl), 'gpu'), 'heatsink'), 'h'), [2.5 3 3.5 4]);
     errs = check(errs, isequal(hs, [27 37 47 57]), sprintf('2.5/3/3.5/4 槽散热片高度应为 27/37/47/57 mm（%s）', mat2str(hs)));
     Lt = L0; Lt.shroud.yMm = 290;
@@ -82,7 +83,7 @@ function pass = test_layout()
     catch
     end
     Lold = L0; Lold.gpu = rmfield(Lold.gpu, 'slots');
-    errs = check(errs, layout_gpu_slots(Lold) == 4, '无 slots 字段的旧布局应按厚度折算槽数');
+    errs = check(errs, layout_gpu_slots(Lold) == 3, '无 slots 字段的旧布局应按厚度折算槽数');
 
     % 4c) CPU 双塔散热器：默认双塔 2 扇（前 + 中）；1 扇装中间；单塔 1 扇前置、2 扇前 + 后；旧布局按单塔 1 扇
     tw = layout_cpu_tower(L0);
@@ -261,6 +262,29 @@ function pass = test_layout()
     catch ME
         errs = check(errs, strcmp(ME.identifier, 'layout_json:list'), ['错误标识应为 layout_json:list：' ME.identifier]);
     end
+
+    % 5c) v4.9.0 的新字段：gpu.ioBlock（写成 0/1 的读成逻辑值）、shroud.lengthMm（> 0）；不合法时报错；
+    %     缺新字段的旧配置保持缺省（旧几何）
+    Lio = layout_default(); Lio.gpu.ioBlock = 0;
+    layout_json('save', Lio, f);
+    Lr = layout_json('load', f);
+    errs = check(errs, islogical(Lr.gpu.ioBlock) && ~Lr.gpu.ioBlock, 'gpu.ioBlock = 0 应读为逻辑 false');
+    bad = {@(L) setfield(L, 'gpu', setfield(L.gpu, 'ioBlock', 2)), @(L) setfield(L, 'gpu', setfield(L.gpu, 'ioBlock', 'yes')), ...
+        @(L) setfield(L, 'shroud', setfield(L.shroud, 'lengthMm', 0)), @(L) setfield(L, 'shroud', setfield(L.shroud, 'lengthMm', -5)), ...
+        @(L) setfield(L, 'shroud', setfield(L.shroud, 'lengthMm', 'x'))};
+    for k = 1:numel(bad)
+        writeRaw(f, bad{k}(layout_default()));
+        try
+            layout_json('load', f);
+            errs{end+1} = sprintf('不合法的 ioBlock / lengthMm（第 %d 个）应报错', k); %#ok<AGROW>
+        catch ME
+            errs = check(errs, strcmp(ME.identifier, 'layout_json:invalid'), ['错误标识应为 layout_json:invalid：' ME.identifier]);
+        end
+    end
+    Lold = layout_default(); Lold.gpu = rmfield(Lold.gpu, 'ioBlock'); Lold.shroud = rmfield(Lold.shroud, 'lengthMm');
+    layout_json('save', Lold, f);
+    Lr = layout_json('load', f);
+    errs = check(errs, ~isfield(Lr.gpu, 'ioBlock') && ~isfield(Lr.shroud, 'lengthMm'), '缺 ioBlock、lengthMm 的旧配置应保持缺省');
     delete(f);
 
     pass = isempty(errs);

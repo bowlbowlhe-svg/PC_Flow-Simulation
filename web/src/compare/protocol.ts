@@ -19,6 +19,8 @@ export interface PointMetrics {
   cfm: number;
   /** 阶段末状态 */
   noiseDb: number;
+  /** 评分用的感知噪音（时转时停的风扇 +3 dB；v4.9.0） */
+  noiseRatingDb: number;
   perfPct: number;
   freqCpu: number;
   freqGpu: number;
@@ -53,6 +55,7 @@ function readRow(s: Solver): number[] {
 
 function endMetrics(s: Solver, mean: number[], drift: number): PointMetrics {
   const sc = calculateScores(s);
+  const noise = totalNoise(s);
   const net = s.thermalNetworks;
   return {
     cpu: mean[0],
@@ -60,7 +63,8 @@ function endMetrics(s: Solver, mean: number[], drift: number): PointMetrics {
     psu: mean[2],
     interior: mean[3],
     cfm: mean[4],
-    noiseDb: totalNoise(s).dbTotal,
+    noiseDb: noise.dbTotal,
+    noiseRatingDb: noise.ratingDb,
     perfPct: sc.perfPct,
     freqCpu: sc.freqCpu,
     freqGpu: sc.freqGpu,

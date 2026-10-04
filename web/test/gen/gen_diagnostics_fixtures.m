@@ -8,6 +8,9 @@ function gen_diagnostics_fixtures(outFile)
 %     hot120      默认布局 300/500/1200 W 推进 120 步：节流、电源超温告警
 %     manual40    默认布局、关闭自动温控、全局 70%、前 1 号机箱风扇手动 30%，推进 40 步
 %     steady      默认布局 runToSteady（maxSteps 300、minSteps 100、chunk 25、window 50、tolT 1、tolFlow 0.05）
+%     legacy48    v4.8.0 的默认几何（4 槽、PCB 从 38 mm 起、无 ioBlock、全宽电源仓挡板 + 280–318 mm 开孔）推进 100 步
+%     cycling40   默认布局办公功率 40/35/200 W 推进 40 步（显卡、电源风扇停转），再把第 1 台显卡风扇与电源风扇设为
+%                 窗口内启停 2 次（toggleIter）、最近转动转速 1200 / 900 rpm：时转时停的感知噪音、状态表与建议
 %   每个算例记录：温度汇总、无量纲数诊断、死区比、评分、方案汇总、建议、风扇状态表、开口标注、
 %   涡量统计与抽样、单格读数、结温。
     if nargin < 1
@@ -44,6 +47,21 @@ function gen_diagnostics_fixtures(outFile)
         'tolT', 1.0, 'tolFlow', 0.05));
     R.steady = struct('steps', info.steps, 'converged', info.converged, 'aborted', info.aborted, ...
         'diverged', info.diverged, 'history', info.history, 'columns', {info.columns}, 'final', info.final);
+
+    L = layout_set_gpu_slots(layout_default(), 4);
+    L.gpu = rmfield(L.gpu, 'ioBlock');
+    L.gpu.pcb = struct('x', 38, 'y', 212, 'w', 216, 'h', 12);
+    L.shroud = rmfield(L.shroud, 'lengthMm');
+    L.shroud.gaps = struct('x0Mm', 280, 'x1Mm', 318);
+    s = mk(L, [125 250 450]);
+    s.stepMultiple(100);
+    R.legacy48 = dump(s);
+
+    s = mk(layout_default(), [40 35 200]);
+    s.stepMultiple(40);
+    gf = s.findFan('gpu'); gf.toggleIter = [s.iteration - 50, s.iteration - 10]; gf.lastRunRpm = 1200;
+    pf = s.findFan('psu'); pf.toggleIter = [s.iteration - 30, s.iteration - 5]; pf.lastRunRpm = 900;
+    R.cycling40 = dump(s);
 
     fid = fopen(outFile, 'w');
     fwrite(fid, unicode2native(jsonencode(R), 'UTF-8'));

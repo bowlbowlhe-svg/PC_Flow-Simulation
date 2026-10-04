@@ -1,6 +1,6 @@
 function R = layout_fan_report(L)
 %LAYOUT_FAN_REPORT 机箱风扇布局的静态检查与标称风量（不需要求解器）。
-%   R.warnings    cellstr：同壁风扇重叠、相邻壁风扇在角部相碰、超出壁面、与电源重叠
+%   R.warnings    cellstr：同壁风扇重叠、相邻壁风扇在角部相碰、超出壁面、与电源重叠、被显卡挡板端挡住
 %   R.intakeCfm   进气风扇标称自由风量之和 [CFM]（自动转速的风扇按满速计）
 %   R.exhaustCfm  排气风扇标称自由风量之和 [CFM]
 %   R.pressure    '正压' | '负压' | '平衡' | '无机箱风扇'（见 fan_pressure_label）
@@ -8,6 +8,7 @@ function R = layout_fan_report(L)
 %                 最低占空比计（标准档 20%）。转速 = max(rpm_min, 占空比·rpm_max)，各型号转速下限不同，
 %                 低速与满速时的进/排比例可能不同。
 %   R.nIntake / R.nExhaust
+%   R.totalPrice  机箱风扇参考价合计 [元]（fan_catalog 的 price，机箱原装风扇为 0；v4.9.0）
 %   手动转速的风扇两种口径都按其设定转速。
 %   同壁两扇框架重叠 ≤ 15 mm 视为贴装（2D 简化），不报警；求解器中重叠的执行盘格会同时
 %   受两台风扇的体积力。角部检查按风扇框架厚 25 mm 计。
@@ -15,7 +16,8 @@ function R = layout_fan_report(L)
     crv = layout_fan_curves(L);
     dutyIdle = min(crv.caseFan.duty);
     R = struct('warnings', {{}}, 'intakeCfm', 0, 'exhaustCfm', 0, 'pressure', '', ...
-               'intakeCfmIdle', 0, 'exhaustCfmIdle', 0, 'pressureIdle', '', 'nIntake', 0, 'nExhaust', 0);
+               'intakeCfmIdle', 0, 'exhaustCfmIdle', 0, 'pressureIdle', '', 'nIntake', 0, 'nExhaust', 0, ...
+               'totalPrice', 0);
     if ~isfield(L, 'caseFans') || isempty(L.caseFans)
         R.pressure = fan_pressure_label(0, 0);
         R.pressureIdle = R.pressure;
@@ -41,6 +43,7 @@ function R = layout_fan_report(L)
             frac = [1 dutyIdle];               % 满速 / 温控下限
         end
         q = sp.cfm_max * max(sp.rpm_min, frac * sp.rpm_max) / sp.rpm_max;
+        R.totalPrice = R.totalPrice + sp.price;
         if strcmp(f.type, 'intake')
             R.intakeCfm = R.intakeCfm + q(1); R.intakeCfmIdle = R.intakeCfmIdle + q(2);
             R.nIntake = R.nIntake + 1;
@@ -87,6 +90,19 @@ function R = layout_fan_report(L)
             if ov > 0
                 R.warnings{end+1} = sprintf('%s壁风扇（中心 %g mm）与电源重叠 %.0f mm', ...
                     mountCN.(F(k).mount), F(k).alongMm, ov);
+            end
+        end
+    end
+    % 被显卡挡板端挡住（gpu.ioBlock，v4.9.0）：后壁到显卡后端为实心，从 PCB 上沿到显卡风扇盘下沿
+    if isfield(L, 'gpu') && isstruct(L.gpu) && isfield(L.gpu, 'ioBlock') && ~isempty(L.gpu.ioBlock) && L.gpu.ioBlock && ...
+            min(L.gpu.pcb.x, L.gpu.heatsink.x) > wallMm
+        y0 = L.gpu.pcb.y;
+        y1 = L.gpu.heatsink.y + L.gpu.heatsink.h + L.fanDiskMm;
+        for k = 1:numel(F)
+            if ~strcmp(F(k).mount, 'rear'), continue; end
+            ov = min(hi(k), y1) - max(lo(k), y0);
+            if ov > 0
+                R.warnings{end+1} = sprintf('后壁风扇（中心 %g mm）有 %.0f mm 被显卡挡板端挡住', F(k).alongMm, ov);
             end
         end
     end

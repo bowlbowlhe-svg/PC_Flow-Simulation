@@ -227,17 +227,22 @@ export interface NoiseTotal {
   dbTotal: number;
   perFan: number[];
   parts: NoiseParts[];
+  /** 评分用的感知噪音：时转时停的风扇按转动时的声级 + 间歇性修正 */
+  ratingDb: number;
 }
 
 /** 听音位置总声压级：各风扇能量叠加 L = 10·log10(Σ 10^(Li/10)) */
 export function totalNoise(s: Solver): NoiseTotal {
-  const parts = s.fans.map((f) => f.getNoise(s, s.geo.acoustics));
+  const ac = s.geo.acoustics;
+  const parts = s.fans.map((f) => f.getNoise(s, ac));
   const perFan = parts.map((p) => p.total);
   // 停转的风扇为 −Inf，不计入
   if (perFan.some((v) => Number.isNaN(v) || v === Infinity)) throw new Error('风扇噪音出现非有限值，检查布局 acoustics 参数');
   let e = 0;
   for (const v of perFan) e += 10 ** (v / 10);
-  return { dbTotal: 10 * Math.log10(mmax(e, 1)), perFan, parts };
+  let er = 0;
+  for (const f of s.fans) er += 10 ** (f.ratingNoise(s, ac) / 10);
+  return { dbTotal: 10 * Math.log10(mmax(e, 1)), perFan, parts, ratingDb: 10 * Math.log10(mmax(er, 1)) };
 }
 
 export interface FanStatus {
@@ -252,6 +257,7 @@ export interface FanStatus {
   noise: NoiseParts;
   sharePct: number;
   stopped: boolean; // 低温停转 / 半被动停转中
+  cycling: boolean; // 时转时停（最近 cycleWindowS 秒内启停切换 ≥ 2 次）
 }
 
 const MOUNT_CN: Record<string, string> = { front: '前', rear: '后', top: '顶', bottom: '底', internal: '' };
@@ -293,6 +299,7 @@ export function fanStatusList(s: Solver): FanStatus[] {
       noise: parts[k],
       sharePct: (100 * 10 ** (perFan[k] / 10)) / mmax(eSum, Number.EPSILON),
       stopped: f.isStopped(s),
+      cycling: f.isCycling(s, s.geo.acoustics),
     };
   });
 }
@@ -318,6 +325,8 @@ export interface Scores {
   gpuTemp: number;
   psuTemp: number;
   noiseDb: number;
+  /** 评分用的感知噪音（含时转时停修正），取整 */
+  noiseRatingDb: number;
   totalPrice: number;
   totalCFM: number;
   intake: number;
@@ -330,14 +339,14 @@ export interface Scores {
  * 评分（v4.6.0 起，同 CFDSolverBase.calculateScores）：按 CPU+GPU 名义功率归入 办公 / 游戏 / 满载 档，四项 0–100 加权：
  *   性能  频率保持率 φw（按名义功率加权）：90% → 0、100% → 100
  *   温度  (T_limit − Tj)/(T_limit − T_amb)（环境温度 → 100、降频阈 → 0），CPU、GPU 平均；结温超过 tjmax 记 0；电源超过告警温度再 −20
- *   噪音  响度 2^((dB − 40)/10)：10 dB(A) → 100、45 dB(A) → 0
+ *   噪音  感知噪音（时转时停的风扇 +intermittentDb）的响度 2^((dB − 40)/10)：10 dB(A) → 100、45 dB(A) → 0
  *   风道  K = ΔT_eff/(P/100 W)，ΔT_eff = ½·箱内温升 + ½·CPU/GPU 进风温升均值；按对数 K ≤ 1 → 100、2 → 75、4 → 50、≥ 16 → 0
  *   权重（性能/温度/噪音/风道）：办公 10/15/60/15，游戏 25/25/35/15，满载 35/30/20/15
  */
 export function calculateScores(s: Solver): Scores {
   const temps = computeAirflowTemperatures(s);
   const clamp01 = (x: number) => mmax(0, mmin(1, x));
-  const { dbTotal } = totalNoise(s);
+  const { dbTotal, ratingDb } = totalNoise(s);
   let totalPrice = 0;
   for (const f of caseFans(s)) totalPrice += f.spec.price;
   let pNom = 0;
@@ -366,7 +375,7 @@ export function calculateScores(s: Solver): Scores {
   let thermal = therm.length ? mean(therm) : 100;
   if (s.thermalNetworks.psu?.overTemp) thermal = mmax(0, thermal - 20);
   const nl = (db: number) => 2 ** ((db - 40) / 10);
-  const noise = 100 * clamp01((nl(45) - nl(dbTotal)) / (nl(45) - nl(10)));
+  const noise = 100 * clamp01((nl(45) - nl(ratingDb)) / (nl(45) - nl(10))); // 感知噪音（含时转时停修正）
   const dInt = temps.internalAmbient - s.T_amb;
   const dEff = rise.length ? 0.5 * dInt + 0.5 * mean(rise) : dInt;
   const airK = pAct > 1 ? dEff / (pAct / 100) : 0;
@@ -403,6 +412,7 @@ export function calculateScores(s: Solver): Scores {
     gpuTemp: mr(s.junctionOr('gpu')),
     psuTemp: mr(s.junctionOr('psu')),
     noiseDb: mr(dbTotal),
+    noiseRatingDb: mr(ratingDb),
     totalPrice,
     totalCFM: mr(temps.totalCFM),
     intake: temps.intake,
@@ -567,6 +577,8 @@ export interface Recommendation {
 const d = (x: number) => String(x);
 /** MATLAB sprintf('%.nf') */
 const f = (x: number, n: number) => x.toFixed(n);
+/** MATLAB sprintf('%g')（这里的参数是短小数） */
+const g = (x: number) => String(Number(x.toPrecision(6)));
 /** MATLAB sprintf('%+.1f') */
 const fp = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(1);
 
@@ -608,15 +620,28 @@ export function getRecommendations(s: Solver): Recommendation[] {
       desc: `风速<0.1m/s 区域占比${f(s.deadZoneRatio * 100, 1)}%，建议调整风扇位置避免气流短路`,
       level: 'warning',
     });
-  if (sc.noiseDb > 40) recs.push({ title: '噪音水平偏高', desc: `当前约${d(sc.noiseDb)}dB，建议启用自动温控或更换低噪风扇`, level: 'warning' });
-  else if (sc.noiseDb < 25) recs.push({ title: '运行安静', desc: `当前约${d(sc.noiseDb)}dB，噪音控制优秀`, level: 'good' });
+  if (sc.noiseRatingDb > 40) recs.push({ title: '噪音水平偏高', desc: `当前约${d(sc.noiseRatingDb)}dB，建议启用自动温控或更换低噪风扇`, level: 'warning' });
+  else if (sc.noiseRatingDb < 25) recs.push({ title: '运行安静', desc: `当前约${d(sc.noiseRatingDb)}dB，噪音控制优秀`, level: 'good' });
   if (sc.airK > 3 && sc.cls !== 'office')
     recs.push({
       title: '机箱风道效率偏低',
       desc: `每 100 W 发热，箱内与进风平均升温 ${f(sc.airK, 1)}°C，建议增加进/排风或避免气流短路`,
       level: 'warning',
     });
+  // 时转时停（半被动风扇在启停阈值之间反复启停）
   const fl = fanStatusList(s);
+  const ac = s.geo.acoustics;
+  for (const [role, nm, sensor, tip] of [
+    ['gpu', '显卡风扇', '显卡结温', '可换"性能"档温控曲线（停转阈值更低，风扇更早起转、不易停）或改善显卡下方进风'],
+    ['psu', '电源风扇', '电源温度', '电源半被动的启停阈值与温控档位无关；可改善电源进风，让电源温度离开启停阈值'],
+  ] as const) {
+    if (fl.some((x) => x.cycling && x.role === role))
+      recs.push({
+        title: `${nm}时转时停`,
+        desc: `${sensor}在停转/起转阈值之间来回，风扇反复启停：间歇的噪音比同样大小的持续噪音更容易被注意到（评分按 +${g(ac.intermittentDb)} dB 计）。${tip}`,
+        level: 'info',
+      });
+  }
   if (fl.length) {
     let i = 0;
     for (let k = 1; k < fl.length; k++) if (fl[k].sharePct > fl[i].sharePct) i = k;
@@ -625,7 +650,7 @@ export function getRecommendations(s: Solver): Recommendation[] {
       const p = fl[i].noise;
       recs.push({
         title: '主要噪音来源',
-        desc: `${fl[i].name} 占总噪音能量 ${f(mx, 0)}%（${f(p.total, 1)} dB：转速 ${f(p.base, 1)}、工作点 ${fp(p.op)}、格栅 ${fp(p.grille)}${p.fin !== 0 ? `、鳍片 ${fp(p.fin)}` : ''}、位置 ${fp(p.pos)}）`,
+        desc: `${fl[i].name} 占总噪音能量 ${f(mx, 0)}%（${f(p.total, 1)} dB：转速 ${f(p.base, 1)}、工作点 ${fp(p.op)}、格栅 ${fp(p.grille)}${p.fin !== 0 ? `、鳍片 ${fp(p.fin)}` : ''}${p.floor >= 0.05 ? `、底噪 ${fp(p.floor)}` : ''}、位置 ${fp(p.pos)}）`,
         level: 'info',
       });
     }

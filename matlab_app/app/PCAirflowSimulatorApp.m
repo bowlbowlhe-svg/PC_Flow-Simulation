@@ -137,7 +137,7 @@ classdef PCAirflowSimulatorApp < handle
         LayoutDirty    logical = false     % 有未应用的修改
         LayoutLabel    char = ''           % 待应用布局的名称（预设名 / 自定义 / 配置文件）
         AppliedLabel   char = ''           % 当前求解器布局的名称
-        DefaultGaps                        % 电源仓挡板"前部开孔"勾选时使用的缺口
+        DefaultGaps                        % 电源仓挡板"开孔"勾选时使用的缺口（载入的配置带非空缺口时更新）
         Scenarios = cell(1, 3)             % 已保存方案快照（A/B/C），空位为 []
         DiffRef        double = 1          % 温差视图的参考方案序号
 
@@ -399,8 +399,8 @@ classdef PCAirflowSimulatorApp < handle
                 'Value', P(1).label, 'FontSize', 10);
             app.LoadPresetBtn = app.plainButton(tab, [298 338 90 22], '载入预设', @(src,event)app.loadPreset());
 
-            app.ShroudGapCheck = uicheckbox(tab, 'Position', [10 308 180 22], 'Value', true, ...
-                'Text', '电源仓挡板前部开孔', 'FontColor', fg, 'FontSize', 10, ...
+            app.ShroudGapCheck = uicheckbox(tab, 'Position', [10 308 180 22], 'Value', false, ...
+                'Text', '电源仓挡板开孔', 'FontColor', fg, 'FontSize', 10, ...
                 'ValueChangedFcn', @(src,event)app.layoutEdited(false));
             uilabel(tab, 'Position', [196 308 55 22], 'Text', '显卡厚度', 'FontColor', fg, 'FontSize', 10);
             app.GpuSlotsDrop = uidropdown(tab, 'Position', [252 308 136 22], 'Items', app.GPU_SLOT_ITEMS, ...
@@ -549,6 +549,10 @@ classdef PCAirflowSimulatorApp < handle
                 for k = 1:numel(s.builtInFans)
                     if strcmp(s.builtInFans{k}.role, 'gpu'), yBot = max(yBot, s.builtInFans{k}.rows(2)); end
                 end
+                ioBlk = isfield(s.layout.gpu, 'ioBlock') && ~isempty(s.layout.gpu.ioBlock) && s.layout.gpu.ioBlock;
+                if ioBlk                                         % 挡板端实心块的下沿（没有显卡风扇时也比散热片低一个风扇盘厚）
+                    yBot = max(yBot, gh.y + gh.h - 1 + max(1, s.toCell(s.layout.fanDiskMm)));
+                end
                 x0 = min(gh.x, gp.x) - 0.5; x1 = min(W, max(gh.x + gh.w, gp.x + gp.w)) - 0.5;
                 y0 = gp.y - 0.5; y1 = yBot + 0.5;
                 patch(ax, 'XData', [x0 x1 x1 x0], 'YData', [y0 y0 y1 y1], 'FaceColor', [1.0 0.45 0.10], ...
@@ -557,9 +561,16 @@ classdef PCAirflowSimulatorApp < handle
                     'Color', [1.0 0.60 0.25], 'LineWidth', 1.2, 'PickableParts', 'none');
                 plot(ax, [x0 x1], [gh.y+gh.h-0.5, gh.y+gh.h-0.5], ':', ...
                     'Color', [1.0 0.60 0.25], 'LineWidth', 1.0, 'PickableParts', 'none');
-                % 挡板端（仅显示）：PCB 延伸到后面板的挡板，散热片后端到后壁之间是接口区；求解器里这段不是障碍
+                % 挡板端：后壁内侧到 PCB/鳍片后端。ioBlock（v4.9.0 默认）为实心障碍，画实心块并入整卡外形；
+                % 旧布局（无 ioBlock）这段不挡风，只画虚线示意
                 xb = co.x + 0.5;                                 % 后壁内侧
-                if x0 > xb && (x0 - xb) * s.GRID.cell_size_mm <= 60
+                if ioBlk
+                    if x0 > xb
+                        patch(ax, 'XData', [xb x0 x0 xb], 'YData', [y0 y0 y1 y1], 'FaceColor', [1.0 0.45 0.10], ...
+                            'FaceAlpha', 0.45, 'EdgeColor', [1.0 0.50 0.10], 'LineWidth', 2.2, 'PickableParts', 'none');
+                        x0 = xb;
+                    end
+                elseif x0 > xb && (x0 - xb) * s.GRID.cell_size_mm <= 60
                     plot(ax, [xb x0 x0 xb xb], [gp.y-0.5 gp.y-0.5 gp.y+gp.h-0.5 gp.y+gp.h-0.5 gp.y-0.5], '--', ...
                         'Color', [1.0 0.60 0.25], 'LineWidth', 1.0, 'PickableParts', 'none');
                     plot(ax, [xb xb], [y0 y1], '-', 'Color', [1.0 0.50 0.10], 'LineWidth', 2.2, 'PickableParts', 'none');
@@ -812,11 +823,11 @@ classdef PCAirflowSimulatorApp < handle
             app.Solver = CFDSolverFEM([], [], [], [], app.GridScale);
             app.applyGridMode();
             L0 = layout_default();
-            app.DefaultGaps = L0.shroud.gaps;
+            app.DefaultGaps = L0.shroud.gaps;          % 默认电源仓挡板没有开孔（v4.9.0）：勾选框禁用
             P = fan_presets();
             app.LayoutLabel = P(1).label;
             app.AppliedLabel = P(1).label;
-            app.setPendingFromLayout(app.Solver.layout);
+            app.setPendingFromLayout(app.Solver.layout, true);
             app.SimTimer = timer('ExecutionMode', 'fixedRate', 'Period', 0.3, 'TimerFcn', @(t,event)app.onTimer());
             app.initStaticGraphics();
         end
@@ -1353,10 +1364,12 @@ classdef PCAirflowSimulatorApp < handle
             D = cell(numel(list), 7);
             for k = 1:numel(list)
                 f = list(k);
+                nm = f.name;
+                if f.cycling, nm = [nm ' ↻']; end                % 时转时停（评分按转动时的声级 +3 dB 计）
                 if f.stopped
-                    D(k, :) = {f.name, '停', sprintf('%.1f', f.cfm), '0.0', '0.0', '—', '0'};   % 低温停转 / 半被动
+                    D(k, :) = {nm, '停', sprintf('%.1f', f.cfm), '0.0', '0.0', '—', '0'};   % 低温停转 / 半被动
                 else
-                    D(k, :) = {f.name, sprintf('%.0f', f.rpm), sprintf('%.1f', f.cfm), ...
+                    D(k, :) = {nm, sprintf('%.0f', f.rpm), sprintf('%.1f', f.cfm), ...
                         sprintf('%.1f', f.freeCfm), sprintf('%.1f', f.dp), sprintf('%.1f', f.noiseDb), ...
                         sprintf('%.0f', f.sharePct)};
                 end
@@ -1366,16 +1379,19 @@ classdef PCAirflowSimulatorApp < handle
                 app.NoiseDetailLabel.Text = '';
                 return;
             end
-            [db, ~] = app.Solver.totalNoise();
+            [db, ~, ~, ratingDb] = app.Solver.totalNoise();
             [~, i] = max([list.sharePct]);
             p = list(i).noise;
             if isinf(p.total)                   % 风扇全部停转
                 app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；风扇全部停转', db);
                 return;
             end
+            rateTxt = '';
+            if round(ratingDb) > round(db), rateTxt = sprintf('（评分按 %d dB：有风扇时转时停）', round(ratingDb)); end
             finTxt = ''; if p.fin ~= 0, finTxt = sprintf(' %+.1f 鳍片', p.fin); end
-            app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)；最响：%s %.1f dB（占 %.0f%%）\n= 转速 %.1f %+.1f 工作点 %+.1f 格栅%s %+.1f 位置', ...
-                db, list(i).name, p.total, list(i).sharePct, p.base, p.op, p.grille, finTxt, p.pos);
+            floorTxt = ''; if p.floor >= 0.05, floorTxt = sprintf(' %+.1f 底噪', p.floor); end
+            app.NoiseDetailLabel.Text = sprintf('总噪音 %.1f dB(A)%s；最响：%s %.1f dB（占 %.0f%%）\n= 转速 %.1f %+.1f 工作点 %+.1f 格栅%s%s %+.1f 位置', ...
+                db, rateTxt, list(i).name, p.total, list(i).sharePct, p.base, p.op, p.grille, finTxt, floorTxt, p.pos);
         end
 
         % ================= 功率与全局风扇 =================
@@ -1725,8 +1741,10 @@ classdef PCAirflowSimulatorApp < handle
         end
 
         % ================= 风扇布局编辑 =================
-        function setPendingFromLayout(app, L)
-            % 以布局 L 作为待编辑布局（安装位状态、电源仓挡板开孔）
+        function setPendingFromLayout(app, L, resetGaps)
+            % 以布局 L 作为待编辑布局（安装位状态、电源仓挡板开孔）。DefaultGaps 为"开孔"勾选时用的缺口：载入配置或方案
+            % （resetGaps = true）时取 L 的缺口（可为空，此时勾选框禁用）；撤销修改时只在 L 带非空缺口时更新（同网页版）
+            if nargin < 3, resetGaps = false; end
             app.PendingBase = L;
             app.SlotStates = layout_slots('get', L);
             sl = layout_gpu_slots(L);
@@ -1746,8 +1764,11 @@ classdef PCAirflowSimulatorApp < handle
                 app.CpuFansDrop.Enable = 'off';
             end
             if isfield(L, 'shroud') && isfield(L.shroud, 'gaps')
-                if ~isempty(L.shroud.gaps), app.DefaultGaps = L.shroud.gaps; end
+                if ~isempty(L.shroud.gaps) || resetGaps, app.DefaultGaps = L.shroud.gaps; end
                 app.ShroudGapCheck.Value = ~isempty(L.shroud.gaps);
+                app.ShroudGapCheck.Enable = app.onOff(~isempty(app.DefaultGaps));
+            elseif ~isfield(L, 'shroud') || isempty(L.shroud)
+                app.ShroudGapCheck.Enable = 'off';           % 布局没有电源仓挡板（同网页版）
             end
         end
 
@@ -1758,6 +1779,11 @@ classdef PCAirflowSimulatorApp < handle
             else
                 items = {'1 个（前侧）', '2 个（前 + 后）'};
             end
+        end
+
+        function v = onOff(~, tf)
+            % 逻辑值 → 控件 Enable 属性
+            if tf, v = 'on'; else, v = 'off'; end
         end
 
         function L = pendingLayout(app)
@@ -1822,8 +1848,8 @@ classdef PCAirflowSimulatorApp < handle
                 st = sprintf('当前：%s', app.AppliedLabel);
                 app.ApplyLayoutBtn.BackgroundColor = [0 0.4 0.6];
             end
-            app.LayoutInfoLabel.Text = sprintf('%s\n标称进/排 满速 %.0f / %.0f CFM（%s）\n低速 %.0f / %.0f CFM（%s）', ...
-                st, R.intakeCfm, R.exhaustCfm, R.pressure, R.intakeCfmIdle, R.exhaustCfmIdle, R.pressureIdle);
+            app.LayoutInfoLabel.Text = sprintf('%s\n标称进/排 满速 %.0f / %.0f CFM（%s）\n低速 %.0f / %.0f CFM（%s）；机箱风扇参考价 %.0f 元', ...
+                st, R.intakeCfm, R.exhaustCfm, R.pressure, R.intakeCfmIdle, R.exhaustCfmIdle, R.pressureIdle, R.totalPrice);
             if isempty(R.warnings)
                 app.LayoutWarnArea.Value = {'安装检查：无冲突'};
             else
@@ -1943,8 +1969,9 @@ classdef PCAirflowSimulatorApp < handle
             old = app.Solver.layout;
             oldP = app.Solver.powerW;
             oldC = app.Solver.fanCurves;
+            oldG = app.DefaultGaps;
             try
-                app.setPendingFromLayout(L);
+                app.setPendingFromLayout(L, true);
                 if isfield(L, 'power'), app.setPowers([L.power.cpu L.power.gpu L.power.psu]); end
                 app.applyFanCurves(layout_fan_curves(L));    % 配置里的温控曲线（缺省为标准档）随载入生效
                 [~, name, ext] = fileparts(file);
@@ -1958,6 +1985,8 @@ classdef PCAirflowSimulatorApp < handle
                 app.applyFanCurves(oldC);
                 app.syncFanProfileDrop(app.Solver.layout);
                 app.setPendingFromLayout(old);
+                app.DefaultGaps = oldG;
+                app.ShroudGapCheck.Enable = app.onOff(~isempty(oldG));
                 app.setPowers([oldP.cpu oldP.gpu oldP.psu]);
                 app.LayoutLabel = app.AppliedLabel;
                 app.LayoutDirty = false;
@@ -2005,9 +2034,10 @@ classdef PCAirflowSimulatorApp < handle
             if isempty(snap), return; end
             s0 = app.Solver;
             p0 = s0.powerW; auto0 = s0.autoFanEnabled; pct0 = s0.fanSpeedRatio; C0 = s0.fanCurves;
+            g0 = app.DefaultGaps;
             ok = false;
             try
-                app.setPendingFromLayout(snap.layout);
+                app.setPendingFromLayout(snap.layout, true);
                 app.setPowers(snap.powers);
                 app.setGlobalFan(snap.autoFan, snap.fanSpeedRatio);
                 app.applyFanCurves(layout_fan_curves(snap.layout));   % 方案保存时的温控曲线
@@ -2020,6 +2050,8 @@ classdef PCAirflowSimulatorApp < handle
                 app.applyFanCurves(C0);
                 app.syncFanProfileDrop(app.Solver.layout);
                 app.setPendingFromLayout(s0.layout);
+                app.DefaultGaps = g0;
+                app.ShroudGapCheck.Enable = app.onOff(~isempty(g0));
                 app.setPowers([p0.cpu p0.gpu p0.psu]);
                 app.setGlobalFan(auto0, pct0);
                 app.LayoutLabel = app.AppliedLabel;

@@ -239,8 +239,8 @@ classdef CFDSolverBase < handle
             obj.initHeatSources();
             obj.initFans();
             allF = obj.allFans();                 % 停转状态按初始温度先判一次（与第 1 步施力前的判定相同，
-            for k = 1:numel(allF)                 % 只为让推进前的状态显示一致；回差判定对同一温度幂等）
-                allF{k}.updateControl(obj);
+            for k = 1:numel(allF)                 % 只为让推进前的状态显示一致；回差判定对同一温度幂等；不记启停）
+                allF{k}.updateControl(obj, false);
             end
             obj.initOpenings();
             obj.updateObstacleSets();
@@ -423,6 +423,16 @@ classdef CFDSolverBase < handle
             obj.zShare = layout_zshare(L);
             if obj.hasGpu
                 obj.addPartial(obj.GPU_HEATSINK.pcb, obj.zShare.gpu, OB.GPU_PCB);
+                if isfield(L.gpu, 'ioBlock') && ~isempty(L.gpu.ioBlock) && L.gpu.ioBlock
+                    % 挡板端（v4.9.0）：后壁内侧到 PCB/鳍片后端、PCB 上沿到显卡风扇下沿为实心障碍，显卡与后壁之间不过风
+                    g2 = obj.GPU_HEATSINK;
+                    x0 = co.x + 1;
+                    x1 = min(g2.pcb.x, g2.heatsink.x) - 1;
+                    yb = g2.heatsink.y + g2.heatsink.h - 1 + max(1, obj.toCell(L.fanDiskMm));
+                    if x1 >= x0
+                        setIfFree(obj.rectCells(struct('x', x0, 'y', g2.pcb.y, 'w', x1 - x0 + 1, 'h', yb - g2.pcb.y + 1)), OB.BLOCK);
+                    end
+                end
                 pz = L.gpu.porous;
                 obj.porousZones(end+1) = struct('rect', obj.GPU_HEATSINK.heatsink, ...
                     'zetaThru', pz.zetaThru, 'zetaCross', pz.zetaCross, 'thru', pz.thru);
@@ -441,6 +451,11 @@ classdef CFDSolverBase < handle
             if ~isempty(obj.SHROUD)
                 sh = struct('x', co.x, 'y', obj.SHROUD.y, 'w', co.w, 'h', obj.SHROUD.h);
                 idx = obj.rectCells(sh);
+                if isfield(L.shroud, 'lengthMm') && ~isempty(L.shroud.lengthMm)   % 电源仓挡板：从后壁起 lengthMm 长
+                    xEnd = obj.caseOffsetX + obj.toCell(L.shroud.lengthMm);
+                    xx = ceil(idx / W);
+                    idx = idx(xx <= xEnd);
+                end
                 if isfield(L.shroud, 'gaps')
                     for g = 1:numel(L.shroud.gaps)
                         gp = L.shroud.gaps(g);
@@ -1590,8 +1605,8 @@ classdef CFDSolverBase < handle
             %   性能  频率保持率 φw（CPU、GPU 频率比按名义功率加权）：90% → 0、100% → 100
             %   温度  各芯片距温度墙 (T_limit − Tj)/(T_limit − T_amb)（环境温度 → 100、降频阈 → 0），CPU、GPU 平均；
             %         结温超过 tjmax 的芯片记 0；电源超过告警温度再 −20
-            %   噪音  响度 N = 2^((dB − 40)/10) sone：10 dB(A) → 100、45 dB(A) → 0（按响度线性；游戏负载下模型噪音
-            %         约 15–20 dB(A)，满分点取 20 dB 会全部饱和）
+            %   噪音  感知噪音（时转时停 +intermittentDb）的响度 N = 2^((dB − 40)/10) sone：10 dB(A) → 100、45 dB(A) → 0
+            %         （按响度线性；游戏负载下模型噪音约 22–26 dB(A)，满分点取 20 dB 会全部饱和）
             %   风道  机箱热阻 K = ΔT_eff/(P/100 W)：ΔT_eff = ½·(箱内均温 − 环境) + ½·(CPU、GPU 进风温升的平均)，
             %         P = CPU+GPU 实际功率；按对数：K ≤ 1 → 100、2 → 75、4 → 50、8 → 25、≥ 16 → 0
             %         （办公场景风扇都在最低转速，K 常在 5–12，线性锚点会全部截到 0）
@@ -1599,7 +1614,7 @@ classdef CFDSolverBase < handle
             %   档位：CPU+GPU 名义功率 < 187.5 W 办公，< 400 W 游戏，其余满载（三个场景按钮各落一档）。
             temps = obj.computeAirflowTemperatures();
             clamp01 = @(x) max(0, min(1, x));
-            [noiseDb, ~] = obj.totalNoise();
+            [noiseDb, ~, ~, ratingDb] = obj.totalNoise();
             totalCFM = 0; totalPrice = 0;
             for k = 1:numel(obj.fans)
                 totalCFM = totalCFM + obj.fans{k}.getCFM(obj);
@@ -1630,7 +1645,7 @@ classdef CFDSolverBase < handle
                 thermal = max(0, thermal - 20);
             end
             nl = @(db) 2^((db - 40) / 10);
-            noise = 100 * clamp01((nl(45) - nl(noiseDb)) / (nl(45) - nl(10)));
+            noise = 100 * clamp01((nl(45) - nl(ratingDb)) / (nl(45) - nl(10)));   % 感知噪音（含时转时停修正）
             dInt = temps.internalAmbient - obj.T_amb;
             if isempty(rise), dEff = dInt; else, dEff = 0.5 * dInt + 0.5 * mean(rise); end
             if pAct > 1, airK = dEff / (pAct / 100); else, airK = 0; end
@@ -1648,7 +1663,8 @@ classdef CFDSolverBase < handle
                 'perfPct', round(1000 * phiW) / 10, 'freqCpu', freq.cpu, 'freqGpu', freq.gpu, 'airK', airK, ...
                 'cpuTemp', round(obj.junctionOr('cpu')), 'gpuTemp', round(obj.junctionOr('gpu')), ...
                 'psuTemp', round(obj.junctionOr('psu')), ...
-                'noiseDb', round(noiseDb), 'totalPrice', totalPrice, 'totalCFM', round(temps.totalCFM), ...
+                'noiseDb', round(noiseDb), 'noiseRatingDb', round(ratingDb), 'totalPrice', totalPrice, ...
+                'totalCFM', round(temps.totalCFM), ...
                 'intake', temps.intake, 'topExhaust', temps.topExhaust, 'internalAmbient', temps.internalAmbient, ...
                 'rearExhaust', temps.rearExhaust);
         end
@@ -1734,7 +1750,7 @@ classdef CFDSolverBase < handle
             % 的中间流场求得，后者流量约低 4%，因此工作点图上的点略偏离曲线。
             allF = obj.allFans();
             list = struct('name', {}, 'role', {}, 'rpm', {}, 'cfm', {}, 'freeCfm', {}, 'dp', {}, ...
-                          'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {}, 'stopped', {});
+                          'qRatio', {}, 'noiseDb', {}, 'noise', {}, 'sharePct', {}, 'stopped', {}, 'cycling', {});
             [~, perFan, parts] = obj.totalNoise();
             share = 100 * 10.^(perFan/10) / max(sum(10.^(perFan/10)), eps);
             nGpu = 0;
@@ -1755,23 +1771,28 @@ classdef CFDSolverBase < handle
                 list(end+1) = struct('name', name, 'role', f.role, 'rpm', f.getRPM(obj), ...
                     'cfm', abs(obj.diskFlow(f)) * Fan.CFM_PER_M3S, 'freeCfm', f.getCFM(obj), ...
                     'dp', f.lastDp, 'qRatio', f.noiseQRatio, 'noiseDb', perFan(k), ...
-                    'noise', parts(k), 'sharePct', share(k), 'stopped', f.isStopped(obj)); %#ok<AGROW>
+                    'noise', parts(k), 'sharePct', share(k), 'stopped', f.isStopped(obj), ...
+                    'cycling', f.isCycling(obj)); %#ok<AGROW>
             end
         end
 
-        function [dbTotal, perFan, parts] = totalNoise(obj)
-            % 听音位置总声压级：各风扇（含工作点/格栅/位置修正）能量叠加
+        function [dbTotal, perFan, parts, ratingDb] = totalNoise(obj)
+            % 听音位置总声压级：各风扇（含工作点/格栅/鳍片/底噪/位置修正）能量叠加
             %   L = 10·log10(Σ 10^(Li/10))。parts 为各扇分项（fan_noise_terms）。
+            %   ratingDb：评分用的感知噪音，时转时停的风扇按转动时的声级 + 间歇性修正（Fan.ratingNoise）
             allF = obj.allFans();
             perFan = zeros(1, numel(allF));
-            parts = struct('base', {}, 'op', {}, 'grille', {}, 'fin', {}, 'pos', {}, 'total', {});
+            rating = zeros(1, numel(allF));
+            parts = struct('base', {}, 'op', {}, 'grille', {}, 'fin', {}, 'pos', {}, 'floor', {}, 'total', {});
             for k = 1:numel(allF)
                 [perFan(k), parts(k)] = allF{k}.getNoise(obj); %#ok<AGROW>
+                rating(k) = allF{k}.ratingNoise(obj);
             end
             if any(isnan(perFan) | perFan == Inf)            % 停转的风扇为 −Inf，不计入
                 error('CFDSolverBase:noise', '风扇噪音出现非有限值，检查布局 acoustics 参数');
             end
             dbTotal = 10*log10(max(sum(10.^(perFan/10)), 1));
+            ratingDb = 10*log10(max(sum(10.^(rating/10)), 1));
         end
 
         function recs = getRecommendations(obj)
@@ -1803,24 +1824,34 @@ classdef CFDSolverBase < handle
             if obj.deadZoneRatio > 0.30
                 recs{end+1} = struct('title','风道存在滞流死区','desc',sprintf('风速<0.1m/s 区域占比%.1f%%，建议调整风扇位置避免气流短路',obj.deadZoneRatio*100),'level','warning');
             end
-            if scores.noiseDb > 40
-                recs{end+1} = struct('title','噪音水平偏高','desc',sprintf('当前约%ddB，建议启用自动温控或更换低噪风扇',scores.noiseDb),'level','warning');
-            elseif scores.noiseDb < 25
-                recs{end+1} = struct('title','运行安静','desc',sprintf('当前约%ddB，噪音控制优秀',scores.noiseDb),'level','good');
+            if scores.noiseRatingDb > 40
+                recs{end+1} = struct('title','噪音水平偏高','desc',sprintf('当前约%ddB，建议启用自动温控或更换低噪风扇',scores.noiseRatingDb),'level','warning');
+            elseif scores.noiseRatingDb < 25
+                recs{end+1} = struct('title','运行安静','desc',sprintf('当前约%ddB，噪音控制优秀',scores.noiseRatingDb),'level','good');
             end
             if scores.airK > 3 && ~strcmp(scores.cls, 'office')   % 办公档风扇都在最低转速，K 偏大属正常
                 recs{end+1} = struct('title','机箱风道效率偏低','desc',sprintf('每 100 W 发热，箱内与进风平均升温 %.1f°C，建议增加进/排风或避免气流短路',scores.airK),'level','warning');
             end
-            % 主要噪音来源（能量占比超过 40% 的风扇）
+            % 时转时停（半被动风扇在启停阈值之间反复启停）
             fl = obj.fanStatusList();
+            cyc = fl([fl.cycling]);
+            for nm = {'gpu', '显卡风扇', '显卡结温', '可换"性能"档温控曲线（停转阈值更低，风扇更早起转、不易停）或改善显卡下方进风'; 'psu', '电源风扇', '电源温度', '电源半被动的启停阈值与温控档位无关；可改善电源进风，让电源温度离开启停阈值'}'
+                if any(strcmp({cyc.role}, nm{1}))
+                    recs{end+1} = struct('title', [nm{2} '时转时停'], 'desc', sprintf( ...
+                        '%s在停转/起转阈值之间来回，风扇反复启停：间歇的噪音比同样大小的持续噪音更容易被注意到（评分按 +%g dB 计）。%s', ...
+                        nm{3}, obj.acoustics.intermittentDb, nm{4}), 'level', 'info'); %#ok<AGROW>
+                end
+            end
+            % 主要噪音来源（能量占比超过 40% 的风扇）
             if ~isempty(fl)
                 [mx, i] = max([fl.sharePct]);
                 if mx > 40
                     p = fl(i).noise;
                     finTxt = ''; if p.fin ~= 0, finTxt = sprintf('、鳍片 %+.1f', p.fin); end
+                    floorTxt = ''; if p.floor >= 0.05, floorTxt = sprintf('、底噪 %+.1f', p.floor); end
                     recs{end+1} = struct('title','主要噪音来源','desc',sprintf( ...
-                        '%s 占总噪音能量 %.0f%%（%.1f dB：转速 %.1f、工作点 %+.1f、格栅 %+.1f%s、位置 %+.1f）', ...
-                        fl(i).name, mx, p.total, p.base, p.op, p.grille, finTxt, p.pos),'level','info');
+                        '%s 占总噪音能量 %.0f%%（%.1f dB：转速 %.1f、工作点 %+.1f、格栅 %+.1f%s%s、位置 %+.1f）', ...
+                        fl(i).name, mx, p.total, p.base, p.op, p.grille, finTxt, floorTxt, p.pos),'level','info');
                 end
             end
             if isempty(recs)

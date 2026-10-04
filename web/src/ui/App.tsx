@@ -5,8 +5,8 @@ import { buildPending, layoutCpuFans, layoutNotes, pendingFromLayout, type Gaps 
 import { layoutCpuTower } from '../model/cpuTower';
 import { layoutFanReport, type FanReport } from '../model/fanReport';
 import { layoutGpuSlots } from '../model/gpuSlots';
-import { layoutDefault } from '../model/layoutDefault';
-import { layoutFromJson, layoutToJson, migrationNote, type LayoutMigration } from '../model/layoutJson';
+import { acousticsDefault, layoutDefault } from '../model/layoutDefault';
+import { layoutFromJson, layoutToJson, mergeAcoustics, migrationNote, type LayoutMigration } from '../model/layoutJson';
 import type { ScenarioSnap } from '../model/scenarioTable';
 import { fanCurveProfiles, layoutFanCurves, type FanProfile } from '../model/fanCurves';
 import type { FanCurves, Layout } from '../model/types';
@@ -27,7 +27,7 @@ import { COMPARE_SCENARIOS, type ScenarioKey } from '../compare/scenarios';
 /** 对比展示页（含预计算数据与对比 Worker）按需加载 */
 type CompareMod = typeof import('./compare/lazy');
 
-export const APP_VERSION = '1.7.0';
+export const APP_VERSION = '1.8.0';
 
 const MODES: { key: ViewMode; label: string }[] = [
   { key: 'velocity', label: '速度' },
@@ -69,7 +69,7 @@ export function App() {
   const customSeq = useRef(0);
   const [gridScale, setGridScale] = useState(0.5);
   const initial = useMemo(() => layoutDefault(), []);
-  // 挡板"前部开孔"勾选时使用的缺口：载入的布局带非空缺口时随之更新（同 MATLAB setPendingFromLayout）
+  // 挡板"开孔"勾选时使用的缺口：载入的布局带非空缺口时随之更新（同 MATLAB setPendingFromLayout）
   const [defaultGaps, setDefaultGaps] = useState<Gaps>(() => structuredClone(initial.shroud!.gaps));
   const [building, setBuilding] = useState(false);
   const scenarioSeq = useRef(0);
@@ -85,7 +85,7 @@ export function App() {
   const [applied, setApplied] = useState<Layout>(initial);
   const [pendingBase, setPendingBase] = useState<Layout>(initial);
   const [slots, setSlots] = useState<SlotState[]>(() => getSlotStates(initial));
-  const [shroudGap, setShroudGap] = useState(true);
+  const [shroudGap, setShroudGap] = useState(() => (initial.shroud?.gaps ?? []).length > 0);
   const [gpuSlots, setGpuSlots] = useState<number | null>(() => layoutGpuSlots(initial));
   const [cpuFans, setCpuFans] = useState<number | null>(() => layoutCpuFans(initial));
   const [dirty, setDirty] = useState(false);
@@ -140,6 +140,13 @@ export function App() {
     pendingError = e instanceof Error ? e.message : String(e);
   }
   const report: FanReport = layoutFanReport(pending ?? pendingBase);
+  const appliedAc = useMemo(() => {
+    try {
+      return mergeAcoustics(applied.acoustics);
+    } catch {
+      return acousticsDefault(); // 已应用的布局能建出求解器，这里不会出错
+    }
+  }, [applied]);
 
   /**
    * 暂停时改了功率或全局风扇：自动继续仿真（同 MATLAB resumeAfterChange）。新设置立即作用于求解器，
@@ -186,8 +193,9 @@ export function App() {
     if (r.ok && preciseRef.current) client.send({ type: 'setForceReassemble', on: true });
     return r.ok;
   };
-  const setPendingFromLayout = (L: Layout) => {
-    const st = pendingFromLayout(L, defaultGaps);
+  /** resetGaps：载入配置、方案时为 true（"开孔"勾选框跟随载入的布局），撤销修改时为 false */
+  const setPendingFromLayout = (L: Layout, resetGaps = false) => {
+    const st = pendingFromLayout(L, defaultGaps, resetGaps);
     setPendingBase(L);
     setSlots(st.slots);
     setGpuSlots(st.gpuSlots);
@@ -245,7 +253,7 @@ export function App() {
       }
     }
     const L2 = { ...L, power: p };
-    if (await applyLayout(false, L2, `配置 ${f.name}${migrationNote(info.migration ?? 'none')}`, p)) setPendingFromLayout(L2);
+    if (await applyLayout(false, L2, `配置 ${f.name}${migrationNote(info.migration ?? 'none')}`, p)) setPendingFromLayout(L2, true);
   };
   const currentSnap = (): Scenario | null => {
     if (!st || !sim.info || !sim.fields) return null;
@@ -268,7 +276,7 @@ export function App() {
     if (!s || busy) return;
     const p = { cpu: s.powers[0], gpu: s.powers[1], psu: s.powers[2] };
     const L = { ...s.layout, power: p };
-    if (await applyLayout(false, L, s.label, p, s.autoFan, s.fanPct)) setPendingFromLayout(L);
+    if (await applyLayout(false, L, s.label, p, s.autoFan, s.fanPct)) setPendingFromLayout(L, true);
   };
   /** 对比展示页：把仿真页当前已应用的布局（含温控曲线）加入对比，后台按同样口径计算 */
   const addCurrentToCompare = (o: AddOptions) => {
@@ -326,7 +334,7 @@ export function App() {
     if (building || !sim.info) return; // 按钮此时禁用
     setPage('sim');
     // 仿真页正在跑稳态也照常载入：重建求解器会先停止原来的稳态推进
-    if (await applyLayout(true, L, s.label, p, true, fanPct, true)) setPendingFromLayout(L);
+    if (await applyLayout(true, L, s.label, p, true, fanPct, true)) setPendingFromLayout(L, true);
   };
   const goCompare = () => {
     stopGifRef.current(); // 主视图卸载前停止 GIF 录制（已录的帧照常保存）
@@ -561,6 +569,7 @@ export function App() {
             onFanProfile={onFanProfile}
             onPower={onPower}
             disabled={building}
+            cycle={{ windowS: appliedAc.cycleWindowS, db: appliedAc.intermittentDb }}
             onScenario={(p) => {
               (['cpu', 'gpu', 'psu'] as const).forEach((n, k) => onPower(n, p[k], true, false));
               resumeIfPaused(); // 三项都设完后再继续（同 MATLAB setScenario）
@@ -578,6 +587,7 @@ export function App() {
             appliedLabel={appliedLabel}
             shroudGap={shroudGap}
             hasShroud={!!pendingBase.shroud}
+            hasGaps={defaultGaps.length > 0}
             gpuSlots={gpuSlots}
             cpuFans={cpuFans}
             cpuStacks={pendingBase.cpu ? layoutCpuTower(pendingBase).stacks : 2}

@@ -105,6 +105,24 @@ export function normalizeLayout(raw: Raw, info?: { migration?: LayoutMigration }
     layoutPanelU(L as Layout);
     if (L.cpu) layoutHeatCoef(L.cpu.thermal, 'cpu');
     if (L.gpu) layoutHeatCoef(L.gpu.thermal, 'gpu');
+    // 同 MATLAB jsondecode：[] 为缺省、单元素数组为标量；ioBlock 也接受 0/1（MATLAB 里可写成数）
+    const scalar = (v: unknown) => (Array.isArray(v) && v.length <= 1 ? v[0] : v);
+    const gp = L.gpu as Raw | undefined;
+    if (gp) {
+      let v = scalar(gp.ioBlock);
+      if (v === 0 || v === 1) v = v === 1;
+      if (v === undefined || v === null) delete gp.ioBlock;
+      else if (typeof v !== 'boolean') throw new LayoutError('layout_json:gpu', 'gpu.ioBlock（挡板端封闭）应为 true 或 false');
+      else gp.ioBlock = v;
+    }
+    const sh = L.shroud as Raw | undefined;
+    if (sh) {
+      const v = scalar(sh.lengthMm);
+      if (v === undefined || v === null) delete sh.lengthMm;
+      else if (!(typeof v === 'number' && Number.isFinite(v) && v > 0))
+        throw new LayoutError('layout_json:shroud', 'shroud.lengthMm（电源仓挡板长度）应为 > 0 的数');
+      else sh.lengthMm = v;
+    }
   } catch (e) {
     throw new LayoutError('layout_json:invalid', (e as Error).message);
   }
@@ -219,6 +237,9 @@ export function mergeAcoustics(over: Partial<Acoustics> | undefined): Acoustics 
   if (!num(ac.stallDb) || ac.stallDb < 0) throw new LayoutError('acoustics:value', 'acoustics.stallDb 应为 ≥ 0 的数');
   if (!num(ac.grilleRefZeta) || ac.grilleRefZeta <= 0) throw new LayoutError('acoustics:value', 'acoustics.grilleRefZeta 应为 > 0 的数');
   if (!num(ac.finDb) || ac.finDb < 0) throw new LayoutError('acoustics:value', 'acoustics.finDb 应为 ≥ 0 的数');
+  if (!num(ac.floorDb)) throw new LayoutError('acoustics:value', 'acoustics.floorDb 应为有限的数');
+  if (!num(ac.intermittentDb) || ac.intermittentDb < 0) throw new LayoutError('acoustics:value', 'acoustics.intermittentDb 应为 ≥ 0 的数');
+  if (!num(ac.cycleWindowS) || ac.cycleWindowS <= 0) throw new LayoutError('acoustics:value', 'acoustics.cycleWindowS 应为 > 0 的数');
   for (const k of Object.keys(ac.positionDb)) {
     if (!num(ac.positionDb[k])) throw new LayoutError('acoustics:value', `acoustics.positionDb.${k} 应为有限的数`);
   }

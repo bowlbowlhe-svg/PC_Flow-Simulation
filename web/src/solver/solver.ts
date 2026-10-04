@@ -288,7 +288,7 @@ export class Solver implements FanControl {
     this.fans = this.geo.fans.map((f) => new FanState(f));
     this.initHeatSources();
     // 停转状态按初始温度先判一次（与第 1 步施力前的判定相同，只为让推进前的状态显示一致；回差判定对同一温度幂等）
-    for (const f of this.fans) f.updateControl(this);
+    for (const f of this.fans) f.updateControl(this, false);
     this.latestVorticity = new Float64Array(N);
     this.deadZoneRatio = 0;
     this.lastDiag = null;

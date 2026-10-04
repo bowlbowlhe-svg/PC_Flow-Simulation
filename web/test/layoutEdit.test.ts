@@ -23,12 +23,22 @@ describe('待应用布局', () => {
     expect(buildPending(loaded, slots, false, st.gpuSlots, st.defaultGaps, P).shroud!.gaps).toEqual([]);
     expect(buildPending(loaded, slots, true, st.gpuSlots, st.defaultGaps, P).shroud!.gaps).toEqual([{ x0Mm: 300, x1Mm: 340 }]);
   });
-  it('载入无缺口的布局：保留先前的缺口作为勾选时的默认值', () => {
+  it('撤销修改（应用时取消了勾选）：保留先前的缺口作为勾选时的默认值', () => {
     const L = layoutDefault();
     L.shroud!.gaps = [];
     const st = pendingFromLayout(L, [{ x0Mm: 300, x1Mm: 340 }]);
     expect(st.shroudGap).toBe(false);
     expect(st.defaultGaps).toEqual([{ x0Mm: 300, x1Mm: 340 }]);
+  });
+  it('载入无缺口的配置或方案（resetGaps）：缺口跟随载入的布局，勾选框禁用', () => {
+    const L = layoutDefault();
+    expect(L.shroud!.gaps).toEqual([]);
+    const st = pendingFromLayout(L, [{ x0Mm: 300, x1Mm: 340 }], true);
+    expect(st.shroudGap).toBe(false);
+    expect(st.defaultGaps).toEqual([]);
+    const L2 = layoutDefault();
+    L2.shroud!.gaps = [{ x0Mm: 280, x1Mm: 318 }];
+    expect(pendingFromLayout(L2, [], true).defaultGaps).toEqual([{ x0Mm: 280, x1Mm: 318 }]);
   });
   it('显卡槽数不在下拉列表中（2 槽）时照原值应用，不改成最近档', () => {
     const L = layoutSetGpuSlots(layoutDefault(), 2);

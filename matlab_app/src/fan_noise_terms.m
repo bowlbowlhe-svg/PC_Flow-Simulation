@@ -11,14 +11,23 @@ function p = fan_noise_terms(base, qRatio, zeta, fin, posDb, ac)
 %              轴流风扇背压过高、接近失速时气流分离，噪音上升；q = 0 时 +stallDb。
 %     grille = 10·log10(1 + ζ/grilleRefZeta)：格栅/滤网紧贴风扇造成的进出口气流畸变。
 %     pos    = posDb：机箱面板方向性与遮挡（前面板朝向听者为 0）。
-%   total = base + op + grille + fin + pos，可低于 0 dB(A)（听不见的风扇照常按能量叠加，只对总噪音取 0 下限）；
-%   停转时 base = −Inf，total = −Inf。
+%     floor  = 低转速底噪（电机、轴承，acoustics.floorDb）与气动噪音按能量相加后多出的部分（v4.9.0）：
+%              aero = base + op + grille + fin，total = 10·log10(10^(aero/10) + 10^(floorDb/10)) + pos，floor = total − aero − pos。
+%   total 可低于 0 dB(A)（听不见的风扇照常按能量叠加，只对总噪音取 0 下限）；
+%   停转时 base = −Inf，total = −Inf（没有底噪），floor = 0。
     q = min(max(qRatio, 0), 2);
     op = 0;
     if q < ac.stallQ
         op = ac.stallDb * ((ac.stallQ - q) / ac.stallQ)^2;
     end
     grille = 10 * log10(1 + max(zeta, 0) / ac.grilleRefZeta);
-    total = base + op + grille + fin + posDb;
-    p = struct('base', base, 'op', op, 'grille', grille, 'fin', fin, 'pos', posDb, 'total', total);
+    aero = base + op + grille + fin;
+    if isinf(base) && base < 0
+        total = -Inf; flo = 0;
+    else
+        withFloor = 10 * log10(10^(aero / 10) + 10^(ac.floorDb / 10));
+        flo = withFloor - aero;
+        total = withFloor + posDb;
+    end
+    p = struct('base', base, 'op', op, 'grille', grille, 'fin', fin, 'pos', posDb, 'floor', flo, 'total', total);
 end

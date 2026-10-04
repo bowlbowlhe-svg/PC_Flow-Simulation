@@ -167,8 +167,9 @@ function pass = test_ui()
     errs = act(errs, 'choose preset', @() ui_choose(app.PresetDrop, ft.label));
     errs = act(errs, 'load preset', @() ui_press(app.LoadPresetBtn));
     errs = expect(errs, sum(~strcmp({app.SlotStates.type}, 'none')) == 4, 'preset', '前进顶出应有 4 个安装位');
-    errs = act(errs, 'shroud gap off', @() ui_check(app.ShroudGapCheck, false));
-    errs = act(errs, 'gpu 3 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{2}));
+    errs = expect(errs, strcmp(char(app.ShroudGapCheck.Enable), 'off') && ~app.ShroudGapCheck.Value, 'shroud', ...
+        '默认电源仓挡板没有开孔：勾选框应禁用、不勾选');
+    errs = act(errs, 'gpu 4 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{end}));
     errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（中间）', '2 个（前 + 中间）'}) && ...
         strcmp(app.CpuFansDrop.Value, app.CpuFansDrop.Items{2}), 'cpu fans', '默认双塔 2 个塔扇');
     errs = act(errs, 'cpu 1 fan', @() ui_choose(app.CpuFansDrop, app.CpuFansDrop.Items{1}));
@@ -176,8 +177,8 @@ function pass = test_ui()
     nCpuF = sum(cellfun(@(f) strcmp(f.role, 'cpu'), app.Solver.builtInFans));
     errs = expect(errs, nCpuF == 1 && app.Solver.layout.cpu.fan.count == 1, 'cpu fans', '应用后应只有 1 个塔扇（中间）');
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply preset', '应用后应有 4 台机箱风扇');
-    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 3 && app.Solver.layout.gpu.heatsink.h == 37, ...
-        'gpu slots', '显卡应改为 3 槽（散热片 37 mm）');
+    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 4 && app.Solver.layout.gpu.heatsink.h == 57, ...
+        'gpu slots', '显卡应改为 4 槽（散热片 57 mm）');
     errs = expect(errs, isempty(app.Solver.layout.shroud.gaps), 'apply preset', '挡板开孔应已关闭');
     errs = expect(errs, strcmp(app.AppliedLabel, ft.label), 'apply preset', '布局名应为预设名');
     it0 = app.Solver.iteration;
@@ -207,15 +208,15 @@ function pass = test_ui()
     errs = act(errs, 'tab layout', @() ui_tab(app.TabGroup, app.TabLayout));
     errs = act(errs, 'choose balanced', @() ui_choose(app.PresetDrop, P(1).label));
     errs = act(errs, 'load balanced', @() ui_press(app.LoadPresetBtn));
-    errs = act(errs, 'shroud gap on', @() ui_check(app.ShroudGapCheck, true));
-    errs = act(errs, 'gpu 4 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{end}));
+    errs = act(errs, 'gpu 3 slots', @() ui_choose(app.GpuSlotsDrop, app.GPU_SLOT_ITEMS{2}));
     errs = act(errs, 'cpu 2 fans', @() ui_choose(app.CpuFansDrop, app.CpuFansDrop.Items{2}));
     errs = act(errs, 'apply+steady', @() ui_press(app.ApplySteadyBtn));
     nCpuF = sum(cellfun(@(f) strcmp(f.role, 'cpu'), app.Solver.builtInFans));
     errs = expect(errs, nCpuF == 2, 'cpu fans', '应恢复 2 个塔扇');
-    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 4, 'gpu slots', '显卡应恢复 4 槽');
+    errs = expect(errs, layout_gpu_slots(app.Solver.layout) == 3, 'gpu slots', '显卡应恢复 3 槽（默认）');
     errs = expect(errs, numel(app.Solver.fans) == 4, 'apply+steady', '默认布局应有 4 台机箱风扇');
-    errs = expect(errs, ~isempty(app.Solver.layout.shroud.gaps), 'apply+steady', '挡板开孔应已恢复');
+    errs = expect(errs, isempty(app.Solver.layout.shroud.gaps) && app.Solver.layout.shroud.lengthMm == 184, ...
+        'apply+steady', '默认电源仓挡板（184 mm、无开孔）');
     errs = act(errs, 'tab scenario', @() ui_tab(app.TabGroup, app.TabScenario));
     errs = act(errs, 'choose B', @() ui_choose(app.ScenarioDrop, 'B'));
     errs = act(errs, 'save B', @() ui_press(app.SaveScenarioBtn));
@@ -282,6 +283,22 @@ function pass = test_ui()
     errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（前侧）', '2 个（前 + 后）'}) && ...
         strcmp(app.CpuFansDrop.Value, '1 个（前侧）') && isempty(app.Solver.CPU_HEATSINK.gap) && ~app.LayoutDirty, ...
         'single-tower json', '单塔配置：塔扇下拉项应为"前侧 / 前 + 后"、选中 1 个');
+    % 旧式全宽隔板 + 前部开孔（v4.8.0 及以前的默认）：勾选框可用、已勾选；取消勾选后应用为无开孔，再勾选恢复原缺口
+    Lgap = layout_default(); Lgap.shroud = rmfield(Lgap.shroud, 'lengthMm');
+    Lgap.shroud.gaps = struct('x0Mm', 280, 'x1Mm', 318);
+    layout_json('save', Lgap, f);
+    errs = act(errs, 'gap json', @() app.runTestHook('loadLayoutFile', f));
+    errs = expect(errs, strcmp(char(app.ShroudGapCheck.Enable), 'on') && app.ShroudGapCheck.Value && ...
+        numel(app.Solver.layout.shroud.gaps) == 1 && ~isfield(app.Solver.layout.shroud, 'lengthMm'), ...
+        'gap json', '有开孔的旧式隔板：勾选框应可用并勾选，隔板全宽');
+    errs = act(errs, 'shroud gap off', @() ui_check(app.ShroudGapCheck, false));
+    errs = act(errs, 'apply gap off', @() ui_press(app.ApplyLayoutBtn));
+    errs = expect(errs, isempty(app.Solver.layout.shroud.gaps) && strcmp(char(app.ShroudGapCheck.Enable), 'on'), ...
+        'apply gap off', '取消勾选后应用：无开孔，勾选框仍可用');
+    errs = act(errs, 'shroud gap on', @() ui_check(app.ShroudGapCheck, true));
+    errs = act(errs, 'apply gap on', @() ui_press(app.ApplyLayoutBtn));
+    errs = expect(errs, numel(app.Solver.layout.shroud.gaps) == 1 && app.Solver.layout.shroud.gaps(1).x0Mm == 280, ...
+        'apply gap on', '再勾选后应用：恢复原缺口');
     if exist(f, 'file'), delete(f); end
     errs = act(errs, 'profile quiet', @() ui_choose(app.FanProfileDrop, '静音'));
     errs = act(errs, 'pause', @() ui_press(app.RunButton));
@@ -289,8 +306,9 @@ function pass = test_ui()
     errs = act(errs, 'load A', @() ui_press(app.LoadScenarioBtn));
     errs = expect(errs, strcmp(app.Solver.fanCurves.profile, 'standard') && strcmp(app.FanProfileDrop.Value, '标准'), ...
         'load A', '载入方案 A 后温控曲线应为保存时的"标准"档');
-    errs = expect(errs, numel(app.Solver.fans) == 4 && isempty(app.Solver.layout.shroud.gaps), 'load A', ...
-        '载入方案 A 后应为 4 台风扇且挡板无开孔');
+    errs = expect(errs, numel(app.Solver.fans) == 4 && isempty(app.Solver.layout.shroud.gaps) && ...
+        strcmp(char(app.ShroudGapCheck.Enable), 'off'), 'load A', ...
+        '载入方案 A 后应为 4 台风扇、挡板无开孔，开孔勾选框禁用（不沿用之前载入配置的缺口）');
     errs = expect(errs, isequal(app.CpuFansDrop.Items, {'1 个（中间）', '2 个（前 + 中间）'}) && ...
         strcmp(app.CpuFansDrop.Value, '1 个（中间）'), 'load A', '方案 A 为双塔 1 扇，下拉项应恢复为双塔');
     errs = act(errs, 'clear B', @() ui_choose(app.ScenarioDrop, 'B'));

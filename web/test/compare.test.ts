@@ -30,7 +30,7 @@ import type { CompareData } from '../src/compare/data';
 import { applyPreset, FAN_PRESETS } from '../src/model/fans';
 import { layoutDefault } from '../src/model/layoutDefault';
 import { normalizeLayout } from '../src/model/layoutJson';
-import { buildSchemes, fairCompare, fanCost, metricByKey, rankBy } from '../src/ui/compare/schemes';
+import { buildSchemes, cheapestNearBest, cyclingNoise, fairCompare, fanCost, metricByKey, rankBy, type FairRow, type SchemeView } from '../src/ui/compare/schemes';
 import type { Ref } from './refdata';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,7 +59,7 @@ describe('对比计算口径与 Octave（compare_scenarios.m）一致', () => {
       expect(pts.length).toBe(refs.length);
       pts.forEach((m, k) => {
         const rf = refs[k];
-        for (const key of ['cpu', 'gpu', 'psu', 'interior', 'cfm', 'noiseDb', 'perfPct', 'freqCpu', 'freqGpu', 'powerCpu', 'powerGpu', 'airK', 'drift'] as const)
+        for (const key of ['cpu', 'gpu', 'psu', 'interior', 'cfm', 'noiseDb', 'noiseRatingDb', 'perfPct', 'freqCpu', 'freqGpu', 'powerCpu', 'powerGpu', 'airK', 'drift'] as const)
           near(m[key], rf[key], `${k}.${key}`);
         for (const key of ['score', 'perf', 'thermal', 'noise', 'airflow'] as const) expect(m[key], `${k}.${key}`).toBe(rf[key]);
         expect(m.cls).toBe(rf.cls);
@@ -291,15 +291,44 @@ describe('公平比较与缩略图', () => {
   });
 
   it('风扇成本：按型号库参考价合计（原装风扇 0 元）；可作为排序指标', () => {
-    expect(fanCost(['P12', 'P12', 'P12', 'Stock120'])).toEqual({ total: 165, detail: '3×P12 + 原装' });
-    expect(fanCost(['NF_A14', 'P12'])).toEqual({ total: 249 + 55, detail: 'NF-A14 + P12' });
+    expect(fanCost(['P12', 'P12', 'P12', 'Stock120'])).toEqual({ total: 180, detail: '3×P12 + 原装' });
+    expect(fanCost(['NF_A14', 'P12'])).toEqual({ total: 180 + 60, detail: 'NF-A14 + P12' });
     expect(fanCost([])).toEqual({ total: 0, detail: '无机箱风扇' });
     expect(fanCost(['nope']).total).toBeNaN();
     const schemes = buildSchemes(DATA, []);
     const full = schemes.find((s) => s.id === 'full')!;
-    expect(full.price.total).toBe(7 * 55);
+    expect(full.price.total).toBe(7 * 60);
     const ranked = rankBy(schemes, 'gaming', metricByKey('price'));
     expect(ranked[0].price.total).toBe(Math.min(...schemes.map((s) => s.price.total)));
+  });
+
+  it('时转时停的感知噪音：高于当前声级时给出，否则 NaN（旧数据没有 noiseRatingDb）', () => {
+    expect(cyclingNoise({ noiseDb: 12.2, noiseRatingDb: 18.1 })).toBe(18.1);
+    expect(cyclingNoise({ noiseDb: 23.4, noiseRatingDb: 23.4 })).toBeNaN();
+    expect(cyclingNoise({ noiseDb: 23.4 })).toBeNaN();
+    // 预计算数据里确有这种算例（办公场景显卡进风偏热的布局，显卡结温在停转 / 起转阈值之间）
+    expect(DATA.cases.some((c) => Number.isFinite(cyclingNoise(c.auto)))).toBe(true);
+  });
+  it('性价比：与最好的相差 ≤ 1（°C 或 dB）且性能不低 0.5 个百分点以上的方案中最便宜的；并列价格取更好的；没有可比结果为 null', () => {
+    const row = (id: string, value: number, price: number) => ({ scheme: { id, price: { total: price } } as SchemeView, value, perf: 100, pct: 50, atMin: false, unsettled: false }) as FairRow;
+    const r = cheapestNearBest([row('a', 60, 400), row('b', 60.8, 200), row('c', 61.5, 100), row('d', 60.9, 200), row('e', NaN, 0)]);
+    expect(r!.best.scheme.id).toBe('a');
+    expect(r!.cheap.scheme.id).toBe('b'); // c 相差 1.5 不算；b、d 同价取更好的 b
+    expect(cheapestNearBest([row('a', 60, 400)])!.cheap.scheme.id).toBe('a');
+    expect(cheapestNearBest([row('e', NaN, 0)])).toBeNull();
+    // 满载：结温停在降频阈（并列），降频更多（性能低）的便宜方案不算接近；最好的方案取表格第一行（fairCompare 已按性能排并列）
+    const rp = (id: string, value: number, price: number, perf: number) => ({ ...row(id, value, price), perf }) as FairRow;
+    const h = cheapestNearBest([rp('a', 87, 400, 98), rp('b', 87, 100, 95), rp('c', 87.5, 200, 97.8)]);
+    expect(h!.best.scheme.id).toBe('a');
+    expect(h!.cheap.scheme.id).toBe('c');
+    // 与 fairCompare 的排序一致：按显示精度并列（差 < 0.1）时性能高的排前，即使 value 略大
+    const schemes = buildSchemes(DATA, []);
+    for (const sc of ['office', 'gaming', 'heavy'] as const)
+      for (const mode of ['noise', 'temp'] as const) {
+        const fair = fairCompare(schemes, sc, mode, mode === 'noise' ? 33 : sc === 'heavy' ? 92 : 62);
+        const v = cheapestNearBest(fair);
+        if (v) expect(v.best.scheme.id).toBe(fair.find((r) => Number.isFinite(r.value))!.scheme.id);
+      }
   });
 });
 

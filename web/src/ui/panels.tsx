@@ -108,9 +108,12 @@ interface FansTabProps {
   onFan: (auto: boolean, pct: number, send?: boolean) => void;
   /** 重建求解器期间禁用（避免界面与求解器状态不一致） */
   disabled?: boolean;
+  /** 时转时停的判定窗口 [s] 与间歇性修正 [dB]（已应用布局的 acoustics） */
+  cycle: { windowS: number; db: number };
 }
 
 export function FansTab(p: FansTabProps) {
+  const cycleTip = `时转时停：最近 ${p.cycle.windowS} s 内反复启停，评分按转动时的声级 +${p.cycle.db} dB 计`;
   const fans = p.st?.fans ?? [];
   let loud = -1;
   fans.forEach((f, k) => {
@@ -211,8 +214,11 @@ export function FansTab(p: FansTabProps) {
             <tbody>
               {fans.map((f, k) =>
                 f.stopped ? (
-                  <tr key={k} class="fan-stopped" title="低温停转（显卡）/ 半被动停转（电源）">
-                    <td>{f.name}</td>
+                  <tr key={k} class="fan-stopped" title={f.cycling ? cycleTip : '低温停转（显卡）/ 半被动停转（电源）'}>
+                    <td>
+                      {f.name}
+                      {f.cycling ? ' ↻' : ''}
+                    </td>
                     <td>停</td>
                     <td>{f1(f.cfm)}</td>
                     <td>0.0</td>
@@ -221,8 +227,11 @@ export function FansTab(p: FansTabProps) {
                     <td>0</td>
                   </tr>
                 ) : (
-                  <tr key={k}>
-                    <td>{f.name}</td>
+                  <tr key={k} title={f.cycling ? cycleTip : undefined}>
+                    <td>
+                      {f.name}
+                      {f.cycling ? ' ↻' : ''}
+                    </td>
                     <td>{f0(f.rpm)}</td>
                     <td>{f1(f.cfm)}</td>
                     <td>{f1(f.freeCfm)}</td>
@@ -239,7 +248,9 @@ export function FansTab(p: FansTabProps) {
           <div class="c-noise small">
             {Number.isFinite(fans[loud].noise.total) ? (
               <>
-                总噪音 {p.st.noiseDb.toFixed(1)} dB(A)；最响：{fans[loud].name} {fans[loud].noise.total.toFixed(1)} dB（占 {fans[loud].sharePct.toFixed(0)}%）
+                总噪音 {p.st.noiseDb.toFixed(1)} dB(A)
+                {p.st.scores.noiseRatingDb > Math.round(p.st.noiseDb) ? `（评分按 ${p.st.scores.noiseRatingDb} dB：有风扇时转时停）` : ''}；最响：{fans[loud].name}{' '}
+                {fans[loud].noise.total.toFixed(1)} dB（占 {fans[loud].sharePct.toFixed(0)}%）
                 <br />= {noiseTerms(fans[loud].noise)}
               </>
             ) : (
@@ -249,7 +260,8 @@ export function FansTab(p: FansTabProps) {
         )}
         <p class="muted small">
           实测 = 穿过风扇的流量；自由 = 当前转速下的自由风量（无阻力）；静压 = 工作点压升。噪音 = 听音位置（机箱前侧 1 m）单扇声压级 =
-          转速 + 工作点（背压过高/近失速）+ 格栅/滤网 + 鳍片（塔扇、显卡风扇）+ 位置修正；占比 = 声能占总噪音的百分比；停 = 低温停转（显卡）/ 半被动停转（电源）。
+          转速 + 工作点（背压过高/近失速）+ 格栅/滤网 + 鳍片（塔扇、显卡风扇）+ 低转速底噪（电机、轴承，转速很低时才明显）+ 位置修正；
+          占比 = 声能占总噪音的百分比；停 = 低温停转（显卡）/ 半被动停转（电源）；↻ = 时转时停（评分按转动时的声级 +{p.cycle.db} dB 计）。
         </p>
       </Section>
     </div>
@@ -258,8 +270,9 @@ export function FansTab(p: FansTabProps) {
 
 const sign1 = (v: number) => (v >= 0 ? '+' : '') + v.toFixed(1);
 
-/** 噪音分项：转速 + 工作点 + 格栅 [+ 鳍片] + 位置（同 MATLAB NoiseDetailLabel） */
+/** 噪音分项：转速 + 工作点 + 格栅 [+ 鳍片] [+ 底噪] + 位置（同 MATLAB NoiseDetailLabel） */
 function noiseTerms(n: NoiseParts): string {
   const fin = n.fin !== 0 ? ` ${sign1(n.fin)} 鳍片` : '';
-  return `转速 ${n.base.toFixed(1)} ${sign1(n.op)} 工作点 ${sign1(n.grille)} 格栅${fin} ${sign1(n.pos)} 位置`;
+  const floor = n.floor >= 0.05 ? ` ${sign1(n.floor)} 底噪` : '';
+  return `转速 ${n.base.toFixed(1)} ${sign1(n.op)} 工作点 ${sign1(n.grille)} 格栅${fin}${floor} ${sign1(n.pos)} 位置`;
 }

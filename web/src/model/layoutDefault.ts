@@ -16,6 +16,9 @@ export function acousticsDefault(): Acoustics {
     grilleRefZeta: 2,
     finDb: 2, // 塔扇、显卡风扇贴着致密鳍片吹的附加噪音
     positionDb: { front: 0, top: -1, bottom: -2, rear: -3, cpu: -3, gpu: -3, psu: -4 },
+    floorDb: 8, // 低转速底噪（电机、轴承），与气动噪音按能量相加
+    intermittentDb: 3, // 时转时停的间歇性修正（BS 4142）
+    cycleWindowS: 10, // 最近 10 s 内自动温控下启停切换 ≥ 2 次即判为时转时停
   };
 }
 
@@ -71,16 +74,17 @@ export function layoutDefault(): Layout {
     // 显卡：鳍片片垂直于卡长，风扇向上吹入鳍片，热风从卡的顶边（侧板方向）与插槽边排出；显卡只占主板到侧板距离的
     // zShare.gpu，卡旁的空隙在 2D 里与 PCB、散热片重合：PCB 为多孔区，散热片穿流 y、横流 x 只能走空隙（v4.8.0）
     gpu: {
-      slots: 4,
-      pcb: rect(38, 212, 216, 12),
-      heatsink: rect(28, 224, 236, 57), // 后端离后壁约 26 mm（挡板端接口区；热风可沿后壁上行），前端伸出主板前缘约 16 mm
+      slots: 3, // v4.9.0 起默认 3 槽（之前 4 槽）；风扇下沿到电源仓挡板 41 mm
+      pcb: rect(28, 212, 226, 12),
+      ioBlock: true, // 挡板端（后壁到鳍片后端，v4.9.0）为实心障碍：显卡贴着机箱尾部，与后壁之间不过风
+      heatsink: rect(28, 224, 236, 37), // 后端离后壁约 26 mm（挡板端，见 ioBlock），前端伸出主板前缘约 16 mm
       porous: { zetaThru: 4, zetaCross: 25, thru: 'y' },
       thermal: {
         R_junction_to_case: 0.03,
         R_tim: 0.015,
         R_base: 0.015,
         fin_thickness_mm: 0.35,
-        A_fin_total_m2: gpuFinArea(57),
+        A_fin_total_m2: gpuFinArea(37),
         h_free: 3,
         h_forced: 48,
         h_exp: 0.8,
@@ -109,7 +113,8 @@ export function layoutDefault(): Layout {
     zShare: { gpu: 0.8, ram: 0.2, vrm: 0.2 },
     chipset: rect(174, 306, 20, 8),
     motherboardTray: rect(4, 36, 244, 278),
-    shroud: { yMm: 314, hMm: 16, gaps: [{ x0Mm: 280, x1Mm: 318 }] },
+    // 电源仓挡板（v4.9.0）：盖住电源，从后壁到电源前端外 16 mm；前方敞开（之前为全宽隔板、前端开孔）
+    shroud: { yMm: 314, hMm: 16, lengthMm: 184, gaps: [] },
     caseFans: [
       caseFan('front', 220, 'intake', 'P12'),
       caseFan('front', 338, 'intake', 'P12'),

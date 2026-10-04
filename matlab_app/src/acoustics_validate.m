@@ -1,7 +1,7 @@
 function acoustics_validate(ac)
 %ACOUSTICS_VALIDATE 噪音参数检查（布局 acoustics 与默认值合并后）。
 %   字段必须是 acoustics_default 中已有的（拼写错误会报错），数值须有限，
-%   0 < stallQ ≤ 1，stallDb ≥ 0，grilleRefZeta > 0，finDb ≥ 0。
+%   0 < stallQ ≤ 1，stallDb ≥ 0，grilleRefZeta > 0，finDb ≥ 0，floorDb 有限，intermittentDb ≥ 0，cycleWindowS > 0。
     def = acoustics_default();
     extra = setdiff(fieldnames(ac), fieldnames(def));
     if ~isempty(extra)
@@ -23,6 +23,15 @@ function acoustics_validate(ac)
     end
     if ~num(ac.finDb) || ac.finDb < 0
         error('acoustics:value', 'acoustics.finDb 应为 ≥ 0 的数');
+    end
+    if ~num(ac.floorDb)
+        error('acoustics:value', 'acoustics.floorDb 应为有限的数');
+    end
+    if ~num(ac.intermittentDb) || ac.intermittentDb < 0
+        error('acoustics:value', 'acoustics.intermittentDb 应为 ≥ 0 的数');
+    end
+    if ~num(ac.cycleWindowS) || ac.cycleWindowS <= 0
+        error('acoustics:value', 'acoustics.cycleWindowS 应为 > 0 的数');
     end
     fn = fieldnames(ac.positionDb);
     for k = 1:numel(fn)

@@ -59,7 +59,7 @@ describe('机箱壁散热', () => {
   const iTop = (co.x + 40 - 1) * g.W + (co.y + 1 - 1);
 
   it('侧板 + 贴壁边的衰减因子；电源外壳内不散热；都在机箱内', () => {
-    expect(g.wallLossIdx.length).toBe(6732);
+    expect(g.wallLossIdx.length).toBe(6749);
     expect(Math.abs(decayOf(g, iMid) - Math.exp(-kSide * g.DT))).toBeLessThan(1e-15);
     expect(Math.abs(decayOf(g, iTop) - Math.exp(-(kEdge + kSide) * g.DT))).toBeLessThan(1e-15);
     const psu = new Set(g.psuInteriorIdx);
@@ -122,6 +122,7 @@ describe('鳍片换热', () => {
     const { h_free, h_forced, h_exp, passiveFlowShare, ...oldTh } = Lg.gpu!.thermal;
     void [h_free, h_forced, h_exp, passiveFlowShare];
     Lg.gpu!.thermal = oldTh;
+    Lg.gpu!.ioBlock = false; // 挡板端实心块旁的鳍片格有一面封闭，格心风速不是 0.5；这里只看换热式
     const sg = new Solver(Lg, { gridScale: 0.5 });
     sg.uF.fill(0.5 / sg.VEL_SCALE);
     for (let k = 0; k < sg.uF.length; k++) if (!sg.geo.uFaceActive[k]) sg.uF[k] = 0;
@@ -133,6 +134,45 @@ describe('鳍片换热', () => {
 });
 
 describe('取值检查与旧配置迁移', () => {
+  it('v4.9.0 的新字段：gpu.ioBlock、shroud.lengthMm、acoustics 的底噪与时转时停参数（同 MATLAB test_layout 5c）', () => {
+    const raw = (f: (L: Record<string, any>) => void) => {
+      const L = JSON.parse(layoutToJson(L0));
+      f(L);
+      return normalizeLayout(L);
+    };
+    // MATLAB 可写成 0/1、单元素数组（jsondecode 读成标量）；[] / null 为缺省
+    expect(raw((L) => (L.gpu.ioBlock = 0)).gpu!.ioBlock).toBe(false);
+    expect(raw((L) => (L.gpu.ioBlock = [true])).gpu!.ioBlock).toBe(true);
+    expect('ioBlock' in raw((L) => (L.gpu.ioBlock = [])).gpu!).toBe(false);
+    expect(raw((L) => (L.shroud.lengthMm = [200])).shroud!.lengthMm).toBe(200);
+    expect('lengthMm' in raw((L) => (L.shroud.lengthMm = null)).shroud!).toBe(false);
+    const bad: ((L: Record<string, any>) => void)[] = [
+      (L) => (L.gpu.ioBlock = 2),
+      (L) => (L.gpu.ioBlock = 'yes'),
+      (L) => (L.shroud.lengthMm = 0),
+      (L) => (L.shroud.lengthMm = -5),
+      (L) => (L.shroud.lengthMm = 'x'),
+    ];
+    for (const f of bad) expect(() => raw(f)).toThrow();
+    // 噪音参数同其它 acoustics 字段，在构建求解器时检查（mergeAcoustics；界面上报"重建失败"）
+    const badAc: ((L: Record<string, any>) => void)[] = [
+      (L) => (L.acoustics.floorDb = 'x'),
+      (L) => (L.acoustics.intermittentDb = -1),
+      (L) => (L.acoustics.cycleWindowS = 0),
+    ];
+    for (const f of badAc) expect(() => new Solver(raw(f), { gridScale: 0.5 })).toThrow();
+    // 缺新字段的旧配置：acoustics 补默认值，ioBlock、lengthMm 保持缺省（旧几何）
+    const old = raw((L) => {
+      delete L.acoustics.floorDb;
+      delete L.acoustics.intermittentDb;
+      delete L.acoustics.cycleWindowS;
+      delete L.gpu.ioBlock;
+      delete L.shroud.lengthMm;
+    });
+    expect(new Solver(old, { gridScale: 0.5 }).geo.acoustics).toEqual(L0.acoustics);
+    expect(old.gpu!.ioBlock).toBeUndefined();
+    expect(old.shroud!.lengthMm).toBeUndefined();
+  });
   it('不合法的 zShare、panelU、h_exp 报错', () => {
     const bad: ((L: Layout) => void)[] = [
       (L) => (L.zShare = { gpu: 0 }),
@@ -156,7 +196,7 @@ describe('取值检查与旧配置迁移', () => {
     Lo.chassis.wallTempC = { rear: 25, front: 25, top: 25, bottom: 25 };
     delete Lo.zShare;
     Lo.cpu!.thermal = { R_junction_to_case: 0.15, R_tim: 0.04, R_base: 0.05, fin_thickness_mm: 0.4, A_fin_total_m2: 0.15 };
-    Lo.gpu!.thermal = { R_junction_to_case: 0.08, R_tim: 0.02, R_base: 0.02, fin_thickness_mm: 0.35, A_fin_total_m2: (0.5 * 57) / 47 };
+    Lo.gpu!.thermal = { R_junction_to_case: 0.08, R_tim: 0.02, R_base: 0.02, fin_thickness_mm: 0.35, A_fin_total_m2: (0.5 * L0.gpu!.heatsink.h) / 47 };
     Lo.gpu!.porous = { zetaThru: 4, zetaCross: 10, thru: 'x' };
     const load = (L: Layout) => {
       const info: { migration?: LayoutMigration } = {};

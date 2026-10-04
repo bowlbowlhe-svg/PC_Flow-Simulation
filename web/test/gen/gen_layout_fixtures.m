@@ -2,7 +2,8 @@ function gen_layout_fixtures(outFile)
 %GEN_LAYOUT_FIXTURES 生成网页版布局工具函数的对照数据（web/test/fixtures/layout.json）。
 %   用法（在 matlab_app 目录下）：
 %     octave-cli --no-gui --eval "setup_paths(); addpath('../web/test/gen'); gen_layout_fixtures"
-%   覆盖：layout_fan_report（默认、各预设、含超出壁面/同壁重叠/角部相碰/与电源重叠/手动转速的自造布局、性能温控曲线）、
+%   覆盖：layout_fan_report（默认、各预设、含超出壁面/同壁重叠/角部相碰/与电源重叠/被显卡挡板端挡住/手动转速的自造布局、
+%   无 ioBlock 的旧配置、性能温控曲线）、
 %   layout_set_gpu_slots（2–4.5 槽的散热片尺寸与鳍片面积；放不下时的报错）、layout_slots 'get'、
 %   layout_cpu_tower / layout_set_cpu_fans（双塔/单塔/旧布局的塔扇位置；取值不合法时的报错）。
     if nargin < 1
@@ -29,9 +30,12 @@ function gen_layout_fixtures(outFile)
         add(F, 'front', 345, 'intake', 'P12', 'auto', 60); ...      % 超出壁面 + 与底壁角部
         add(F, 'bottom', 230, 'intake', 'M25_140', 'auto', 60); ... % 与电源重叠 8 mm
         add(F, 'bottom', 290, 'intake', 'P12', 'manual', 50); ...   % 超出壁面（底壁按机箱深 320 mm）+ 与前壁角部
-        add(F, 'top', 270, 'exhaust', 'P12', 'auto', 60)];          % 超出壁面（顶壁按机箱深）
+        add(F, 'top', 270, 'exhaust', 'P12', 'auto', 60); ...       % 超出壁面（顶壁按机箱深）
+        add(F, 'rear', 250, 'exhaust', 'P12', 'auto', 60)];         % 被显卡挡板端挡住（与后壁 360 重叠 10 mm，不报）
     L.caseFans = fans;
     cases{end+1} = rep('custom_warnings', L);
+    Lb = L; Lb.gpu = rmfield(Lb.gpu, 'ioBlock');                  % 旧配置（无 ioBlock）：挡板端不挡风，不报
+    cases{end+1} = rep('custom_warnings_no_ioblock', Lb);
     Lq = L; Lq.chassis.sizeMm = 400; Lq.chassis.originMm = 80;  % 见方机箱（标量 sizeMm）：同样的风扇在 400 mm 壁上
     cases{end+1} = rep('custom_square400', Lq);
     L = L0; L.caseFans = L0.caseFans([]);

@@ -26,6 +26,8 @@ interface LayoutTabProps {
   appliedLabel: string;
   shroudGap: boolean;
   hasShroud: boolean;
+  /** 有可开关的挡板开孔（默认电源仓挡板没有开孔；载入的旧式全宽挡板配置有） */
+  hasGaps: boolean;
   gpuSlots: number | null; // null = 布局中无显卡
   cpuFans: number | null; // null = 布局中无 CPU 或无塔扇
   cpuStacks: number; // 1 单塔 / 2 双塔（下拉项文字用）
@@ -120,8 +122,14 @@ export function LayoutTab(p: LayoutTabProps) {
         <button onClick={() => p.onPreset(presetRef.current!.value)}>载入预设</button>
       </div>
       <div class="row">
-        <label title="电源仓挡板前部的缺口，让前下风扇的气流进入电源仓上方">
-          <input type="checkbox" checked={p.shroudGap} disabled={!p.hasShroud} onChange={(e) => p.onShroudGap((e.target as HTMLInputElement).checked)} /> 电源仓挡板前部开孔
+        <label title="电源仓挡板上的开孔。默认的电源仓挡板只盖住电源、前方敞开，没有开孔；载入带开孔的配置（如旧版全宽挡板）时可在这里开关">
+          <input
+            type="checkbox"
+            checked={p.shroudGap}
+            disabled={!p.hasShroud || !p.hasGaps}
+            onChange={(e) => p.onShroudGap((e.target as HTMLInputElement).checked)}
+          />{' '}
+          电源仓挡板开孔
         </label>
         <span class="grow" />
         <span>显卡厚度</span>
@@ -162,7 +170,7 @@ export function LayoutTab(p: LayoutTabProps) {
           标称进/排 满速 {R.intakeCfm.toFixed(0)} / {R.exhaustCfm.toFixed(0)} CFM（{R.pressure}）
         </div>
         <div>
-          低速 {R.intakeCfmIdle.toFixed(0)} / {R.exhaustCfmIdle.toFixed(0)} CFM（{R.pressureIdle}）
+          低速 {R.intakeCfmIdle.toFixed(0)} / {R.exhaustCfmIdle.toFixed(0)} CFM（{R.pressureIdle}）；机箱风扇参考价 {R.totalPrice.toFixed(0)} 元
         </div>
         {p.notes.map((t, k) => (
           <div key={k} class="layout-note">

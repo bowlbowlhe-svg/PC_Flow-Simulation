@@ -75,7 +75,7 @@ function m = runPhase(s, steps, avgFrom)
     mean5 = acc / max(n, 1);
     if n == 0, mean5(:) = NaN; end
     sc = s.calculateScores();
-    [db, ~] = s.totalNoise();
+    [db, ~, ~, ratingDb] = s.totalNoise();
     fl = s.fanStatusList();
     fans = cell(1, numel(fl));
     for k = 1:numel(fl)
@@ -83,7 +83,7 @@ function m = runPhase(s, steps, avgFrom)
     end
     pw = @(nm) actualPower(s, nm);
     m = struct('cpu', mean5(1), 'gpu', mean5(2), 'psu', mean5(3), 'interior', mean5(4), 'cfm', mean5(5), ...
-        'noiseDb', db, 'perfPct', sc.perfPct, 'freqCpu', sc.freqCpu, 'freqGpu', sc.freqGpu, ...
+        'noiseDb', db, 'noiseRatingDb', ratingDb, 'perfPct', sc.perfPct, 'freqCpu', sc.freqCpu, 'freqGpu', sc.freqGpu, ...
         'powerCpu', pw('cpu'), 'powerGpu', pw('gpu'), 'score', sc.total, 'perf', sc.perf, 'thermal', sc.thermal, ...
         'noise', sc.noise, 'airflow', sc.airflow, 'airK', sc.airK, 'cls', sc.cls, 'drift', drift, 'fans', {fans});
 end

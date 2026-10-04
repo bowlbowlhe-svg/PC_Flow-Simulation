@@ -1,5 +1,6 @@
 // 元件轮廓与风扇（主视图与对比展示页的缩略图共用）：只含画图所需的矩形与风扇盘，格坐标 1 基。
 import { layoutGpuSlots } from '../model/gpuSlots';
+import { mround } from '../model/mround';
 import type { Rect } from '../model/types';
 import type { Solver } from './solver';
 
@@ -11,7 +12,8 @@ export interface GeoOverlay {
   motherboardTray?: Rect;
   /** finArea 为鳍片外廓；stacks 为各组鳍片（双塔 2 组，中间间隙放塔扇） */
   cpu?: { base: Rect; finArea: Rect; stacks: Rect[] };
-  gpu?: { pcb: Rect; heatsink: Rect; slots: number; fanBottom: number };
+  /** ioBlock：挡板端为实心障碍（v4.9.0）；fanBottom 为显卡风扇盘（有 ioBlock 时含实心块）的末行 */
+  gpu?: { pcb: Rect; heatsink: Rect; slots: number; fanBottom: number; ioBlock: boolean };
   psu?: { body: Rect };
   ram: Rect[];
   vrm?: Rect;
@@ -25,7 +27,10 @@ export function geoOverlay(s: Solver): GeoOverlay {
   if (g.gpu) {
     let fanBottom = g.gpu.heatsink.y + g.gpu.heatsink.h - 1;
     for (const f of g.fans) if (f.role === 'gpu') fanBottom = Math.max(fanBottom, f.rows[1]);
-    gpu = { pcb: { ...g.gpu.pcb }, heatsink: { ...g.gpu.heatsink }, slots: layoutGpuSlots(s.layout), fanBottom };
+    const ioBlock = !!s.layout.gpu?.ioBlock;
+    // 挡板端实心块的下沿（同 geometry.ts）：没有显卡风扇时也比散热片低一个风扇盘厚
+    if (ioBlock) fanBottom = Math.max(fanBottom, g.gpu.heatsink.y + g.gpu.heatsink.h - 1 + Math.max(1, mround(s.layout.fanDiskMm / g.cellMm)));
+    gpu = { pcb: { ...g.gpu.pcb }, heatsink: { ...g.gpu.heatsink }, slots: layoutGpuSlots(s.layout), fanBottom, ioBlock };
   }
   return {
     W: s.W,

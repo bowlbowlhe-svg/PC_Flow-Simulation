@@ -50,6 +50,9 @@ classdef Fan < handle
         positionDb = 0     % 听音位置修正 [dB]（按安装壁或内置位置）
         % ---- 控制状态 ----
         stopped = false    % 低温停转（显卡）/ 半被动停转（电源）中；每步由 updateControl 按回差更新
+        toggleIter = zeros(1, 0) % 自动温控下启停切换发生的步号（最近 4 次；时转时停判定用）
+        lastRunRpm = 0     % 最近一次转动时的转速（停转期间算"时转时停"的感知噪音用）
+        autoResumed = false % 刚从手动 / 关闭自动温控回到自动温控：这一次判定不记切换
     end
 
     methods
@@ -93,14 +96,24 @@ classdef Fan < handle
             tf = obj.stopped && strcmp(obj.speedMode, 'auto') && solver.autoFanEnabled;
         end
 
-        function updateControl(obj, solver)
+        function updateControl(obj, solver, record)
             % 每步施力前调用一次：按回差更新停转状态
             %   显卡：停转中结温 ≥ startAboveC 才重新转；转动中结温 < stopBelowC 才停
             %   电源：负载率 ≥ passiveLoad 时一直转；否则停转中温度 ≥ passiveRestartC 才转，转动中温度 < passiveMaxC 才停
+            %   record（缺省 true）：自动温控下状态改变时记下步号（初始化时的首次判定不记）
+            if nargin < 3, record = true; end
             if ~(strcmp(obj.speedMode, 'auto') && solver.autoFanEnabled)
+                % 手动时风扇一直转，不算启停；切换记录清空，回到自动温控后的首次判定也不记（那是模式切换，不是时转时停）
                 obj.stopped = false;
+                obj.toggleIter = zeros(1, 0);
+                obj.autoResumed = true;
                 return;
             end
+            if obj.autoResumed
+                record = false;
+                obj.autoResumed = false;
+            end
+            was = obj.stopped;
             c = solver.fanCurves.(obj.curveKey());
             T = solver.sensorTemp(obj.sensor);
             if strcmp(obj.role, 'gpu') && isfield(c, 'stopBelowC') && ~isempty(c.stopBelowC)
@@ -120,6 +133,33 @@ classdef Fan < handle
             else
                 obj.stopped = false;
             end
+            if record && obj.stopped ~= was
+                obj.toggleIter = [obj.toggleIter(max(1, end-2):end), solver.iteration];
+            end
+        end
+
+        function tf = isCycling(obj, solver)
+            % 时转时停：自动温控下、最近 cycleWindowS 秒（仿真时间）内启停切换 ≥ 2 次
+            %   （手动转速或关闭自动温控时风扇不会停，不算）
+            tf = false;
+            if ~(strcmp(obj.speedMode, 'auto') && solver.autoFanEnabled), return; end
+            w = round(solver.acoustics.cycleWindowS / solver.DT);
+            tf = sum(obj.toggleIter > solver.iteration - w) >= 2;
+        end
+
+        function L = ratingNoise(obj, solver)
+            % 评分用的感知噪音 [dB(A)]：时转时停的风扇按转动时的声级（停转中取最近一次转动的转速）
+            % 加间歇性修正 acoustics.intermittentDb（BS 4142）；其它风扇同 getNoise
+            [L, ~] = obj.getNoise(solver);
+            if ~obj.isCycling(solver), return; end
+            rpm = obj.getRPM(solver);
+            if rpm <= 0, rpm = obj.lastRunRpm; end
+            if rpm <= 0, return; end
+            fin = 0;
+            if any(strcmp(obj.role, {'cpu', 'gpu'})), fin = solver.acoustics.finDb; end
+            p = fan_noise_terms(obj.noise_max + 50 * log10(rpm / obj.rpm_max), obj.noiseQRatio, obj.grilleZeta, fin, ...
+                                obj.positionDb, solver.acoustics);
+            L = p.total + solver.acoustics.intermittentDb;
         end
 
         function k = curveKey(obj)
@@ -188,6 +228,7 @@ classdef Fan < handle
                 aN = min(1, solver.DT / 0.5);
                 obj.noiseQRatio = obj.noiseQRatio + aN * (qRatio - obj.noiseQRatio);
             end
+            if rpm > 0, obj.lastRunRpm = rpm; end
         end
 
         function b = getBounds(obj)

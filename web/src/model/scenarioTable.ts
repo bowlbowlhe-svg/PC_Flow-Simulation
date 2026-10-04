@@ -83,7 +83,7 @@ const ROWS: [string, (s: ScenarioSnap) => string][] = [
   ['死区 %', (s) => s.summary.deadZonePct.toFixed(1)],
   ['机箱风扇数', (s) => String(s.summary.nCaseFans)],
   ['布局', (s) => shortLabel(s.label)],
-  ['挡板前部开孔', (s) => yesNo(hasGap(s.layout))],
+  ['电源仓挡板开孔', (s) => yesNo(hasGap(s.layout))],
   ['显卡厚度', (s) => slotsText(s.layout)],
   ['CPU 散热器', (s) => towerText(s.layout)],
   ['风扇曲线', (s) => curveText(s.layout)],

@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { curveDuty, fanCurveProfiles, layoutDvfs, layoutFanCurves } from '../src/model/fanCurves';
 import { FAN_CATALOG } from '../src/model/fans';
-import { layoutDefault } from '../src/model/layoutDefault';
+import { acousticsDefault, layoutDefault } from '../src/model/layoutDefault';
 import { normalizeLayout } from '../src/model/layoutJson';
 import { LayoutError } from '../src/model/gpuSlots';
 import type { Layout } from '../src/model/types';
@@ -94,7 +94,7 @@ describe('热网络：频率与功率控制（同 test_thermal）', () => {
 });
 
 describe('风扇噪音：分项、风扇定律（同 test_noise 1、2 节）', () => {
-  const ac = layoutDefault().acoustics!;
+  const ac = { ...layoutDefault().acoustics!, floorDb: -300 }; // 关掉底噪，单看气动各项
   it('鳍片附加、可低于 0 dB、停转为 −Inf', () => {
     let p = fanNoiseTerms(20, 1, 0, ac.finDb, 0, ac);
     expect(p.total).toBeCloseTo(20 + ac.finDb, 12);
@@ -105,10 +105,10 @@ describe('风扇噪音：分项、风扇定律（同 test_noise 1、2 节）', (
     expect(p.total).toBe(-Infinity);
   });
 
-  it('风扇定律：满速 = noise_max，半速低 15.05 dB，转速不低于 rpm_min；NF-A12x25 1700 rpm ≈ 18.8 dB(A)', () => {
+  it('风扇定律：满速 = noise_max，半速低 15.05 dB，转速不低于 rpm_min；型号库噪音为实测口径', () => {
     const s = new Solver(layoutDefault(), { gridScale: 0.5 });
     const f = s.fans.find((x) => x.g.role === 'case' && x.spec === FAN_CATALOG.P12) ?? s.fans[0];
-    const c: FanControl = { autoFanEnabled: false, fanSpeedRatio: 100, fanCurves: fanCurveProfiles('standard'), sensorTemp: () => 40, psuLoadRatio: () => 0.5 };
+    const c: FanControl = { autoFanEnabled: false, iteration: 0, DT: 0.005, fanSpeedRatio: 100, fanCurves: fanCurveProfiles('standard'), sensorTemp: () => 40, psuLoadRatio: () => 0.5 };
     f.speedMode = 'manual';
     f.manualPct = 100;
     const sp = f.spec;
@@ -118,8 +118,30 @@ describe('风扇噪音：分项、风扇定律（同 test_noise 1、2 节）', (
     expect(Math.abs(f.baseNoise(c) - (sp.noise_max - 50 * Math.log10(2)))).toBeLessThan(1e-12);
     f.manualPct = 1;
     expect(f.getRPM(c)).toBe(sp.rpm_min);
-    const nf = FAN_CATALOG.NF_A12;
-    expect(Math.abs(nf.noise_max + 50 * Math.log10(1700 / nf.rpm_max) - 18.8)).toBeLessThan(0.5);
+    // 型号库噪音为实测口径（Cybenetics，1 m）：在实测转速处按风扇定律折回应与实测相符
+    for (const [m, rpm, dba] of [
+      ['NF_A12', 2134, 31.3],
+      ['P12', 1889, 28.6],
+      ['P14', 1769, 31.9],
+      ['T30', 2000, 32.1],
+    ] as const) {
+      const q = FAN_CATALOG[m];
+      expect(Math.abs(q.noise_max + 50 * Math.log10(rpm / q.rpm_max) - dba), m).toBeLessThan(0.1);
+    }
+  });
+
+  it('底噪与气动噪音按能量相加，位置修正在相加之后；停转没有底噪', () => {
+    const ac = acousticsDefault();
+    const p = fanNoiseTerms(0, 1, 0, 0, -3, ac);
+    const want = 10 * Math.log10(1 + 10 ** (ac.floorDb / 10));
+    expect(Math.abs(p.total - (want - 3))).toBeLessThan(1e-12);
+    expect(Math.abs(p.floor - want)).toBeLessThan(1e-12);
+    const hi = fanNoiseTerms(30, 1, 0, 0, 0, ac);
+    expect(hi.floor).toBeGreaterThan(0);
+    expect(hi.floor).toBeLessThan(0.05);
+    const off = fanNoiseTerms(-Infinity, 0, 0, 2, 0, ac);
+    expect(off.total).toBe(-Infinity);
+    expect(off.floor).toBe(0);
   });
 });
 
@@ -128,7 +150,63 @@ describe('显卡低温停转、电源半被动（同 test_noise 8 节）', () =>
   const C = fanCurveProfiles('standard');
   let T = 25;
   let load = 0.2;
-  const c: FanControl = { autoFanEnabled: true, fanSpeedRatio: 40, fanCurves: C, sensorTemp: () => T, psuLoadRatio: () => load };
+  const c: FanControl = { autoFanEnabled: true, iteration: 0, DT: 0.005, fanSpeedRatio: 40, fanCurves: C, sensorTemp: () => T, psuLoadRatio: () => load };
+
+  it('时转时停：自动温控下启停切换记步号，窗口内 ≥ 2 次即判定；感知噪音 = 最近转动转速的声级 + 间歇性修正；初始化不记', () => {
+    const ac = acousticsDefault();
+    const g = s.fans.find((f) => f.g.role === 'gpu')!;
+    g.stopped = false;
+    g.toggleIter = [];
+    const seq = [45, 52, 56, 52, 49];
+    seq.forEach((t, k) => {
+      T = t;
+      c.iteration = 100 * (k + 1);
+      g.updateControl(c);
+    });
+    expect(g.toggleIter).toEqual([100, 300, 500]);
+    expect(g.isCycling(c, ac)).toBe(true);
+    g.lastRunRpm = 1300;
+    const pr = fanNoiseTerms(g.spec.noise_max + 50 * Math.log10(1300 / g.spec.rpm_max), g.noiseQRatio, g.g.grilleZeta, ac.finDb, g.g.positionDb, ac);
+    expect(Math.abs(g.ratingNoise(c, ac) - (pr.total + ac.intermittentDb))).toBeLessThan(1e-12);
+    c.iteration = 500 + Math.round(ac.cycleWindowS / c.DT) + 1;
+    expect(g.isCycling(c, ac)).toBe(false);
+    expect(g.ratingNoise(c, ac)).toBe(-Infinity);
+    c.iteration = 600;
+    c.autoFanEnabled = false;
+    expect(g.isCycling(c, ac)).toBe(false); // 关闭自动温控时不算
+    c.autoFanEnabled = true;
+    // 手动与自动温控来回切换不算启停：手动时清空记录，回到自动温控后的首次判定不记
+    const g3 = s.fans.filter((f) => f.g.role === 'gpu')[2];
+    g3.stopped = false;
+    g3.toggleIter = [];
+    T = 45;
+    g3.updateControl(c, false); // 初始化：停转
+    for (let k = 1; k <= 3; k++) {
+      c.iteration = 600 + 10 * k;
+      c.autoFanEnabled = false;
+      g3.updateControl(c); // 关闭自动温控：一直转
+      c.autoFanEnabled = true;
+      g3.updateControl(c); // 回到自动温控：45°C 又停
+    }
+    expect(g3.toggleIter).toEqual([]);
+    expect(g3.isStopped(c)).toBe(true);
+    expect(g3.isCycling(c, ac)).toBe(false);
+    [56, 49, 56, 49, 56, 49].forEach((t, k) => {
+      T = t;
+      c.iteration = 1001 + k;
+      g3.updateControl(c);
+    });
+    expect(g3.toggleIter).toEqual([1003, 1004, 1005, 1006]); // 6 次切换只留最近 4 次
+    expect(g3.isCycling(c, ac)).toBe(true);
+    const g2 = s.fans.filter((f) => f.g.role === 'gpu')[1];
+    g2.stopped = false;
+    g2.toggleIter = [];
+    T = 45;
+    g2.updateControl(c, false);
+    expect(g2.toggleIter).toEqual([]);
+    expect(g2.isStopped(c)).toBe(true);
+    c.iteration = 0;
+  });
 
   it('显卡：45/52/56/52/49°C → 停/停/转/转/停；停转时转速、风量为 0，噪音 −Inf', () => {
     const g = s.fans.find((f) => f.g.role === 'gpu')!;
@@ -193,6 +271,26 @@ describe('显卡低温停转、电源半被动（同 test_noise 8 节）', () =>
     expect(sc3.airflow).toBeLessThan(100);
     expect(getRecommendations(so).map((r) => r.title)).not.toContain('机箱风道效率偏低');
   }, 90000);
+});
+
+describe('求解器里的时转时停（同 test_noise 9 节）', () => {
+  it('显卡风扇窗口内启停 2 次：状态表标出、感知噪音 > 物理噪音、噪音分降低、给出建议', () => {
+    const s = new Solver(layoutDefault(), { gridScale: 0.5, powers: { cpu: 100, gpu: 200, psu: 500 } });
+    s.stepMultiple(20);
+    const sc0 = calculateScores(s);
+    const n0 = totalNoise(s);
+    expect(Math.abs(n0.ratingDb - n0.dbTotal)).toBeLessThan(1e-12);
+    const g = s.fans.find((f) => f.g.role === 'gpu')!;
+    g.toggleIter = [s.iteration - 50, s.iteration - 10];
+    const n1 = totalNoise(s);
+    const sc1 = calculateScores(s);
+    expect(n1.dbTotal).toBe(n0.dbTotal);
+    expect(n1.ratingDb).toBeGreaterThan(n0.dbTotal + 0.1);
+    expect(sc1.noise).toBeLessThanOrEqual(sc0.noise);
+    expect(sc1.noiseRatingDb).toBeGreaterThanOrEqual(sc1.noiseDb);
+    expect(fanStatusList(s).filter((f) => f.cycling).length).toBe(1);
+    expect(getRecommendations(s).some((r) => r.title === '显卡风扇时转时停')).toBe(true);
+  });
 });
 
 describe('温控曲线档位与型号别名（同 test_layout 4d 节）', () => {

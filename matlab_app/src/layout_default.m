@@ -70,24 +70,24 @@ function L = layout_default(name)
     L.cpu.fan = struct('model', 'Tower120', 'count', 2);
 
     % ---- GPU：插在主板上的显卡，侧视只露卡厚。PCB 薄条 + 鳍片（多孔，穿流 y）+ 卡下 3 风扇 ----
-    % 4 槽时显卡风扇下沿到电源仓挡板留 21 mm 进风。风扇向上吹入鳍片；鳍片片垂直于卡长（热管沿卡长），热风从卡的
+    % 3 槽时显卡风扇下沿到电源仓挡板留 41 mm 进风（4 槽 21 mm）。风扇向上吹入鳍片；鳍片片垂直于卡长（热管沿卡长），热风从卡的
     % 顶边（侧板方向）与插槽边排出：显卡只占主板到侧板距离的 zShare.gpu（约 80%），卡旁的空隙在 2D 里与 PCB、
     % 散热片重合，所以 PCB 是多孔区（ζ = zeta_partial(0.8) = 26），散热片穿流 y（鳍片 + 空隙）、横流 x 只能走空隙（ζ 25）。
     % 热阻：大面积 GPU 核心 + 均热板；公开评测里三风扇卡 250–300 W 游戏时核心约 60–69°C（开放平台，机箱内高 3–5°C），
-    % 风扇约 1300–1600 rpm；风扇停转时被动散热只够约 55 W（游戏负载下风扇会起转）。
+    % 风扇约 1300–1600 rpm；风扇停转时被动散热只够约 45 W（3 槽；游戏负载下风扇会起转）。
     % 厚度按扩展槽数：整卡 = slots × 20.32 mm = PCB（含背板）12 + 散热片 + 风扇盘 12，
-    % 默认 4 槽（约 81 mm，高端显卡常见）；改厚度用 layout_set_gpu_slots（从 PCIe 槽向下长）。
-    % 挡板端在后面板。散热片后端离后壁约 26 mm（挡板端的视频接口区，不画散热片；这条通道让散热片后端的热风
-    % 沿后壁上行到后排风扇，也代表 2D 里没有的挡板通风孔与侧向出风），前端伸出主板前缘约 16 mm。
-    % 通道只有约 12 mm 时，预览网格（4 mm）只有 2 格，GPU 结温比精确网格高约 7°C；26 mm 时约高 2.4°C
-    % （v4.3.0；v4.4.0 约高 4°C；v4.5.0 双塔散热器约高 1.3°C）。
+    % 默认 3 槽（约 61 mm，主流三风扇显卡常见；v4.9.0 起，之前为 4 槽）；改厚度用 layout_set_gpu_slots（从 PCIe 槽向下长）。
+    % 挡板端在后面板：显卡贴着机箱尾部（v4.9.0）。从后壁到鳍片后端约 26 mm 是挡板与视频接口区（ioBlock = true：
+    % 整卡厚度的实心障碍，显卡与后壁之间不过风）；PCB 与鳍片从后壁起 28 mm 处开始，前端伸出主板前缘约 16 mm。
+    % v4.8.0 及以前这一段不是障碍，散热片后端的热风可沿后壁上行到后排风扇（缺 ioBlock 的旧配置仍按此计算）。
     L.gpu = struct();
-    L.gpu.slots = 4;
-    L.gpu.pcb = rect(38, 212, 216, 12);
-    L.gpu.heatsink = rect(28, 224, 236, 57);
+    L.gpu.slots = 3;
+    L.gpu.pcb = rect(28, 212, 226, 12);
+    L.gpu.ioBlock = true;                          % 挡板端（后壁到鳍片后端）为实心障碍
+    L.gpu.heatsink = rect(28, 224, 236, 37);
     L.gpu.porous = struct('zetaThru', 4, 'zetaCross', 25, 'thru', 'y');
     L.gpu.thermal = struct('R_junction_to_case', 0.03, 'R_tim', 0.015, 'R_base', 0.015, ...
-        'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(57), ...   % 鳍片面积随厚度缩放
+        'fin_thickness_mm', 0.35, 'A_fin_total_m2', gpu_fin_area(37), ...   % 鳍片面积随厚度缩放
         'h_free', 3, 'h_forced', 48, 'h_exp', 0.8, 'passiveFlowShare', 0.1);
     L.gpu.tjmax = 95;
     L.gpu.throttleTemp = 87;
@@ -119,8 +119,10 @@ function L = layout_default(name)
     L.chipset = rect(174, 306, 20, 8);            % 仅显示（位于主板平面，不挡气流）
     L.motherboardTray = rect(4, 36, 244, 278);    % 仅显示
 
-    % ---- 电源仓挡板：全宽水平隔板，前端留缺口（多数机箱在前部开孔）----
-    L.shroud = struct('yMm', 314, 'hMm', 16, 'gaps', struct('x0Mm', 280, 'x1Mm', 318));
+    % ---- 电源仓挡板（v4.9.0）：盖住电源的水平隔板，从后壁到电源前端外 16 mm（lengthMm = 184，电源长 164 mm），
+    %      与后壁、底板和电源外壳构成电源仓；前方敞开，底部与前下方进风可直达显卡。电源有自己的外壳与风道（底部进风、
+    %      后部排风），与机箱气流本来就隔开。之前为全宽隔板、前端开孔（缺 lengthMm 的旧配置仍按全宽）。----
+    L.shroud = struct('yMm', 314, 'hMm', 16, 'lengthMm', 184, 'gaps', struct('x0Mm', {}, 'x1Mm', {}));
 
     % ---- 机箱风扇（型号见 fan_catalog，安装位见 fan_slots）----
     % mount 为所在壁面，alongMm 为风扇中心沿壁坐标（前/后壁为 y，顶/底壁为 x）。

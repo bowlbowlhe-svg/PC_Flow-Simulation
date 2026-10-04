@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { Solver } from '../src/solver/solver';
 import { layoutDefault } from '../src/model/layoutDefault';
 import { layoutBenchmark } from '../src/model/layoutBenchmark';
+import { layoutSetGpuSlots } from '../src/model/gpuSlots';
 import {
   calculateScores,
   cellReadout,
@@ -30,10 +31,10 @@ function mk(L: Layout, P: [number, number, number]): Solver {
   return s;
 }
 
-/** 数值相对差 ≤ 1e−9（状态与 Octave 只差线性求解舍入）；null ↔ NaN */
+/** 数值相对差 ≤ 1e−9（状态与 Octave 只差线性求解舍入）；null ↔ 非有限值（jsonencode 把 NaN、±Inf 都写成 null，如停转风扇的噪音 −Inf） */
 function near(a: number, b: number | null, what: string) {
   if (b === null) {
-    expect(Number.isNaN(a), what).toBe(true);
+    expect(Number.isFinite(a), `${what}: ${a} 应为非有限值`).toBe(false);
     return;
   }
   expect(Math.abs(a - b), `${what}: ${a} vs ${b}`).toBeLessThanOrEqual(1e-9 * Math.max(1, Math.abs(b)));
@@ -131,6 +132,30 @@ describe('诊断量与 Octave 一致', () => {
     s.fanSpeedRatio = 70;
     s.stepMultiple(40);
     checkDump(s, FX.manual40);
+  });
+  it('v4.8.0 的默认几何（4 槽、无 ioBlock、全宽挡板 + 开孔）：100 步', async () => {
+    const L = layoutSetGpuSlots(layoutDefault(), 4);
+    delete L.gpu!.ioBlock;
+    L.gpu!.pcb = { x: 38, y: 212, w: 216, h: 12 };
+    delete L.shroud!.lengthMm;
+    L.shroud!.gaps = [{ x0Mm: 280, x1Mm: 318 }];
+    const s = mk(L, [125, 250, 450]);
+    await stepYielding(s, 100);
+    checkDump(s, FX.legacy48);
+  });
+  it('时转时停：办公功率 40 步后显卡、电源风扇设为窗口内启停 2 次', () => {
+    const s = mk(layoutDefault(), [40, 35, 200]);
+    s.stepMultiple(40);
+    const gf = s.fans.find((f) => f.g.role === 'gpu')!;
+    gf.toggleIter = [s.iteration - 50, s.iteration - 10];
+    gf.lastRunRpm = 1200;
+    const pf = s.fans.find((f) => f.g.role === 'psu')!;
+    pf.toggleIter = [s.iteration - 30, s.iteration - 5];
+    pf.lastRunRpm = 900;
+    const fl = fanStatusList(s);
+    expect(fl.filter((f) => f.cycling).map((f) => f.role)).toEqual(['gpu', 'psu']); // 数据确实覆盖了时转时停
+    expect(fl.filter((f) => f.cycling).every((f) => f.stopped)).toBe(true); // 停转中：感知噪音按最近转动的转速
+    checkDump(s, FX.cycling40);
   });
   it('runToSteady（chunk 25、window 50）的轨迹、判稳步数与窗口均值', async () => {
     const s = mk(layoutDefault(), [125, 250, 450]);

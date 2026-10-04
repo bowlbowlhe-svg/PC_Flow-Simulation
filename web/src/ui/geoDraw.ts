@@ -101,12 +101,21 @@ export function drawGeometry(ctx: CanvasRenderingContext2D, info: GeoOverlay, sc
   }
   if (info.gpu) {
     const { pcb: gp, heatsink: gh } = info.gpu;
-    const x0 = Math.min(gh.x, gp.x);
+    let x0 = Math.min(gh.x, gp.x);
     const x1 = Math.min(info.H + 1, Math.max(gh.x + gh.w, gp.x + gp.w));
     const y0 = gp.y;
     const y1 = info.gpu.fanBottom + 1;
+    // 挡板端：后壁内侧到 PCB/鳍片后端。ioBlock（v4.9.0 默认）为实心障碍，画实心块并入整卡外形；
+    // 旧布局（无 ioBlock）这段不挡风，只画虚线示意
+    const xb = info.caseOuter.x + 1; // 后壁内侧所在格
+    const xs = x0;
+    if (info.gpu.ioBlock && x0 > xb) {
+      ctx.fillStyle = 'rgba(255,115,26,0.45)';
+      ctx.fillRect(E(xb), E(y0), (x0 - xb) * sc, (y1 - y0) * sc);
+      x0 = xb;
+    }
     ctx.fillStyle = 'rgba(255,115,26,0.16)';
-    ctx.fillRect(E(x0), E(y0), (x1 - x0) * sc, (y1 - y0) * sc);
+    ctx.fillRect(E(xs), E(y0), (x1 - xs) * sc, (y1 - y0) * sc);
     rect({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, 'rgb(255,128,26)', base * 1.3);
     ctx.lineWidth = Math.max(1, base * 0.6);
     ctx.strokeStyle = 'rgba(255,153,64,0.9)';
@@ -119,13 +128,11 @@ export function drawGeometry(ctx: CanvasRenderingContext2D, info: GeoOverlay, sc
     ctx.stroke();
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
-    ctx.moveTo(E(x0), E(gh.y + gh.h));
+    ctx.moveTo(E(xs), E(gh.y + gh.h));
     ctx.lineTo(E(x1), E(gh.y + gh.h));
     ctx.stroke();
     ctx.setLineDash([]);
-    // 挡板端（仅显示）：PCB 一直延伸到后面板的挡板，散热片后端到后壁之间是接口区；求解器里这段不是障碍
-    const xb = info.caseOuter.x + 1; // 后壁内侧所在格
-    if (x0 > xb && (x0 - xb) * info.cellMm <= 60) {
+    if (!info.gpu.ioBlock && x0 > xb && (x0 - xb) * info.cellMm <= 60) {
       ctx.strokeStyle = 'rgba(255,153,64,0.8)';
       ctx.lineWidth = Math.max(1, base * 0.6);
       ctx.setLineDash([3, 3]);

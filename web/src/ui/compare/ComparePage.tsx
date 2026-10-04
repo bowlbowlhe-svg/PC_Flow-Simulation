@@ -9,6 +9,8 @@ import { colormapGradient } from '../colormap';
 import { BarChart, TradeoffChart } from './charts';
 import {
   buildSchemes,
+  cheapestNearBest,
+  cyclingNoise,
   fairCompare,
   fmax,
   METRICS,
@@ -98,6 +100,7 @@ export function ComparePage(p: Props) {
   const defTarget = Math.round(2 * (lo <= hi ? (lo + hi) / 2 : (tMin + tMax) / 2)) / 2;
   const target = targets[tKey] ?? defTarget;
   const fair = fairCompare(schemes, scenario, fairMode, target);
+  const value = cheapestNearBest(fair);
 
   // 当前场景各指标的最佳方案（徽标）：按显示精度并列的都给；超过一半方案并列时不给（区分不出）
   const badges = new Map<string, string[]>();
@@ -239,6 +242,7 @@ export function ComparePage(p: Props) {
                             <span class="small">
                               {' '}
                               {f0(n(c.auto.cpu))}/{f0(n(c.auto.gpu))}°C · {f1(n(c.auto.noiseDb))} dB
+                              {Number.isFinite(cyclingNoise(c.auto)) ? ` ↻${f1(cyclingNoise(c.auto))}` : ''}
                               {n(c.auto.perfPct) < 99.95 ? ` · ${f1(n(c.auto.perfPct))}%` : ''}
                             </span>
                           </>
@@ -254,7 +258,8 @@ export function ComparePage(p: Props) {
           </table>
         </div>
         <p class="muted small">
-          格子里：评分 CPU/GPU 结温 · 噪音（· 有降频时的频率保持率）。评分按功率分档，三列的分数不宜横向比较；同一列里比较各方案。
+          格子里：评分 CPU/GPU 结温 · 噪音（· 有降频时的频率保持率）；↻ 后为显卡或电源风扇时转时停时评分用的感知噪音
+          （转动时的声级 + 间歇性修正）。评分按功率分档，三列的分数不宜横向比较；同一列里比较各方案。
         </p>
       </section>
 
@@ -309,7 +314,9 @@ export function ComparePage(p: Props) {
                 <div class="cmp-metrics">
                   <span>CPU {f1(n(a.cpu))}°C</span>
                   <span>GPU {f1(n(a.gpu))}°C</span>
-                  <span>噪音 {f1(n(a.noiseDb))} dB</span>
+                  <span title={Number.isFinite(cyclingNoise(a)) ? '显卡或电源风扇时转时停：评分按感知噪音（转动时的声级 + 间歇性修正）' : undefined}>
+                    噪音 {f1(n(a.noiseDb))} dB{Number.isFinite(cyclingNoise(a)) ? `（↻ 感知 ${f1(cyclingNoise(a))}）` : ''}
+                  </span>
                   <span>性能 {f1(n(a.perfPct))}%</span>
                   <span>内温 {f1(n(a.interior))}°C</span>
                   <span>风量 {f1(n(a.cfm))}</span>
@@ -413,6 +420,7 @@ export function ComparePage(p: Props) {
                 <th>{fairMode === 'noise' ? `${f1(target)} dB 时最高结温` : `结温 ≤ ${f1(target)}°C 所需噪音`}</th>
                 <th>性能 %</th>
                 <th>全局转速 %</th>
+                <th>风扇成本</th>
               </tr>
             </thead>
             <tbody>
@@ -428,12 +436,30 @@ export function ComparePage(p: Props) {
                   </td>
                   <td>{f1(r.perf)}</td>
                   <td>{f0(r.pct)}</td>
+                  <td title={r.scheme.price.detail}>¥{f0(r.scheme.price.total)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {value && (
+          <p class="cmp-value small">
+            {value.cheap.scheme.id === value.best.scheme.id ? (
+              <>
+                最好的方案 <b>{value.best.scheme.short}</b> 也是接近最好（{fairMode === 'noise' ? '结温差 ≤ 1°C' : '噪音差 ≤ 1 dB'}、性能相当）的方案里最便宜的（¥
+                {f0(value.best.scheme.price.total)}）。
+              </>
+            ) : (
+              <>
+                性价比：<b>{value.cheap.scheme.short}</b>（¥{f0(value.cheap.scheme.price.total)}）与最好的 {value.best.scheme.short}（¥
+                {f0(value.best.scheme.price.total)}）相差不到 {fairMode === 'noise' ? '1°C' : '1 dB'}、性能相当，便宜 ¥
+                {f0(value.best.scheme.price.total - value.cheap.scheme.price.total)}。
+              </>
+            )}
+          </p>
+        )}
         <p class="muted small">
+          风扇成本为机箱风扇的型号库参考价合计（原装风扇计 0 元，不含塔扇、显卡与电源自带风扇）。
           "达不到"：该方案在扫描的转速范围内到不了这个噪音或温度。"≤"：最低一档转速（{proto.sweepPct[0]}%）已经满足，实际所需噪音还可以更低，
           排名只作参考。满载时低转速可能触发温度墙降频，结温停在降频阈，此时看"性能"一栏（并列时按性能排序）。"*"：所用扫描点在统计窗口内
           仍有超过 {DRIFT_WARN}°C 的漂移，未完全稳态。
@@ -656,7 +682,8 @@ function FieldModal(p: {
         <div class="cmp-modal-foot">
           <FieldLegend mode={p.style.mode} range={p.style.range} />
           <span class="small">
-            CPU {f1(n(a.cpu))}°C · GPU {f1(n(a.gpu))}°C · 噪音 {f1(n(a.noiseDb))} dB · 风量 {f1(n(a.cfm))} CFM · 风扇 ¥{f0(s.price.total)}（{s.price.detail}）
+            CPU {f1(n(a.cpu))}°C · GPU {f1(n(a.gpu))}°C · 噪音 {f1(n(a.noiseDb))} dB
+            {Number.isFinite(cyclingNoise(a)) ? `（↻ 感知 ${f1(cyclingNoise(a))} dB）` : ''} · 风量 {f1(n(a.cfm))} CFM · 风扇 ¥{f0(s.price.total)}（{s.price.detail}）
           </span>
         </div>
         <div class="cmp-readout small muted">{hover || '把鼠标移到图上看读数'}</div>

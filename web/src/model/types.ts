@@ -81,6 +81,8 @@ export interface GpuSpec {
   slots?: number;
   pcb: Rect;
   heatsink: Rect;
+  /** 挡板端（后壁到 PCB/鳍片后端）为实心障碍，显卡与后壁之间不过风（v4.9.0；缺省 false） */
+  ioBlock?: boolean;
   porous: Porous;
   thermal: ComponentThermal;
   tjmax: number;
@@ -129,6 +131,11 @@ export interface Acoustics {
   stallDb: number;
   grilleRefZeta: number;
   finDb: number;
+  /** 低转速底噪 [dB(A)]（v4.9.0；缺省 8） */
+  floorDb: number;
+  /** 时转时停的间歇性修正 [dB]（BS 4142；缺省 3）与判定窗口 [s]（缺省 10） */
+  intermittentDb: number;
+  cycleWindowS: number;
   positionDb: {
     front: number;
     top: number;
@@ -180,7 +187,8 @@ export interface Layout {
   zShare?: ZShare;
   chipset?: Rect; // 仅显示
   motherboardTray?: Rect; // 仅显示
-  shroud?: { yMm: number; hMm: number; gaps: { x0Mm: number; x1Mm: number }[] };
+  /** 电源仓挡板：lengthMm 为从后壁起的长度（v4.9.0；缺省为全宽） */
+  shroud?: { yMm: number; hMm: number; lengthMm?: number; gaps: { x0Mm: number; x1Mm: number }[] };
   caseFans?: CaseFan[];
   vents?: Vent[];
   solidBlocks?: Rect[];

@@ -96,6 +96,11 @@ export function buildSchemes(data: CompareData, customs: CustomScheme[]): Scheme
 
 /** JSON 里的 null 读成 NaN */
 export const n = (v: number | null | undefined) => (typeof v === 'number' ? v : NaN);
+/** 评分用的感知噪音高于当前声级（有风扇时转时停，v4.9.0）时返回感知噪音，否则 NaN（旧数据没有这一项） */
+export const cyclingNoise = (m: { noiseDb: number | null; noiseRatingDb?: number | null }) => {
+  const r = n(m.noiseRatingDb);
+  return r > n(m.noiseDb) + 0.05 ? r : NaN;
+};
 
 /** 有限值中的最大（都不是有限值时为 NaN） */
 export const fmax = (...v: number[]) => {
@@ -212,6 +217,21 @@ export function fairCompare(schemes: SchemeView[], sc: ScenarioKey, mode: FairMo
     if (r1(a.value) !== r1(b.value)) return a.value - b.value;
     return (Number.isFinite(b.perf) ? b.perf : -1) - (Number.isFinite(a.perf) ? a.perf : -1);
   });
+}
+
+/**
+ * 性价比：公平比较里接近最好（同噪音时最高结温差 ≤ tol °C，同温度时所需噪音差 ≤ tol dB，且性能不低于最好的方案
+ * perfTol 个百分点：满载时结温会停在降频阈，只看结温分不出降频多的方案）的方案中最便宜的。
+ * rows 为 fairCompare 的结果（已排序：value 小的在前，按显示精度并列时性能高的在前），最好的方案取第一个可比的行，
+ * 与表格第一行一致。返回 [最好的方案, 最便宜的接近方案]；没有可比结果时 null。
+ */
+export function cheapestNearBest(rows: FairRow[], tol = 1, perfTol = 0.5): { best: FairRow; cheap: FairRow } | null {
+  const ok = rows.filter((r) => Number.isFinite(r.value) && Number.isFinite(r.scheme.price.total));
+  if (!ok.length) return null;
+  const best = ok[0];
+  const near = ok.filter((r) => r.value <= best.value + tol && !(r.perf < best.perf - perfTol));
+  const cheap = near.reduce((a, b) => (b.scheme.price.total < a.scheme.price.total || (b.scheme.price.total === a.scheme.price.total && b.value < a.value) ? b : a));
+  return { best, cheap };
 }
 
 export const SCENARIO_LABEL: Record<ScenarioKey, string> = Object.fromEntries(COMPARE_SCENARIOS.map((s) => [s.key, s.label])) as Record<ScenarioKey, string>;

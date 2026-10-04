@@ -91,6 +91,19 @@ function [L, mig] = normalize(L)
         layout_panel_u(L);
         if isfield(L, 'cpu') && ~isempty(L.cpu), layout_heat_coef(L.cpu.thermal, 'cpu'); end
         if isfield(L, 'gpu') && ~isempty(L.gpu), layout_heat_coef(L.gpu.thermal, 'gpu'); end
+        if isfield(L, 'gpu') && isstruct(L.gpu) && isfield(L.gpu, 'ioBlock') && ~isempty(L.gpu.ioBlock)
+            v = L.gpu.ioBlock;
+            if ~(isscalar(v) && (islogical(v) || (isnumeric(v) && (v == 0 || v == 1))))
+                error('layout_json:gpu', 'gpu.ioBlock（挡板端封闭）应为 true 或 false');
+            end
+            L.gpu.ioBlock = logical(v);                % 写成 0/1 的也按逻辑值保存（网页版读 true/false）
+        end
+        if isfield(L, 'shroud') && isfield(L.shroud, 'lengthMm') && ~isempty(L.shroud.lengthMm)
+            v = L.shroud.lengthMm;
+            if ~(isnumeric(v) && isscalar(v) && isfinite(v) && v > 0)
+                error('layout_json:shroud', 'shroud.lengthMm（电源仓挡板长度）应为 > 0 的数');
+            end
+        end
     catch ME
         error('layout_json:invalid', '%s', ME.message);
     end

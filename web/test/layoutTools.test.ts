@@ -23,7 +23,7 @@ describe('layoutFanReport 与 Octave 一致', () => {
       const L = normalizeLayout(c.layout);
       const R = layoutFanReport(L);
       expect(R.warnings).toEqual(list(c.report.warnings));
-      for (const k of ['intakeCfm', 'exhaustCfm', 'intakeCfmIdle', 'exhaustCfmIdle'] as const) expect(R[k]).toBeCloseTo(c.report[k], 10);
+      for (const k of ['intakeCfm', 'exhaustCfm', 'intakeCfmIdle', 'exhaustCfmIdle', 'totalPrice'] as const) expect(R[k]).toBeCloseTo(c.report[k], 10);
       expect(R.pressure).toBe(c.report.pressure);
       expect(R.pressureIdle).toBe(c.report.pressureIdle);
       expect(R.nIntake).toBe(c.report.nIntake);

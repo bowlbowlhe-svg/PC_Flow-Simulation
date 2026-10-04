@@ -73,6 +73,7 @@ function pass = test_quasi3d()
         sprintf('横向流不计入 GPU 鳍片换热（h %.2f），CPU 鳍片（穿流 x）照计（h %.2f）', ...
         s.thermalNetworks.gpu.h_conv, s.thermalNetworks.cpu.h_conv));
     Lg = L0; Lg.gpu.thermal = rmfield(Lg.gpu.thermal, {'h_free', 'h_forced', 'h_exp', 'passiveFlowShare'});
+    Lg.gpu.ioBlock = false;                                       % 挡板端实心块旁的鳍片格有一面封闭，格心风速不是 0.5
     sg = CFDSolverFEM([], [], [], Lg, 0.5);                       % 旧模型：风速取风速模
     sg.uF(:) = 0.5 / sg.VEL_SCALE; sg.vF(:) = 0; sg.uF(~sg.uFaceActive) = 0;
     sg.solveConjugateHeatTransfer();
@@ -94,7 +95,7 @@ function pass = test_quasi3d()
     Lo.chassis.wallTempC = struct('rear', 25, 'front', 25, 'top', 25, 'bottom', 25);
     Lo = rmfield(Lo, 'zShare');
     Lo.cpu.thermal = struct('R_junction_to_case', 0.15, 'R_tim', 0.04, 'R_base', 0.05, 'fin_thickness_mm', 0.4, 'A_fin_total_m2', 0.15);
-    Lo.gpu.thermal = struct('R_junction_to_case', 0.08, 'R_tim', 0.02, 'R_base', 0.02, 'fin_thickness_mm', 0.35, 'A_fin_total_m2', 0.5 * 57 / 47);
+    Lo.gpu.thermal = struct('R_junction_to_case', 0.08, 'R_tim', 0.02, 'R_base', 0.02, 'fin_thickness_mm', 0.35, 'A_fin_total_m2', 0.5 * L0.gpu.heatsink.h / 47);
     Lo.gpu.porous = struct('zetaThru', 4, 'zetaCross', 10, 'thru', 'x');
     f = [tempname() '.json'];
     layout_json('save', Lo, f);

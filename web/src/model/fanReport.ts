@@ -6,7 +6,7 @@ import { chassisSizeMm } from './chassis';
 import { mmax } from '../numerics/mathx';
 
 export interface FanReport {
-  warnings: string[]; // 同壁重叠、相邻壁角部相碰、超出壁面、与电源重叠
+  warnings: string[]; // 同壁重叠、相邻壁角部相碰、超出壁面、与电源重叠、被显卡挡板端挡住
   intakeCfm: number; // 进气风扇标称自由风量之和（自动转速按满速计）
   exhaustCfm: number;
   pressure: string;
@@ -15,6 +15,7 @@ export interface FanReport {
   pressureIdle: string;
   nIntake: number;
   nExhaust: number;
+  totalPrice: number; // 机箱风扇参考价合计 [元]（型号库 price，机箱原装风扇为 0；v4.9.0）
 }
 
 /** 由机箱风扇标称进/排风量判断机箱压力状态（fan_pressure_label） */
@@ -44,6 +45,7 @@ export function layoutFanReport(L: Layout): FanReport {
     pressureIdle: '',
     nIntake: 0,
     nExhaust: 0,
+    totalPrice: 0,
   };
   const F = L.caseFans ?? [];
   if (!F.length) {
@@ -65,6 +67,7 @@ export function layoutFanReport(L: Layout): FanReport {
       R.warnings.push(`${MOUNT_CN[f.mount]}壁 ${f.model}（中心 ${g(f.alongMm)} mm）超出壁面，求解时会被夹到壁内`);
     const frac = f.speedMode === 'manual' ? [f.manualPct / 100, f.manualPct / 100] : [1, dutyIdle]; // 满速 / 温控下限
     const q = frac.map((fr) => (sp.cfm_max * mmax(sp.rpm_min, fr * sp.rpm_max)) / sp.rpm_max);
+    R.totalPrice += sp.price;
     if (f.type === 'intake') {
       R.intakeCfm += q[0];
       R.intakeCfmIdle += q[1];
@@ -116,6 +119,17 @@ export function layoutFanReport(L: Layout): FanReport {
       if (f.mount === 'bottom') ov = Math.min(hi[k], b.x + b.w) - Math.max(lo[k], b.x);
       else if (f.mount === 'rear') ov = Math.min(hi[k], b.y + b.h) - Math.max(lo[k], b.y);
       if (ov > 0) R.warnings.push(`${MOUNT_CN[f.mount]}壁风扇（中心 ${g(f.alongMm)} mm）与电源重叠 ${f0(ov)} mm`);
+    });
+  }
+  // 被显卡挡板端挡住（gpu.ioBlock，v4.9.0）：后壁到显卡后端为实心，从 PCB 上沿到显卡风扇盘下沿
+  const gp = L.gpu;
+  if (gp?.ioBlock && Math.min(gp.pcb.x, gp.heatsink.x) > wallMm) {
+    const y0 = gp.pcb.y;
+    const y1 = gp.heatsink.y + gp.heatsink.h + L.fanDiskMm;
+    F.forEach((f, k) => {
+      if (f.mount !== 'rear') return;
+      const ov = Math.min(hi[k], y1) - Math.max(lo[k], y0);
+      if (ov > 0) R.warnings.push(`后壁风扇（中心 ${g(f.alongMm)} mm）有 ${f0(ov)} mm 被显卡挡板端挡住`);
     });
   }
   R.pressure = pressureLabel(R.intakeCfm, R.exhaustCfm);

@@ -44,7 +44,7 @@ export function cpuFanItems(stacks: number): string[] {
 
 /**
  * 布局页的提示（网页版额外提供，MATLAB 版没有）：不在安装位上的机箱风扇（例如 v4.3 之前 400 mm 见方机箱的配置），
- * 以及机箱尺寸与默认不同（安装位与"前部开孔"都按默认机箱定义）。
+ * 以及机箱尺寸与默认不同（安装位按默认机箱定义）。
  */
 export function layoutNotes(L: Layout): string[] {
   const out: string[] = [];
@@ -52,14 +52,19 @@ export function layoutNotes(L: Layout): string[] {
   if (off) out.push(`另有 ${off} 台机箱风扇不在安装位上：照常参与计算，但表格与主视图的安装位不显示它们；载入预设会清除它们`);
   const [w, h] = chassisSizeMm(L);
   const [w0, h0] = chassisSizeMm(layoutDefault());
-  if (w !== w0 || h !== h0) out.push(`机箱为 ${w} × ${h} mm：安装位与"前部开孔"按默认机箱（深 ${w0} × 高 ${h0} mm）定义，位置可能不合适`);
+  if (w !== w0 || h !== h0) out.push(`机箱为 ${w} × ${h} mm：安装位按默认机箱（深 ${w0} × 高 ${h0} mm）定义，位置可能不合适`);
   return out;
 }
 
-/** 以布局 L 作为待编辑布局时的界面状态；带非空挡板缺口时更新 defaultGaps（同 MATLAB setPendingFromLayout） */
+/**
+ * 以布局 L 作为待编辑布局时的界面状态（同 MATLAB setPendingFromLayout）。defaultGaps 为"开孔"勾选时用的缺口：
+ * 载入配置或方案（resetGaps）时取 L 的缺口（可为空，此时勾选框禁用）；撤销修改时只在 L 带非空缺口时更新，
+ * 免得取消勾选并应用后再也勾不回来。
+ */
 export function pendingFromLayout(
   L: Layout,
   defaultGaps: Gaps,
+  resetGaps = false,
 ): { slots: SlotState[]; gpuSlots: number | null; cpuFans: number | null; shroudGap: boolean | null; defaultGaps: Gaps } {
   const gaps = L.shroud?.gaps ?? [];
   return {
@@ -67,6 +72,6 @@ export function pendingFromLayout(
     gpuSlots: L.gpu ? layoutGpuSlots(L) : null,
     cpuFans: layoutCpuFans(L),
     shroudGap: L.shroud ? gaps.length > 0 : null, // null：布局无挡板，勾选框保持原状
-    defaultGaps: gaps.length ? structuredClone(gaps) : defaultGaps,
+    defaultGaps: gaps.length || (resetGaps && L.shroud) ? structuredClone(gaps) : defaultGaps,
   };
 }

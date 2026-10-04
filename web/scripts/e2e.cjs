@@ -148,6 +148,7 @@ function check(cond, msg) {
   await p.selectOption('.tab-body .row select >> nth=0', 'positive');
   await p.click('text=载入预设');
   check((await text('.layout-info')).includes('待应用：正压'), '载入预设');
+  check((await text('.layout-info')).includes('机箱风扇参考价 240 元'), '风扇布局页显示机箱风扇参考价（正压 4×P12 = 240 元）');
   await p.setInputFiles('input[type=file]', js);
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('当前：配置'), null, { timeout: 30000 });
   check(true, '载入 JSON 后显示"当前：配置 …"');
@@ -209,11 +210,16 @@ function check(cond, msg) {
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('v47custom.json'), null, { timeout: 30000 });
   check((await text('.layout-info')).includes('按 v4.7 模型计算'), '改过热参数的 v4.7 配置按 v4.7 模型计算并注明');
 
-  // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）
+  // 7. 自定义挡板缺口往返（W2–W4 审计：不能被默认值覆盖）。默认电源仓挡板没有开孔（v4.9.0）：勾选框禁用；有开孔的配置可用并勾选
+  const gapBox = () => p.$eval('label:has-text("电源仓挡板开孔") input', (e) => ({ disabled: e.disabled, checked: e.checked }));
+  const gb0 = await gapBox();
+  check(gb0.disabled && !gb0.checked, `默认无开孔：挡板开孔勾选框禁用（${JSON.stringify(gb0)}）`);
   const Lgap = JSON.parse(fs.readFileSync(js, 'utf8'));
   Lgap.shroud.gaps = [{ x0Mm: 270, x1Mm: 310 }];
   await p.setInputFiles('input[type=file]', writeJson('customgap.json', Lgap));
   await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('customgap.json'), null, { timeout: 30000 });
+  const gb1 = await gapBox();
+  check(!gb1.disabled && gb1.checked, `有开孔的配置：勾选框可用并勾选（${JSON.stringify(gb1)}）`);
   await p.$$eval('.slot-table tbody tr:nth-child(5) select', (els) => {
     els[0].value = 'exhaust';
     els[0].dispatchEvent(new Event('change', { bubbles: true }));
@@ -222,6 +228,11 @@ function check(cond, msg) {
   const L2 = JSON.parse(fs.readFileSync(js2, 'utf8'));
   check(JSON.stringify(L2.shroud.gaps) === JSON.stringify([{ x0Mm: 270, x1Mm: 310 }]), `自定义缺口保留（${JSON.stringify(L2.shroud.gaps)}）`);
   await p.click('text=撤销未应用的修改');
+  // 再载入无开孔的配置：勾选框跟随它禁用（不沿用上一个配置的缺口）。用第 5 步的布局（js 已被同名下载覆盖成带缺口的配置）
+  await p.setInputFiles('input[type=file]', writeJson('nogap.json', { ...L, shroud: { ...L.shroud, gaps: [] } }));
+  await p.waitForFunction(() => document.querySelector('.layout-info')?.textContent?.includes('nogap.json'), null, { timeout: 30000 });
+  const gb2 = await gapBox();
+  check(gb2.disabled && !gb2.checked, `再载入无开孔的配置：勾选框禁用（${JSON.stringify(gb2)}）`);
 
   // 8. 重建失败回滚（W2–W4 审计）：噪音参数无效的配置 → 报"重建失败"，布局名与网格不变，之后不在旧求解器上跑稳态
   const before = await text('.layout-info');
@@ -306,6 +317,7 @@ function check(cond, msg) {
   await p.waitForSelector('.cmp-matrix tbody tr', { timeout: 10000 });
   const nRows = await p.$$eval('.cmp-matrix tbody tr', (r) => r.length);
   check(nRows === 8, `对比总览 8 个方案（${nRows}）`);
+  check((await text('.cmp-matrix')).includes('↻'), '对比总览标出时转时停的感知噪音（办公场景）');
   await p.waitForFunction(() => document.querySelectorAll('canvas.thumb-canvas').length >= 8, null, { timeout: 10000 });
   const lit = await p.$eval('canvas.thumb-canvas', (c) => {
     const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
@@ -315,7 +327,7 @@ function check(cond, msg) {
   });
   check(lit > 20, `流场图已绘制（平均亮度 ${lit.toFixed(0)}）`);
   // 13b. 流场图（L7）：风扇成本、风速 / 温差视图与参考方案、流线开关、点开大图（悬停读数、左右切换、Esc 关闭）
-  check((await text('.cmp-cards')).includes('风扇 ¥165'), '卡片显示机箱风扇成本（默认方案 ¥165）');
+  check((await text('.cmp-cards')).includes('风扇 ¥180'), '卡片显示机箱风扇成本（默认方案 ¥180）');
   await p.selectOption('select.cmp-metric', 'price');
   check((await text('.compare-page')).includes('按机箱风扇成本排序'), '可按机箱风扇成本排序');
   await p.click('.cmp-controls >> text=风速');
@@ -348,6 +360,7 @@ function check(cond, msg) {
   check((await text('.compare-page')).includes('按噪音排序'), '按噪音排序');
   const fairRows = await p.$$eval('.cmp-fair tbody tr', (r) => r.length);
   check(fairRows === 8, `公平比较表 8 行（${fairRows}）`);
+  check((await text('.cmp-fair thead')).includes('风扇成本') && (await p.$$('.cmp-value')).length === 1, '公平比较表有风扇成本列与性价比提示');
   await shot('e2e_compare');
   await p.selectOption('select.cmp-grid', '0.5');
   await p.click('button.cmp-add');

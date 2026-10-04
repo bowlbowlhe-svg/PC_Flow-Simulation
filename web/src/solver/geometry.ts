@@ -261,6 +261,13 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   };
   if (gpu && L.gpu) {
     partial(gpu.pcb, zShare.gpu, OBSTACLE.GPU_PCB);
+    if (L.gpu.ioBlock) {
+      // 挡板端（v4.9.0）：后壁内侧到 PCB/鳍片后端、PCB 上沿到显卡风扇下沿为实心障碍，显卡与后壁之间不过风（同 CFDSolverBase）
+      const x0 = outer.x + 1;
+      const x1 = Math.min(gpu.pcb.x, gpu.heatsink.x) - 1;
+      const yb = gpu.heatsink.y + gpu.heatsink.h - 1 + Math.max(1, toCell(L.fanDiskMm));
+      if (x1 >= x0) setIfFree(rectCells({ x: x0, y: gpu.pcb.y, w: x1 - x0 + 1, h: yb - gpu.pcb.y + 1 }), OBSTACLE.BLOCK);
+    }
     addZone(gpu.heatsink, L.gpu.porous);
   }
   if (psu && L.psu) {
@@ -273,6 +280,12 @@ export function buildGeometry(L: Layout, gridScale = 1, DT = 0.005): Geometry {
   }
   if (shroud && L.shroud) {
     let idx = rectCells({ x: outer.x, y: shroud.y, w: outer.w, h: shroud.h });
+    const len = L.shroud.lengthMm;
+    if (len !== undefined && len !== null) {
+      // 电源仓挡板：从后壁起 lengthMm 长（同 CFDSolverBase）
+      const xEnd = caseOffsetX + toCell(len);
+      idx = idx.filter((i) => floor(i / W) + 1 <= xEnd);
+    }
     for (const gp of L.shroud.gaps ?? []) {
       const x0 = caseOffsetX + toCell(gp.x0Mm);
       const x1 = caseOffsetX + toCell(gp.x1Mm);

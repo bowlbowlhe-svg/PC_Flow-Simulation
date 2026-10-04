@@ -2,7 +2,7 @@
 
 网页版（或其它移植）对照用的参考数据，由 `tools/make_reference_dataset` 生成；
 算法说明见 [`../../../docs/ALGORITHM.md`](../../../docs/ALGORITHM.md)。每个文件记录生成环境
-（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.8.0 在
+（`generator.platform/version`）与仿真器版本（`generator.simulator`）。本目录的数据由 v4.9.0 在
 GNU Octave 8.4 下生成（单线程）。v4.3.0 起默认布局为紧凑机箱（深 320 mm × 高 400 mm、主板贴后壁），机箱尺寸可为
 `[深 高]`，嵌入的 `layout` 里 `chassis.sizeMm`、`chassis.originMm` 是两个数的数组；v4.4.0 起 CPU 底座不是障碍
 （`geometry.obstacleType` 里没有类型码 3）；v4.5.0 起 CPU 为双塔散热器（`cpu.tower = {stacks: 2, gapMm: 24}`、
@@ -13,6 +13,10 @@ v4.8.0 起显卡 PCB、内存、VRM 只占部分深度（`zShare`），不再是
 体现在 `uDragCoef`/`vDragCoef`）；四面壁为绝热（`dirichletIdx` 为空），壁面散热格与衰减因子见 `geometry.wallLoss`；`heatObsIdx`
 只剩电源外壳；GPU 散热片穿流 y；嵌入的 `layout` 带 `zShare`、`chassis.panelU` 与热参数的 `h_free`/`h_forced`/`h_exp`/`passiveFlowShare`
 （ALGORITHM §2.1、§2.4、§3.9、§4）。
+v4.9.0 起风扇满速噪音按同一实测口径、每台风扇加低转速底噪、时转时停的感知噪音（ALGORITHM §5）；嵌入的 `layout` 的
+`acoustics` 带 `floorDb`、`intermittentDb`、`cycleWindowS`，各风扇的 `noiseDb` 含底噪。默认布局改为 3 槽显卡（`gpu.slots = 3`、
+散热片 37 mm）、PCB 从后壁起 28 mm、挡板端为实心障碍（`gpu.ioBlock = true`，`geometry.obstacleType` 里多了类型码 13 的一块）、
+电源仓挡板只盖住电源（`shroud.lengthMm = 184`、`gaps` 为空），所以默认布局的流场与温度和 v4.8.0 不同（ALGORITHM §2）。
 
 | 文件 | 内容 |
 |---|---|
@@ -68,11 +72,12 @@ v4.8.0 起显卡 PCB、内存、VRM 只占部分深度（`zShare`），不再是
    结温 ≤ 0.2°C、风量 ≤ 1%、风扇工作点静压 ≤ 2%；场只看 RMS 或 p95 差，作诊断用。这些阈值是建议值，
    尚未有单精度实现验证过。
 4. **稳态**（`steady_*.json`）：在 280²、同样推进 3000 步，比较 1000 步之后的均值。结温与内温
-   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.32°C、风量 σ ≤ 0.7 CFM：负压最大，其余 ≤ 0.14°C、≤ 0.28 CFM）。
+   ≤ max(0.3°C, 3σ)，风量 ≤ max(2%, 3σ)，噪音 ≤ 0.3 dB（σ 取文件里的 `std`，目前结温 σ ≤ 0.14°C、风量 σ ≤ 0.4 CFM：负压最大，其余 ≤ 0.05°C、≤ 0.34 CFM）。
    **精确模式对照值**（`forceReassemble = true`，全部冻结算子每步重装，1000 步之后的均值；供选择精确模式的移植实现验收，
-   容差同上）：默认 70.36 / 67.86 / 58.07°C、49.64 CFM；正压 68.04 / 69.20°C、39.25 CFM；底进顶出 83.40 / 81.99°C、
-   52.26 CFM（v4.8.0，由网页版以 `forceReassemble` 计算；与本目录冻结算子数据的均值相差 ≤ 0.07°C、≤ 0.3%；v4.6.0 时默认布局
-   CPU 差 0.57°C、风量 3%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
+   容差同上）：默认 71.32 / 65.88 / 58.09°C、55.64 CFM；正压 69.00 / 70.22°C、41.57 CFM；底进顶出 77.47 / 70.96°C、
+   47.99 CFM（v4.9.0，由网页版以 `forceReassemble` 计算；与本目录冻结算子数据的均值相差：默认、底进顶出 ≤ 0.03°C、≤ 0.1%，
+   正压 CPU +0.22、GPU −0.28°C、风量 −1.5%，在上面的容差之内，但明显大于另两个算例（标准差只有 0.02–0.05°C）——移植实现最好按
+   所选模式比较；v4.8.0 时三个算例 ≤ 0.07°C、≤ 0.3%，v4.6.0 时默认布局 CPU 差 0.57°C、风量 3%）。不要拿 `runToSteady` 的判稳结果对照：判稳时刻受实现细节影响。
 5. **基准**（`bench.json`）：Nu 与风道流量的相对差 ≤ 1%（本数据与解析解/文献值的偏差：Nu +2.5/+2.1%，
    风道 +1.1/+0.6/+0.4%）。
 
